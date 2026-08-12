@@ -4,7 +4,7 @@ Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is 
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
 **Last updated:** 2026-08-13 · **Phases 1 and 2 complete** · phase 3 built, one verification
-outstanding · phase 4 built and verified locally · **phase 5 specified**
+outstanding · phase 4 built and verified locally · **phase 5 built**
 
 ---
 
@@ -16,7 +16,7 @@ outstanding · phase 4 built and verified locally · **phase 5 specified**
 | **2** | Indexers — YTS, TPB, then 1337x through minter | **done** — verified 2026-08-12 |
 | **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** — T13–T16 done; live dispatch pending qBittorrent credentials |
 | **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** — T17–T21 done, verified locally 2026-08-12; never run against the Pi |
-| 5 | Interface — Next.js screens embedded via `embed.FS` | **specified** — T22–T26 |
+| **5** | Interface — Next.js screens embedded via `embed.FS` | **built** — T22–T26 done, verified locally 2026-08-13 |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | back up the *arr configs first |
 
 ---
@@ -386,13 +386,13 @@ or `sonarr` categories and nothing was deleted.
 Specified 2026-08-13, no code yet. Spec in [`phase-5.md`](phase-5.md). Phases 1–4 are merged to
 `main` and pushed.
 
-| Task | Owns | Status |
-|---|---|---|
-| [T22](tasks/T22-embed-ui.md) embed and serve | `internal/web/`, the mount in `cmd/curator` | |
-| [T23](tasks/T23-settings-api.md) settings endpoint | `internal/api/settings.go` | |
-| [T24](tasks/T24-ui-shell.md) shell and build wiring | `web/` scaffold, API client, nav | |
-| [T25](tasks/T25-search-screens.md) Search → Releases | `web/app/search`, `web/app/releases` | |
-| [T26](tasks/T26-library-screens.md) Library, Activity, Settings | the other three routes | |
+| Task | Owns | Commit | Status |
+|---|---|---|---|
+| [T22](tasks/T22-embed-ui.md) embed and serve | `internal/web/`, the mount in `cmd/curator` | `1121beb` | done |
+| [T23](tasks/T23-settings-api.md) settings endpoint | `internal/api/settings.go` | `c44ec2d` | done |
+| [T24](tasks/T24-ui-shell.md) shell and build wiring | `web/` scaffold, API client, nav | `87cbb8f` | done |
+| [T25](tasks/T25-search-screens.md) Search → Releases | `web/app/search/` | `a13b29c` | done |
+| [T26](tasks/T26-library-screens.md) Library, Activity, Settings | the other three routes | `90c6d4b` | done |
 
 Two decisions were settled while specifying:
 [D16](decisions.md#d16--the-ui-is-embedded-with-all-and-a-committed-placeholder-keeps-go-build-honest)
@@ -421,6 +421,54 @@ phase 1's one-command deploy and it is accepted in exactly one documented place
   Everything else is already there and was verified against live services in phases 1–4.
 - **`.gitignore` already carried `/web/out/`** from phase 1, which is now the wrong path: `go:embed`
   cannot reach outside its own package, so the export lands in `internal/web/dist/` instead.
+
+### What phase 5 verified, and how
+
+Run 2026-08-13 against the real binary with the fixture library, the live indexers and the running
+minter.
+
+| Check | Result |
+|---|---|
+| Every screen by URL | `/`, `/search/`, `/library/`, `/activity/`, `/settings/` all **200**, with and without the trailing slash |
+| `_next/` assets | **200**, `Cache-Control: public, max-age=31536000, immutable` |
+| HTML documents | `Cache-Control: no-cache` |
+| Unknown path | **404** carrying the export's own page, **not** the app |
+| `/healthz`, `/api/*` | unaffected by the UI mounted at `/` |
+| Cold scan through the UI's endpoint | `{"scanned":29,"added":29,"matched":29,"unmatched":0}` |
+| Library data as rendered | 29 movies, 29 with posters, **27 zero-size**, 0 unmatched |
+| Live search | **111 releases in 14.6 s** — yts 5, tpb 88, 1337x 20 |
+| Ranking | seeders descending, 1386 · 1085 · 616 |
+| Lazy magnets | **20 of 111** come back `null`, all 1337x, exactly as D10 intends |
+| `GET /api/settings?probe=1` | tmdb reachable, minter reachable, qbittorrent and jellyfin unconfigured with no `reachable` field |
+| Fresh clone (`dist/` moved aside) | `go build`, `go test` and the arm64 cross-compile all still pass |
+| `git status` after `npm run build` | clean — the export is ignored, the `.gitkeep` survives |
+| `go test -race ./...` | passes |
+
+**Not verified: how it looks.** Everything above is the served markup and the API beneath it —
+headings, nav links, copy and status codes. Nobody has actually looked at the rendered pages in a
+browser, so layout, spacing, colour and the dark-mode palette are unreviewed. That is the one part
+of this phase a test genuinely cannot cover, and it wants human eyes.
+
+### What phase 5 learned
+
+- **`//go:embed dist` would have shipped a blank page.** `go:embed` drops names beginning with `_`,
+  and Next.js puts every script and stylesheet under `_next/`. The binary compiles and serves
+  `index.html` either way, so the failure is invisible until it is deployed. `all:dist` is asserted
+  by reading the source, because on a fresh clone there is no export to test against.
+- **The 15.x Next line carries security advisories.** npm flagged the version this started on, and
+  the whole line turned out to be affected — three high-severity findings across `next`, `postcss`
+  and `sharp`, fixed only in 16.x. It is on **`next@16.3.0`** and `npm audit` reports zero. These are
+  build-time only and nothing but static files reach the Pi, but starting a toolchain on known
+  advisories is a bad habit to form on the phase that introduces the toolchain.
+- **Next 16's type checker found a real bug on the first build.** `error && <X/>` where `error` is
+  `unknown` has type `unknown`, which is not a `ReactNode`. `typescript.ignoreBuildErrors` stays
+  false.
+- **`-race` found a real race in a test**, not in the handler: the settings probe counters were
+  plain ints incremented from the concurrent probe goroutines.
+- **Search and Releases are one route, not two.** The task file named
+  `web/app/releases/` as its own screen; a release id is only valid while its search is cached, so a
+  separate page would have to re-search and get different ids, or stash results and pretend. Recorded
+  as a deviation rather than built as a route that lies about where its data came from.
 
 ## Corrections made to the docs
 

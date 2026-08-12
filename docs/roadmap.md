@@ -10,7 +10,7 @@ until the last one.
 | **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** |
 | **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** |
 | 5 | Interface — Next.js screens, static export embedded via `embed.FS` | **specified** |
-| 6 | Cutover — run alongside, confirm parity, remove seven containers | back up the *arr configs first |
+| 6 | Cutover — run alongside, confirm parity, remove seven containers | **next** — back up the *arr configs first |
 
 ---
 
