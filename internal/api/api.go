@@ -59,6 +59,10 @@ type Server struct {
 	// than passed to New so that phase 1's constructor — and every call to it —
 	// keeps its shape.
 	searcher Searcher
+
+	// dispatcher is phase 3's downloads, attached with WithDownloads for the same
+	// reason.
+	dispatcher Dispatcher
 }
 
 // New builds a Server. matcher may be nil; log may be nil, in which case the

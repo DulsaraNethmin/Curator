@@ -6,9 +6,9 @@ until the last one.
 | Phase | What | Status |
 |---|---|---|
 | **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **done** |
-| **2** | Indexers — YTS, TPB, then 1337x through minter | **next** |
-| 3 | Downloads — qBittorrent client, magnet dispatch, state polling | |
-| 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | |
+| **2** | Indexers — YTS, TPB, then 1337x through minter | **done** |
+| **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** |
+| 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | **next** |
 | 5 | Interface — Next.js screens, static export embedded via `embed.FS` | |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | |
 
@@ -45,13 +45,19 @@ the other indexers rather than erroring.
 
 ## Phase 3 — Downloads
 
-qBittorrent Web API client, add-magnet tagged `curator`, state polling into the `downloads` table.
+qBittorrent Web API client, add-magnet under the `curator` category, state polling into the
+`downloads` table. Spec in [`phase-3.md`](phase-3.md); tasks T13–T16 in [`tasks/`](tasks/).
 
 **Done when** an API call puts a torrent into qBittorrent and progress is visible in the database.
 
+Scoping is by category rather than only a tag ([D13](decisions.md#d13--downloads-are-scoped-by-a-qbittorrent-category-with-its-own-save-path)),
+with its own save path so that phase 6's side-by-side run cannot have two importers writing one
+directory.
+
 > **No longer blocked.** `gluetun` and `qbittorrent` were down on an unresolved NordVPN
-> `AUTH_FAILED`; both have been running healthy since 2026-08-12. Confirm with `ssh pi 'docker ps'`
-> before starting this phase.
+> `AUTH_FAILED`; both have been running healthy since 2026-08-12 — confirmed again while specifying
+> this phase: qBittorrent 5.1.2, sharing gluetun's network namespace, reachable at `gluetun:8080`
+> and requiring authentication on every endpoint.
 
 ## Phase 4 — Import
 

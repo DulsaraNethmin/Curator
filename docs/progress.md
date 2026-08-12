@@ -3,7 +3,7 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-12 · **Phases 1 and 2 complete** · phase 3 next
+**Last updated:** 2026-08-12 · **Phases 1 and 2 complete** · phase 3 built, one verification outstanding
 
 ---
 
@@ -13,7 +13,7 @@ what is **done, verified, and outstanding**. Update it when a phase closes or a 
 |---|---|---|
 | **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **done** — verified 2026-08-12 |
 | **2** | Indexers — YTS, TPB, then 1337x through minter | **done** — verified 2026-08-12 |
-| **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **next** — unblocked (was NordVPN `AUTH_FAILED`) |
+| **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** — T13–T16 done; live dispatch pending qBittorrent credentials |
 | 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | |
 | 5 | Interface — Next.js screens embedded via `embed.FS` | |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | back up the *arr configs first |
@@ -192,6 +192,80 @@ half-written files; each copy was diffed against the origin before its owned fil
 - **apibay caps a response at 100 rows** with no pagination, so a broad title is truncated at source.
 
 ---
+
+## What phase 3 verified, and how
+
+Run 2026-08-12 against the running binary and the live indexers. **One check is
+outstanding** and is called out below rather than quietly omitted.
+
+| Check | Result |
+|---|---|
+| Unconfigured `POST /api/downloads` | `503` — `{"error":"downloads are not configured: set QBIT_USER and QBIT_PASS"}` |
+| Unconfigured startup | serves normally, logs the warning, and **starts no poller** |
+| `GET /api/downloads` empty | `[]`, never `null` |
+| Blank `title`, malformed body | `400`, and the dispatcher is never reached |
+| Unknown or expired `release_id` | `410` — "search again and pick from the new results" |
+| Real release, qBittorrent unreachable | **`502`**, and `GET /api/downloads` still returns **zero rows** |
+| Poller under a dead qBittorrent | 18 consecutive failed ticks logged, loop still running |
+| `SIGTERM` | `download poller stopped` then `shutting down`; port released |
+| Phase 1 and 2 endpoints | `/api/movies`, `/api/search` unaffected (77 releases for Dune) |
+| `go test -race ./...` | passes; 105 tests across the packages phase 3 touched |
+| `GOOS=linux GOARCH=arm64 go build ./...` | passes |
+
+The 502-with-zero-rows result is the one worth keeping. A real release was picked out of a live
+search, dispatched against a qBittorrent that was not there, and the downloads table stayed empty —
+the ordering guarantee observed end to end rather than only against a fake.
+
+**Outstanding: a dispatch against the real qBittorrent.** It needs the Web UI password for `nethmin`,
+which is not in `.env`. Everything up to the add is verified; what remains unproven is that
+qBittorrent accepts our magnet under the `curator` category, that the confirmation-by-hash finds it,
+and that the poller then moves a real download's progress. Until that runs, **phase 3 is built, not
+verified.**
+
+```bash
+# with QBIT_USER and QBIT_PASS in .env
+id=$(curl -s 'localhost:8090/api/search?title=Interstellar&year=2014' | jq -r '.releases[0].id')
+curl -s -X POST localhost:8090/api/downloads \
+  -d "{\"release_id\":\"$id\",\"title\":\"Interstellar\",\"year\":2014}" | jq
+curl -s localhost:8090/api/downloads | jq '.[] | {release_name, state, progress}'
+```
+
+---
+
+## Phase 3 tasks
+
+Specified 2026-08-12, no code yet. Spec in [`phase-3.md`](phase-3.md). The `downloads` table has
+existed since [T2](tasks/T2-store.md), so this phase needs **no migration**.
+
+| Task | Owns | Tests | Status |
+|---|---|---|---|
+| [T13](tasks/T13-qbit-client.md) qBittorrent client | `internal/qbit/` | 22 | done |
+| [T14](tasks/T14-downloads-store.md) downloads store | `internal/store/downloads.go` | 20 | done |
+| [T15](tasks/T15-download-poller.md) dispatch + poller | `internal/download/` | 16 | done |
+| [T16](tasks/T16-downloads-api.md) API | `internal/api/downloads.go`, config, wiring | 12 | done |
+
+**Measured on the Pi while specifying, so the implementation does not have to guess:**
+
+- **qBittorrent 5.1.2** (`lscr.io/linuxserver/qbittorrent`), Web API v2, sharing gluetun's network
+  namespace — it has no ports of its own, so it is `gluetun:8080` in Docker and `192.168.1.26:8080`
+  from a laptop.
+- **Authentication is required on every endpoint** — an unauthenticated call is `403`, not `401`.
+  The session is an `SID` cookie, and an expired session is indistinguishable from a wrong password.
+- **Mount is `/media/storage/media/downloads` → `/downloads`**, so every path qBittorrent reports is
+  in its own namespace. Phase 3 stores them verbatim; the translation belongs in phase 4's hardlink.
+- **Existing categories are `radarr` and `sonarr`.** Curator gets its own with its own save path
+  ([D13](decisions.md#d13--downloads-are-scoped-by-a-qbittorrent-category-with-its-own-save-path)).
+
+**Traps the tasks call out as tests rather than comments:**
+
+- **`torrents/add` returns `200 Ok.` whether or not it accepted the magnet**, and never returns a
+  hash. The add is confirmed by looking the torrent up by `indexer.InfoHash` afterwards — the same
+  class of lie as minter's 200-carrying-a-failure.
+- **Nothing is written to the database until qBittorrent confirms.** A row written first would claim
+  a download no client has heard of, every time qBittorrent is down.
+- **qBittorrent's hashes are lower-case and `indexer.InfoHash` is upper-case.** Unnormalised, every
+  lookup silently misses.
+- **`imported` stays phase 4's to set.** A completed torrent is a file, not a library entry.
 
 ## Corrections made to the docs
 

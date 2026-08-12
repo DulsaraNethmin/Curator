@@ -14,8 +14,10 @@ import (
 
 	"github.com/DulsaraNethmin/curator/internal/api"
 	"github.com/DulsaraNethmin/curator/internal/config"
+	"github.com/DulsaraNethmin/curator/internal/download"
 	"github.com/DulsaraNethmin/curator/internal/indexer"
 	"github.com/DulsaraNethmin/curator/internal/library"
+	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
 )
@@ -82,12 +84,35 @@ func run() error {
 		cfg.SearchCacheTTL,
 	)
 
+	// A nil torrent client is a supported state, exactly like a nil Matcher: with
+	// no credentials the library still scans and search still works, and only
+	// dispatch reports itself unconfigured. Declared as the interface so the nil
+	// stays a nil interface rather than one holding a nil pointer.
+	var torrents download.TorrentClient
+	if cfg.DownloadsConfigured() {
+		torrents = qbit.New(cfg.QBitURL, cfg.QBitUser, cfg.QBitPass, indexerHTTP)
+	} else {
+		log.Warn("QBIT_USER is unset: search works but nothing can be downloaded")
+	}
+	downloads := download.NewService(torrents, db, aggregator, cfg.QBitCategory, log)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	apiSrv := api.New(db, api.ScannerFunc(library.Scan), matcher, cfg.LibraryMovies, log).
-		WithSearch(aggregator)
+		WithSearch(aggregator).
+		WithDownloads(downloads)
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
+	apiSrv.RegisterDownloads(mux)
+
+	// The poller takes the same context that shuts the server down, so it stops on
+	// SIGTERM with everything else and nothing outlives main. It is not started at
+	// all when downloads are unconfigured: a loop logging an authentication
+	// failure every ten seconds for ever is worse than no loop.
+	if torrents != nil {
+		poller := download.NewPoller(torrents, db, cfg.QBitCategory, cfg.DownloadPollInterval, log)
+		go poller.Run(ctx)
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Addr(),

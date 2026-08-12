@@ -7,6 +7,14 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
+	// Cleared explicitly so the test still means something in a shell that has
+	// sourced .env — where QBIT_USER really is set, and where an inherited value
+	// would otherwise make this assert the developer's machine, not the defaults.
+	t.Setenv("QBIT_URL", "")
+	t.Setenv("QBIT_USER", "")
+	t.Setenv("QBIT_CATEGORY", "")
+	t.Setenv("DOWNLOAD_POLL_INTERVAL", "")
+
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -35,6 +43,36 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.SearchCacheTTL != time.Hour {
 		t.Errorf("SearchCacheTTL = %v, want 1h", cfg.SearchCacheTTL)
 	}
+	if cfg.QBitURL != "http://127.0.0.1:8080" {
+		t.Errorf("QBitURL = %q", cfg.QBitURL)
+	}
+	if cfg.QBitCategory != "curator" {
+		t.Errorf("QBitCategory = %q, want curator", cfg.QBitCategory)
+	}
+	if cfg.DownloadPollInterval != 10*time.Second {
+		t.Errorf("DownloadPollInterval = %v, want 10s", cfg.DownloadPollInterval)
+	}
+	// No credentials is a supported state, not a startup failure.
+	if cfg.DownloadsConfigured() {
+		t.Error("DownloadsConfigured() = true with no QBIT_USER")
+	}
+}
+
+// Downloads are unconfigured without a user, exactly as metadata is without a
+// TMDB key: the rest of the service still works.
+func TestDownloadsConfigured(t *testing.T) {
+	t.Setenv("QBIT_USER", "nethmin")
+	t.Setenv("QBIT_PASS", "secret")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.DownloadsConfigured() {
+		t.Error("DownloadsConfigured() = false with a user set")
+	}
+	if cfg.QBitUser != "nethmin" || cfg.QBitPass != "secret" {
+		t.Errorf("credentials not read: %q/%q", cfg.QBitUser, cfg.QBitPass)
+	}
 }
 
 func TestLoadReadsEnvironment(t *testing.T) {
@@ -45,6 +83,9 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("MINTER_URL", "http://minter:8191")
 	t.Setenv("SEARCH_TIMEOUT", "45s")
 	t.Setenv("SEARCH_CACHE_TTL", "15m")
+	t.Setenv("QBIT_URL", "http://gluetun:8080")
+	t.Setenv("QBIT_CATEGORY", "curator-test")
+	t.Setenv("DOWNLOAD_POLL_INTERVAL", "5s")
 
 	cfg, err := Load()
 	if err != nil {
@@ -58,6 +99,15 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	}
 	if cfg.SearchCacheTTL != 15*time.Minute {
 		t.Errorf("SearchCacheTTL = %v, want 15m", cfg.SearchCacheTTL)
+	}
+	if cfg.QBitURL != "http://gluetun:8080" {
+		t.Errorf("QBitURL = %q", cfg.QBitURL)
+	}
+	if cfg.QBitCategory != "curator-test" {
+		t.Errorf("QBitCategory = %q", cfg.QBitCategory)
+	}
+	if cfg.DownloadPollInterval != 5*time.Second {
+		t.Errorf("DownloadPollInterval = %v, want 5s", cfg.DownloadPollInterval)
 	}
 	if cfg.Port != 9999 {
 		t.Errorf("Port = %d, want 9999", cfg.Port)
@@ -106,6 +156,9 @@ func TestLoadInvalid(t *testing.T) {
 		// A zero TTL would silently reinstate the browser launch on every repeat
 		// search, which is the one cost phase 2 exists to remove.
 		{"zero cache ttl", "SEARCH_CACHE_TTL", "0"},
+		{"non-duration poll interval", "DOWNLOAD_POLL_INTERVAL", "ten seconds"},
+		// A zero interval would spin the poller as fast as the CPU allows.
+		{"zero poll interval", "DOWNLOAD_POLL_INTERVAL", "0s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

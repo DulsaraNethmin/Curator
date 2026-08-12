@@ -23,6 +23,24 @@ type Config struct {
 	MinterURL      string
 	SearchTimeout  time.Duration
 	SearchCacheTTL time.Duration
+
+	// Phase 3: downloads.
+	QBitURL              string
+	QBitUser             string
+	QBitPass             string
+	QBitCategory         string
+	DownloadPollInterval time.Duration
+}
+
+// DownloadsConfigured reports whether qBittorrent has credentials to work with.
+//
+// An unset QBIT_USER is a supported state, not a broken one — the same posture as
+// an unset TMDB_API_KEY. The library still scans and search still works; only
+// dispatch reports itself unconfigured, and the poller is never started. A service
+// that refuses to boot because one of five integrations is unconfigured is worse
+// at being partially useful.
+func (c *Config) DownloadsConfigured() bool {
+	return c.QBitURL != "" && c.QBitUser != ""
 }
 
 // Defaults. LibraryMovies points at the fixture so `go run ./cmd/curator` does
@@ -49,6 +67,22 @@ const (
 	// longer than the seconds a manual pick takes, which is what makes a repeat
 	// search free without serving anything meaningfully stale.
 	defaultSearchCacheTTL = time.Hour
+
+	// defaultQBitURL is a laptop default. On the Pi, qBittorrent shares gluetun's
+	// network namespace and has no ports of its own, so it is reached at
+	// http://gluetun:8080 from inside Docker and 192.168.1.26:8080 from outside.
+	defaultQBitURL = "http://127.0.0.1:8080"
+
+	// defaultQBitCategory scopes everything curator adds. It is a category rather
+	// than only a tag because a category also sets the save path and gives
+	// torrents/info a filter — which is what makes phase 4's importer incapable of
+	// touching a torrent somebody added by hand. See D13.
+	defaultQBitCategory = "curator"
+
+	// defaultDownloadPollInterval reconciles qBittorrent into the downloads table.
+	// One request per tick covers every download at once, so this is cheap; ten
+	// seconds is well inside what a human watching a progress bar expects.
+	defaultDownloadPollInterval = 10 * time.Second
 )
 
 // Load reads the configuration from the environment, applying defaults for
@@ -64,6 +98,10 @@ func Load() (*Config, error) {
 		LibraryMovies: env("LIBRARY_MOVIES", defaultLibraryMovies),
 		TMDBAPIKey:    os.Getenv("TMDB_API_KEY"),
 		MinterURL:     env("MINTER_URL", defaultMinterURL),
+		QBitURL:       env("QBIT_URL", defaultQBitURL),
+		QBitUser:      os.Getenv("QBIT_USER"),
+		QBitPass:      os.Getenv("QBIT_PASS"),
+		QBitCategory:  env("QBIT_CATEGORY", defaultQBitCategory),
 	}
 
 	if raw := os.Getenv("PORT"); raw != "" {
@@ -88,6 +126,10 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.SearchCacheTTL, err = duration("SEARCH_CACHE_TTL", defaultSearchCacheTTL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.DownloadPollInterval, err = duration("DOWNLOAD_POLL_INTERVAL", defaultDownloadPollInterval)
 	if err != nil {
 		return nil, err
 	}

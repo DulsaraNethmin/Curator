@@ -216,3 +216,29 @@ Two further measurements are recorded in `yts.go` because they are cheap to lose
 rediscover: the **API host is not behind Cloudflare** while the `yts.gg` *site* is, so YTS needs no
 minter; and the API **clamps `seeds` at 100**, so YTS's contribution to a seeder-ranked list is a
 plateau rather than a spread.
+
+---
+
+## D13 — Downloads are scoped by a qBittorrent category with its own save path
+
+**Status:** decided, from the Pi's live config · **Sharpens:** `architecture.md`'s "tag `curator`"
+
+Everything curator adds goes in the category **`curator`**, saving to
+`/downloads/complete/curator`. The tag `curator` is applied too, on the same request, because it
+costs nothing and makes ownership visible in the Web UI.
+
+A tag alone would not do. A category *also* sets the save path, and `torrents/info?category=curator`
+is the filter that makes every later poll — and phase 4's importer — incapable of touching a torrent
+somebody added by hand. "The importer never touches torrents added by hand" has to be enforced by
+something, and this is the something.
+
+The save path is deliberately **not** radarr's `/downloads/complete/movies` (measured on the Pi
+2026-08-12, alongside `sonarr` → `/downloads/complete/tv`). Phase 6 runs both stacks side by side on
+purpose, and two importers writing one directory is how a duplicate download quietly overwrites a
+good file. A separate directory is still on the same ext4 filesystem, so
+[D8](#d8--import-by-hardlink)'s hardlinks are unaffected.
+
+One consequence to carry into phase 4: qBittorrent reports content paths in **its own namespace** —
+`/downloads/complete/curator/...`, because its mount is host `/media/storage/media/downloads` →
+container `/downloads`. Phase 3 stores what it is told, verbatim, and translates nothing. The
+translation belongs where the hardlink is made, not buried in a client that only reads.
