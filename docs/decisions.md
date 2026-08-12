@@ -306,3 +306,65 @@ The refresh is fired **once per tick, not once per import**, and only when somet
 imported. `POST /Library/Refresh` is a whole-library scan; asking for one per file in a batch of six
 would queue six scans of the same library, and asking for one every ten seconds for ever would be
 worse.
+
+---
+
+## D16 — The UI is embedded with `all:`, and a committed placeholder keeps `go build` honest
+
+**Status:** decided · **Concedes:** "one command to ship", deliberately and in one place only
+
+Phase 5 puts a Next.js static export inside the binary. Three things about that are load-bearing and
+none of them is obvious.
+
+**`//go:embed all:dist`, not `//go:embed dist`.** `go:embed` excludes files and directories whose
+names begin with `.` or `_` unless the pattern carries the `all:` prefix. Next.js puts **every**
+script and stylesheet under **`_next/`**. Without `all:`, the binary compiles, starts, serves
+`index.html`, and every asset on the page 404s — a blank screen with no error anywhere in the Go. It
+is the most expensive one-word omission available in this phase, so it is a test: the embedded
+filesystem is walked and asserted to contain `_next/`.
+
+**A placeholder `dist/index.html` is committed.** `//go:embed` is a *compile-time* directive: if the
+directory is missing, the package does not build. Since the real export is generated and
+gitignored, a fresh clone would otherwise fail `go build ./...` — and so would every commit under
+`git bisect`, which this project verifies per commit precisely so that bisect works. The placeholder
+is a real page that says the UI has not been built and gives the command, so the failure mode is a
+legible page rather than a compile error or a white screen.
+
+**The build output is not committed.** Minified bundles in `git log` make every UI change an
+unreviewable diff and every merge a conflict. The cost is that shipping is now two commands rather
+than one:
+
+```bash
+npm --prefix web run build && GOOS=linux GOARCH=arm64 go build ./...
+```
+
+That is a genuine regression against "deploying to the Pi is a single command"
+([D4](#d4--pure-go-sqlite) bought that, and it still holds for the Go half). It is accepted because
+the alternative is worse in a way that lasts longer, and it is confined to one documented line.
+`go build ./...` on its own still succeeds, still passes every test, and produces a binary whose API
+is complete — only the UI is the placeholder.
+
+---
+
+## D17 — Settings is read-only, and the `settings` table stays unused
+
+**Status:** decided · **Resolves:** a table created in phase 1 and never touched
+
+The Settings screen reports what is configured and what is reachable. It writes nothing, and the
+`settings` table created by [T2](tasks/T2-store.md) remains unused — its first legitimate use is
+still ahead of it, and inventing one for a screen that does not need it would be worse than leaving
+it empty.
+
+The reason is the threat model, not laziness. Authentication is
+[out of scope](roadmap.md#deliberately-out-of-scope) — curator is LAN-only, the same posture as the
+*arr stack it replaces. That is defensible for a page that *displays* a library. It stops being
+defensible for a page that lets anyone on the network read back `QBIT_PASS`, `TMDB_API_KEY` and
+`JELLYFIN_API_KEY`, or change where the importer writes.
+
+So **no secret is ever sent to the browser**, not even masked. `GET /api/settings` answers
+`configured: true|false` per integration and never the value, which is the only fact the UI actually
+needs — every screen's real question is "can I press this button", not "what is the password".
+
+Configuration stays in the environment, read once at startup
+([CLAUDE.md](../CLAUDE.md#conventions)). One source of truth beats a database layer that shadows it,
+disagrees with it after a restart, and has to be reconciled.

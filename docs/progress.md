@@ -3,8 +3,8 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-12 · **Phases 1 and 2 complete** · phase 3 built, one verification
-outstanding · **phase 4 built and verified locally**
+**Last updated:** 2026-08-13 · **Phases 1 and 2 complete** · phase 3 built, one verification
+outstanding · phase 4 built and verified locally · **phase 5 specified**
 
 ---
 
@@ -16,7 +16,7 @@ outstanding · **phase 4 built and verified locally**
 | **2** | Indexers — YTS, TPB, then 1337x through minter | **done** — verified 2026-08-12 |
 | **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** — T13–T16 done; live dispatch pending qBittorrent credentials |
 | **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** — T17–T21 done, verified locally 2026-08-12; never run against the Pi |
-| 5 | Interface — Next.js screens embedded via `embed.FS` | |
+| 5 | Interface — Next.js screens embedded via `embed.FS` | **specified** — T22–T26 |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | back up the *arr configs first |
 
 ---
@@ -380,6 +380,47 @@ count-2 above and the `df` half of the roadmap's "done when" defers to the Pi at
 `PORT` and nothing else. The live dispatch block in [`phase-3.md`](phase-3.md#verification) is
 therefore still unrun and **phase 3 remains built, not verified**. Nothing was added to the `radarr`
 or `sonarr` categories and nothing was deleted.
+
+## Phase 5 tasks
+
+Specified 2026-08-13, no code yet. Spec in [`phase-5.md`](phase-5.md). Phases 1–4 are merged to
+`main` and pushed.
+
+| Task | Owns | Status |
+|---|---|---|
+| [T22](tasks/T22-embed-ui.md) embed and serve | `internal/web/`, the mount in `cmd/curator` | |
+| [T23](tasks/T23-settings-api.md) settings endpoint | `internal/api/settings.go` | |
+| [T24](tasks/T24-ui-shell.md) shell and build wiring | `web/` scaffold, API client, nav | |
+| [T25](tasks/T25-search-screens.md) Search → Releases | `web/app/search`, `web/app/releases` | |
+| [T26](tasks/T26-library-screens.md) Library, Activity, Settings | the other three routes | |
+
+Two decisions were settled while specifying:
+[D16](decisions.md#d16--the-ui-is-embedded-with-all-and-a-committed-placeholder-keeps-go-build-honest)
+(`all:` on the embed, a committed placeholder, and the build output stays out of git) and
+[D17](decisions.md#d17--settings-is-read-only-and-the-settings-table-stays-unused) (Settings is
+read-only and no secret reaches the browser).
+
+**Two choices confirmed rather than assumed.** Next.js `output: 'export'` was kept as the roadmap
+planned it, over the lighter alternatives, and the Settings screen is read-only status rather than an
+editor. The `settings` table created in [T2](tasks/T2-store.md) has still **never been read or
+written** by anything, and stays that way.
+
+### What phase 5 costs, stated up front
+
+`GOOS=linux GOARCH=arm64 go build ./...` stops being the whole build: `npm --prefix web run build`
+has to run first, or the binary carries the placeholder page. That is a real regression against
+phase 1's one-command deploy and it is accepted in exactly one documented place
+([D16](decisions.md#d16--the-ui-is-embedded-with-all-and-a-committed-placeholder-keeps-go-build-honest)).
+`go build ./...` alone still compiles, still passes every test, and still serves a complete API.
+
+### Measured while specifying
+
+- **Node v22.21.1, npm 11.12.1** on this laptop. Nothing on the Pi needs either — the binary ships
+  built.
+- **Nine endpoints exist**, and the five screens need exactly one more: `GET /api/settings`.
+  Everything else is already there and was verified against live services in phases 1–4.
+- **`.gitignore` already carried `/web/out/`** from phase 1, which is now the wrong path: `go:embed`
+  cannot reach outside its own package, so the export lands in `internal/web/dist/` instead.
 
 ## Corrections made to the docs
 
