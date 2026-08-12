@@ -474,6 +474,41 @@ func TestAggregatorResolvesThroughTheCache(t *testing.T) {
 	}
 }
 
+// Release lets a caller recording a download read the indexer and release name
+// off the server's own copy instead of accepting them from the client.
+func TestAggregatorReleaseByID(t *testing.T) {
+	a := NewAggregator([]Indexer{
+		&aggStub{name: "yts", releases: []Release{aggRelease("yts", "Interstellar.1080p", 10, aggMagnet("a"))}},
+	}, 2*time.Second, time.Hour)
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	a.now = func() time.Time { return now }
+
+	got, err := a.SearchMovie(context.Background(), "Interstellar", 2014)
+	if err != nil {
+		t.Fatalf("SearchMovie: %v", err)
+	}
+	id := got.Releases[0].ID
+
+	found, ok := a.Release(id)
+	if !ok {
+		t.Fatal("Release did not find an id the search had just issued")
+	}
+	if found.Title != "Interstellar.1080p" || found.Indexers[0] != "yts" {
+		t.Errorf("release = %+v, want the searched one with its indexer", found)
+	}
+
+	if _, ok := a.Release("deadbeefdeadbeef"); ok {
+		t.Error("Release found an id that was never issued")
+	}
+
+	// It expires with the search that issued it, so a stale id cannot be recorded
+	// as a fresh download.
+	now = now.Add(time.Hour + time.Minute)
+	if _, ok := a.Release(id); ok {
+		t.Error("Release returned an id whose search has expired")
+	}
+}
+
 func TestAggregatorUnknownIDIsTheSentinel(t *testing.T) {
 	a := newAggTest(t, 2*time.Second, &aggStub{name: "yts"})
 	if _, err := a.ResolveMagnet(context.Background(), "deadbeefdeadbeef"); !errors.Is(err, ErrReleaseExpired) {

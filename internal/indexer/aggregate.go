@@ -219,6 +219,25 @@ func (a *Aggregator) issue(found []Found) {
 	}
 }
 
+// Release returns the release a stamped id refers to, if its search has not
+// expired.
+//
+// It exists so a caller recording a download can read the indexer and release
+// name off the server's own copy instead of accepting them from the client. That
+// is the same reasoning as D10: the client already had to be told the id, and
+// letting it hand back facts we already hold is how a request starts describing
+// itself.
+func (a *Aggregator) Release(id string) (Found, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	e, ok := a.byID[id]
+	if !ok || !e.expires.After(a.now()) {
+		return Found{}, false
+	}
+	return e.release, true
+}
+
 // ResolveMagnet returns the magnet for a stamped id.
 //
 // YTS and TPB releases already carry theirs and cost nothing. A 1337x release is
