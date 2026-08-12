@@ -108,8 +108,15 @@ func TestDestFolderRejectsATitleThatIsNotAName(t *testing.T) {
 	}
 
 	for name, title := range cases {
-		if got, err := DestFolder(title, 2014); err == nil {
+		got, err := DestFolder(title, 2014)
+		if err == nil {
 			t.Errorf("%s: DestFolder(%q, 2014) = %q, want an error", name, title, got)
+			continue
+		}
+		// The API turns this into a 422: it is the client's title, and no amount
+		// of retrying will fix it.
+		if !errors.Is(err, ErrBadTitle) {
+			t.Errorf("%s: err = %v, want ErrBadTitle", name, err)
 		}
 	}
 }
@@ -118,8 +125,13 @@ func TestDestFolderRejectsATitleThatIsNotAName(t *testing.T) {
 // cannot read back — ParseFolder accepts exactly four.
 func TestDestFolderRejectsAYearThatWouldNotParseBack(t *testing.T) {
 	for _, year := range []int{-1, 0, 1, 999, 10000, 99999} {
-		if got, err := DestFolder("Interstellar", year); err == nil {
+		got, err := DestFolder("Interstellar", year)
+		if err == nil {
 			t.Errorf("DestFolder(_, %d) = %q, want an error", year, got)
+			continue
+		}
+		if !errors.Is(err, ErrBadTitle) {
+			t.Errorf("year %d: err = %v, want ErrBadTitle", year, err)
 		}
 	}
 }

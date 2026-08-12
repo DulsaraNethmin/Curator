@@ -20,6 +20,11 @@ import (
 type Dispatcher interface {
 	Dispatch(ctx context.Context, req download.Request) (store.Download, error)
 	Downloads(ctx context.Context) ([]store.Download, error)
+
+	// Import is phase 4's, on this interface rather than a second one because it
+	// is the same service, reached from the same handler set, and a second
+	// interface over one implementation would only be more names.
+	Import(ctx context.Context, hash string) (store.Movie, error)
 }
 
 // WithDownloads attaches release dispatch and returns the server.
@@ -28,10 +33,12 @@ func (s *Server) WithDownloads(d Dispatcher) *Server {
 	return s
 }
 
-// RegisterDownloads mounts phase 3's routes.
+// RegisterDownloads mounts phase 3's routes, and phase 4's manual import, which
+// belongs here because it is a download's own verb rather than a movie's.
 func (s *Server) RegisterDownloads(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/downloads", s.handleDispatch)
 	mux.HandleFunc("GET /api/downloads", s.handleListDownloads)
+	mux.HandleFunc("POST /api/downloads/{hash}/import", s.handleImport)
 }
 
 // dispatchRequest is the body of POST /api/downloads.

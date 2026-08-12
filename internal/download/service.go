@@ -63,6 +63,21 @@ var ErrUnconfigured = errors.New("downloads are not configured: set QBIT_USER an
 // other way.
 var ErrClient = errors.New("qbittorrent")
 
+// ErrNotCompleted reports that an import was asked for a torrent that is still
+// downloading. It is separated so the API can answer 409 — the request is
+// well-formed and will be fine later — rather than 500 or a silent no-op.
+var ErrNotCompleted = errors.New("the torrent has not finished downloading")
+
+// ManualImporter is phase 4's hardlink step as a synchronous caller uses it.
+//
+// It is a different, narrower interface from the Poller's Importer on purpose.
+// A tick must not be able to fail, so its methods return nothing; somebody who
+// asked for an import over HTTP and is waiting for the answer deserves the
+// reason it did not work. The same *importer.Importer satisfies both.
+type ManualImporter interface {
+	Import(ctx context.Context, t qbit.Torrent, d store.Download) (store.Movie, error)
+}
+
 // Request is one dispatch: the release to grab, and the film it is for.
 //
 // Title and Year come from the caller because a release id says nothing about
@@ -84,6 +99,17 @@ type Service struct {
 	category string
 	log      *slog.Logger
 	now      func() time.Time
+
+	// importer is phase 4's, nil until attached — the same nilable-field shape
+	// as the poller's, and for the same reason: phase 3's constructor and its
+	// tests keep their shape.
+	importer ManualImporter
+}
+
+// WithImporter attaches the importer and returns the service.
+func (s *Service) WithImporter(im ManualImporter) *Service {
+	s.importer = im
+	return s
 }
 
 // NewService builds a Service. A nil client means downloads are unconfigured;
@@ -181,6 +207,48 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	s.log.Info("dispatched", "release", release.Title, "hash", hash,
 		"indexer", saved.Indexer, "movie_id", movie.ID, "category", s.category)
 	return saved, nil
+}
+
+// Import hardlinks one already-completed download into the library now, without
+// waiting for the next poll tick.
+//
+// It exists for the case a tick cannot serve: an import that failed for a reason
+// since fixed — a library root that was not mounted, a disk that was full —
+// where waiting up to DOWNLOAD_POLL_INTERVAL to learn whether the fix worked is
+// worse than asking. It runs the identical code path; there is no second
+// importer and no second set of rules.
+//
+// The torrent is fetched fresh rather than taken from the caller, because
+// content_path is qBittorrent's to report and a client has no business naming a
+// path curator will hardlink from.
+func (s *Service) Import(ctx context.Context, hash string) (store.Movie, error) {
+	if s.client == nil || s.importer == nil {
+		return store.Movie{}, ErrUnconfigured
+	}
+
+	row, err := s.store.GetDownloadByHash(ctx, hash)
+	if err != nil {
+		return store.Movie{}, fmt.Errorf("import %s: %w", hash, err)
+	}
+
+	torrent, err := s.client.TorrentByHash(ctx, row.TorrentHash)
+	if err != nil {
+		return store.Movie{}, fmt.Errorf("import %s: %w: %w", hash, ErrClient, err)
+	}
+	if torrent == nil {
+		// The row is ours and the torrent is not there: somebody removed it from
+		// qBittorrent. That is qBittorrent's business (D8), and there is nothing
+		// here to import from.
+		return store.Movie{}, fmt.Errorf(
+			"import %s: %w has no torrent with that hash, so there is nothing to import from", hash, ErrClient)
+	}
+
+	if state := qbit.MapState(torrent.State); state != store.DownloadCompleted {
+		return store.Movie{}, fmt.Errorf(
+			"import %s: %w — qBittorrent reports %q, which is %q", hash, ErrNotCompleted, torrent.State, state)
+	}
+
+	return s.importer.Import(ctx, *torrent, row)
 }
 
 // Downloads lists every recorded download, newest first.

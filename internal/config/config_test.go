@@ -4,6 +4,11 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	// Test-only, and one-way: internal/config imports nothing of curator's, so
+	// the shared "/downloads" default cannot drift between the two places that
+	// have to agree on it.
+	"github.com/DulsaraNethmin/curator/internal/importer"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -167,5 +172,69 @@ func TestLoadInvalid(t *testing.T) {
 				t.Fatalf("%s=%q: want error, got nil", tt.key, tt.value)
 			}
 		})
+	}
+}
+
+// Phase 4's four. DOWNLOADS_PATH is the odd one: it has no default, and empty
+// is a meaningful value rather than an unset one.
+func TestImportDefaults(t *testing.T) {
+	t.Setenv("DOWNLOADS_PATH", "")
+	t.Setenv("QBIT_DOWNLOADS_PATH", "")
+	t.Setenv("JELLYFIN_URL", "")
+	t.Setenv("JELLYFIN_API_KEY", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DownloadsPath != "" {
+		t.Errorf("DownloadsPath = %q, want empty — empty means use content_path verbatim, which is the laptop case", cfg.DownloadsPath)
+	}
+	if cfg.QBitDownloadsPath != defaultQBitDownloadsPath {
+		t.Errorf("QBitDownloadsPath = %q, want %q", cfg.QBitDownloadsPath, defaultQBitDownloadsPath)
+	}
+	if cfg.JellyfinURL != defaultJellyfinURL {
+		t.Errorf("JellyfinURL = %q, want %q", cfg.JellyfinURL, defaultJellyfinURL)
+	}
+	if cfg.JellyfinAPIKey != "" {
+		t.Errorf("JellyfinAPIKey = %q, want empty", cfg.JellyfinAPIKey)
+	}
+	// The state curator ships in today: the Pi's Jellyfin has no API key yet.
+	if cfg.JellyfinConfigured() {
+		t.Error("JellyfinConfigured() = true with no key")
+	}
+}
+
+// The default has to agree with the constant the importer falls back to, or a
+// deployment that sets DOWNLOADS_PATH and not QBIT_DOWNLOADS_PATH would
+// translate against a different root than it reads about.
+func TestQBitDownloadsPathDefaultMatchesTheImporter(t *testing.T) {
+	if defaultQBitDownloadsPath != importer.DefaultQBitDownloads {
+		t.Errorf("config default %q != importer.DefaultQBitDownloads %q",
+			defaultQBitDownloadsPath, importer.DefaultQBitDownloads)
+	}
+}
+
+func TestImportReadsEnvironment(t *testing.T) {
+	t.Setenv("DOWNLOADS_PATH", "/media/storage/media/downloads")
+	t.Setenv("QBIT_DOWNLOADS_PATH", "/data/torrents")
+	t.Setenv("JELLYFIN_URL", "http://jellyfin:8096")
+	t.Setenv("JELLYFIN_API_KEY", "abc123")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DownloadsPath != "/media/storage/media/downloads" {
+		t.Errorf("DownloadsPath = %q", cfg.DownloadsPath)
+	}
+	if cfg.QBitDownloadsPath != "/data/torrents" {
+		t.Errorf("QBitDownloadsPath = %q", cfg.QBitDownloadsPath)
+	}
+	if cfg.JellyfinURL != "http://jellyfin:8096" {
+		t.Errorf("JellyfinURL = %q", cfg.JellyfinURL)
+	}
+	if !cfg.JellyfinConfigured() {
+		t.Error("JellyfinConfigured() = false with a URL and a key")
 	}
 }
