@@ -22,6 +22,7 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
+	"github.com/DulsaraNethmin/curator/internal/web"
 )
 
 // shutdownTimeout bounds the wait for in-flight requests. A scan holds the
@@ -126,6 +127,17 @@ func run() error {
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
 	apiSrv.RegisterDownloads(mux)
+
+	// The UI is mounted last and at "/", so it can never shadow an API pattern.
+	// Go 1.22 routing prefers the more specific pattern anyway, but the order is
+	// worth being deliberate about rather than lucky.
+	mux.Handle("/", web.Handler())
+	if web.IsPlaceholder() {
+		// Said once, loudly. Silence here is how somebody ships a binary that
+		// serves a "run npm" page to the household (docs/decisions.md D16).
+		log.Warn("the UI has not been built into this binary: run `npm --prefix web run build` " +
+			"before `go build ./...`; the API is complete and working")
+	}
 
 	// The poller takes the same context that shuts the server down, so it stops on
 	// SIGTERM with everything else and nothing outlives main. It is not started at
