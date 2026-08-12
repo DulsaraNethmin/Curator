@@ -8,8 +8,8 @@ until the last one.
 | **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **done** |
 | **2** | Indexers — YTS, TPB, then 1337x through minter | **done** |
 | **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** |
-| 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | **specified** |
-| 5 | Interface — Next.js screens, static export embedded via `embed.FS` | |
+| **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** |
+| 5 | Interface — Next.js screens, static export embedded via `embed.FS` | **next** |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | |
 
 ---
