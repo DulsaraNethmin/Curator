@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is the whole of curator's configuration. It is read once, at startup,
@@ -17,6 +18,11 @@ type Config struct {
 	LibraryMovies string
 	TMDBAPIKey    string
 	LogLevel      slog.Level
+
+	// Phase 2: indexers.
+	MinterURL      string
+	SearchTimeout  time.Duration
+	SearchCacheTTL time.Duration
 }
 
 // Defaults. LibraryMovies points at the fixture so `go run ./cmd/curator` does
@@ -26,6 +32,23 @@ const (
 	defaultDBPath        = "./curator.db"
 	defaultLibraryMovies = "./testdata/library/movies"
 	defaultLogLevel      = "info"
+
+	// defaultMinterURL is the literal IPv4 address, not "localhost": minter binds
+	// IPv4 only, so "localhost" resolves to ::1 first and the connection fails
+	// while 127.0.0.1 works. Inside Docker the name "minter" resolves correctly
+	// and the point is moot — this default is for running on a laptop, which is
+	// where it gets typed most.
+	defaultMinterURL = "http://127.0.0.1:8191"
+
+	// defaultSearchTimeout bounds a whole search. 1337x through minter measures
+	// ~9-15 s because a real browser has to clear the challenge, so this has to
+	// leave room for that; a straggler past it is omitted, not waited for.
+	defaultSearchTimeout = 30 * time.Second
+
+	// defaultSearchCacheTTL is how long 1337x results are reused. An hour is far
+	// longer than the seconds a manual pick takes, which is what makes a repeat
+	// search free without serving anything meaningfully stale.
+	defaultSearchCacheTTL = time.Hour
 )
 
 // Load reads the configuration from the environment, applying defaults for
@@ -40,6 +63,7 @@ func Load() (*Config, error) {
 		DBPath:        env("DB_PATH", defaultDBPath),
 		LibraryMovies: env("LIBRARY_MOVIES", defaultLibraryMovies),
 		TMDBAPIKey:    os.Getenv("TMDB_API_KEY"),
+		MinterURL:     env("MINTER_URL", defaultMinterURL),
 	}
 
 	if raw := os.Getenv("PORT"); raw != "" {
@@ -59,6 +83,15 @@ func Load() (*Config, error) {
 	}
 	cfg.LogLevel = level
 
+	cfg.SearchTimeout, err = duration("SEARCH_TIMEOUT", defaultSearchTimeout)
+	if err != nil {
+		return nil, err
+	}
+	cfg.SearchCacheTTL, err = duration("SEARCH_CACHE_TTL", defaultSearchCacheTTL)
+	if err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
 }
 
@@ -72,6 +105,25 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// duration reads a Go duration string ("30s", "1h"). A non-positive value is an
+// error rather than a silent disable: a zero SEARCH_TIMEOUT would cancel every
+// search the instant it started, and a zero TTL would quietly reinstate the
+// browser launch on every repeat search that the cache exists to prevent.
+func duration(key string, fallback time.Duration) (time.Duration, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: not a duration (want e.g. \"30s\", \"1h\")", key, raw)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s %q: must be positive", key, raw)
+	}
+	return d, nil
 }
 
 func parseLevel(raw string) (slog.Level, error) {

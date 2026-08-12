@@ -3,7 +3,7 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-12 · **Phase 1 complete** · phase 2 specified, not started
+**Last updated:** 2026-08-12 · **Phases 1 and 2 complete** · phase 3 next
 
 ---
 
@@ -12,8 +12,8 @@ what is **done, verified, and outstanding**. Update it when a phase closes or a 
 | Phase | What | Status |
 |---|---|---|
 | **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **done** — verified 2026-08-12 |
-| **2** | Indexers — YTS, TPB, then 1337x through minter | **next** — [spec](phase-2.md) and tasks written, no code yet |
-| 3 | Downloads — qBittorrent client, magnet dispatch, state polling | unblocked (was NordVPN `AUTH_FAILED`) |
+| **2** | Indexers — YTS, TPB, then 1337x through minter | **done** — verified 2026-08-12 |
+| **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **next** — unblocked (was NordVPN `AUTH_FAILED`) |
 | 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | |
 | 5 | Interface — Next.js screens embedded via `embed.FS` | |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | back up the *arr configs first |
@@ -80,6 +80,52 @@ curl -s -X POST localhost:8090/api/scan | jq '.added'             # 0
 
 ---
 
+## What phase 2 verified, and how
+
+Run 2026-08-12 against the live indexers and the running minter, on port 8095.
+
+| Check | Result |
+|---|---|
+| `GET /api/search?title=Interstellar&year=2014` | `200`, 111 releases, all three indexers reporting: yts 12→5, tpb 88, 1337x 20 |
+| Ranking | seeders descending — 1386 · 994 · 616 · 528 …, and `PROPER.IMAX.1080p.UHD` correctly ranked as **1080p**, not 2160p |
+| Dedup on info hash | 113 rows from three indexers → 111, two collapsed to `["yts","tpb"]` keeping the higher seeder count |
+| First search | 13.4 s — a browser cleared a real Cloudflare challenge |
+| Second search, same hour | **0.73 s**, no browser. `interstellar%20` (case + trailing space) also hits the same entry |
+| Lazy magnet, 1337x | `magnet: null` on all 20 rows until picked; resolving one took 13.2 s and returned a 40-char hash with 16 trackers |
+| Lazy magnet, YTS/TPB | **0.010 s** — already carried, no request made |
+| Expired/unknown id | `410` with `{"error": "release … is no longer available: search again"}` |
+| minter unreachable | `200`, 57 releases from the healthy two, 1337x `ok:false` carrying `connection refused` |
+| `?quality=2160p` and `?quality=4k` | both 19 releases, all `2160p` |
+| Missing/blank `title`, non-numeric `year` | `400` with the phase 1 `{"error": "..."}` shape |
+| Phase 1 endpoints | `/healthz`, `/api/movies`, `/api/movies/{id}` unaffected |
+| `GOOS=linux GOARCH=arm64 go build ./...` | passes |
+
+The 13.4 s → 0.73 s drop is the evidence that a repeat search launches no browser. It is not 0.00 s
+because YTS and TPB are deliberately **not** cached: they cost under a second and caching them would
+only make results an hour stale.
+
+A cross-check worth keeping: the 1337x magnet resolved to `89599BF4…B486`, the same info hash apibay
+returned for its copy of that release. The two rows did **not** dedupe, which is correct — a 1337x
+release has no hash until it is resolved, so it cannot be deduplicated against, and a near-duplicate
+row is the honest outcome rather than a bug.
+
+### Re-verify from scratch
+
+```bash
+go build ./... && go vet ./... && go test -race ./...
+GOOS=linux GOARCH=arm64 go build ./...
+
+go run ./cmd/curator &
+curl -s 'localhost:8090/api/search?title=Interstellar&year=2014' | jq '.indexers'
+time curl -s -o /dev/null 'localhost:8090/api/search?title=Interstellar&year=2014'   # seconds
+time curl -s -o /dev/null 'localhost:8090/api/search?title=Interstellar&year=2014'   # instant
+```
+
+`go test -short` skips the live YTS, TPB and TMDB tests; they also skip when the network is
+unreachable, but a decode failure or a bad status **fails**, so a dead base URL cannot stay green.
+
+---
+
 ## Open threads
 
 Neither blocking, both decided rather than forgotten.
@@ -97,39 +143,53 @@ Neither blocking, both decided rather than forgotten.
 
 ## Phase 2 tasks
 
-Specified 2026-08-12, no code yet. Spec in [`phase-2.md`](phase-2.md). Ownership here is per **file**,
-not per directory — T8, T9 and T10 share `internal/indexer/` with phase 1's ported code, which is
-read-only to them.
+Ownership here was per **file**, not per directory — T8, T9 and T10 shared `internal/indexer/` with
+phase 1's ported code, which was read-only to them. T8, T9 and T10 ran in parallel, in isolated
+copies of the repo so that three agents writing into one Go package could not compile each other's
+half-written files; each copy was diffed against the origin before its owned files were merged back.
 
-| Task | Owns | Depends on | Status |
+| Task | Owns | Tests | Status |
 |---|---|---|---|
-| [T8](tasks/T8-yts-indexer.md) YTS | `internal/indexer/yts.go` | — | not started |
-| [T9](tasks/T9-tpb-indexer.md) TPB | `internal/indexer/tpb.go` | — | not started |
-| [T10](tasks/T10-search-cache.md) cache | `internal/indexer/cache.go` | — | not started |
-| [T11](tasks/T11-aggregator.md) aggregator | `internal/indexer/aggregate.go` | T8, T9, T10 | not started |
-| [T12](tasks/T12-search-api.md) API | `internal/api/search.go`, config, wiring | T11 | not started |
+| [T8](tasks/T8-yts-indexer.md) YTS | `internal/indexer/yts.go` | 12 | done |
+| [T9](tasks/T9-tpb-indexer.md) TPB | `internal/indexer/tpb.go` | 14 | done |
+| [T10](tasks/T10-search-cache.md) cache | `internal/indexer/cache.go` | 14 | done |
+| [T11](tasks/T11-aggregator.md) aggregator | `internal/indexer/aggregate.go` | 16 | done |
+| [T12](tasks/T12-search-api.md) API | `internal/api/search.go`, config, wiring | 12 + 3 config | done |
 
-T8, T9 and T10 are independent — run them in parallel, as phase 1 did.
+### What phase 2 learned
 
-**Decided while specifying, so phase 2 does not have to stop and think:**
+- **`yts.mx` is gone.** NXDOMAIN on every resolver and from the Pi. The live API is
+  `https://movies-api.accel.li/api/v2`, which the API's own payload names as its migration target —
+  [D12](decisions.md#d12--yts-is-reached-at-movies-apiaccelli-not-ytsmx).
+- **apibay's empty-search sentinel is real** and is rejected **structurally**, on the info hash being
+  absent or all-zeros, rather than by matching the string `"No results returned"`. A reworded sentinel
+  cannot resurrect it, and a genuine release that happens to be named that is still kept.
+- **Every apibay field is a JSON string**, `size` included (bytes, not `"2.3 GB"` — so `parseSize` is
+  the wrong tool there). A test unmarshals the fixture into an `int64` struct and asserts it *fails*,
+  so the day apibay switches to real numbers, a test says so instead of the parser silently zeroing.
+- **A `Cache` is deliberately not a `MagnetResolver`.** Go method sets are not conditional, so
+  forwarding `ResolveMagnet` would make a cache around YTS claim to resolve magnets it never has. The
+  aggregator therefore unwraps decorators before asserting — without that, wrapping 1337x in the
+  cache, which is exactly what ships, silently disables lazy resolution. It is a test, not a comment.
+- **The year must not go in YTS's `query_term`.** `Interstellar 2014` works only because the year is
+  in `title_long`; `Interstellar 9999` returns nothing. YTS filters on `movie.year` instead — unlike
+  1337x, where `searchQuery` deliberately does append the year.
+- **YTS clamps `seeds` at 100**, so its rows plateau in a seeder-ranked list.
+- **`errgroup.WithContext` was avoided**, as specified: each goroutine records its own error and
+  returns nil, so one downed indexer cannot cancel its siblings.
 
-- **Release identity** — [D10](decisions.md#d10--releases-are-identified-by-an-opaque-id-not-a-url).
-  The detail path stays unexported and server-side; releases carry an opaque deterministic id.
-  Exporting it would have meant the API accepting a URL from the client and handing it to minter to
-  fetch, which is request forgery through a service built to fetch convincingly.
-- **Ranking** — [D11](decisions.md#d11--rank-by-seeders-quality-is-a-filter-not-a-score). Seeders
-  descending, quality as a filter rather than part of a score.
+### Still live going out
 
-**Still live going in:**
-
-- **`MINTER_URL`'s old default is a trap on this machine.** minter binds IPv4 only, so
-  `http://localhost:8191` resolves to `::1` first and fails while `http://127.0.0.1:8191` works. The
-  phase 2 default is the literal IP.
-- **`errgroup` fails fast, which is backwards here.** `errgroup.WithContext` cancels every sibling on
-  the first error, so one downed indexer would silently empty an otherwise good search. Each
-  goroutine records its own error and returns nil. Called out in T11 as a test, not a comment.
-- **The absorbed indexer is unwired**, so phase 2 starts from a tested `parseSearch`, `parseQuality`,
-  `InfoHash` and minter client rather than a blank file.
+- **minter runs natively here, not in Docker** (a `python3` process on 8191), so `docker stop minter`
+  in the verification block does not apply on this laptop. Degradation was verified instead by
+  pointing a second instance at a dead port, which is the same connection-refused from curator's side.
+- **TPB's magnets carry some dead trackers.** `tpb.go`'s list is a faithful copy of The Pirate Bay's
+  own `print_trackers()`, and four of its hosts no longer answer a BEP-15 connect. Harmless: it is a
+  superset of the six live trackers YTS's magnets use, and clients ignore the rest. Left as-is because
+  matching the site's own list is defensible; worth pruning if a magnet ever looks slow to start.
+- **`NewTPB(nil)` falls back to `http.DefaultClient`, which has no timeout**, unlike `NewYTS` and
+  `tmdb.New`. Not reachable from `cmd/curator`, which passes a shared client with a 15 s timeout.
+- **apibay caps a response at 100 rows** with no pagination, so a broad title is truncated at source.
 
 ---
 

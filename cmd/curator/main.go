@@ -14,6 +14,7 @@ import (
 
 	"github.com/DulsaraNethmin/curator/internal/api"
 	"github.com/DulsaraNethmin/curator/internal/config"
+	"github.com/DulsaraNethmin/curator/internal/indexer"
 	"github.com/DulsaraNethmin/curator/internal/library"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
@@ -24,6 +25,12 @@ import (
 // but it is bounded, because an abrupt exit mid-write is how SQLite files get
 // corrupted.
 const shutdownTimeout = 15 * time.Second
+
+// indexerHTTPTimeout bounds a single YTS or TPB request. Both are plain JSON APIs
+// answering in well under a second, so this is a ceiling for a hung connection,
+// not a budget. The whole-search deadline is SEARCH_TIMEOUT and is enforced by the
+// aggregator; this only stops one socket holding a goroutine open past it.
+const indexerHTTPTimeout = 15 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -60,9 +67,27 @@ func run() error {
 		matcher = tmdb.New(cfg.TMDBAPIKey, nil)
 	}
 
+	// One HTTP client, shared by the indexers that speak plain JSON. minter gets
+	// its own inside NewMinter, because it has to outlast a real browser clearing
+	// a Cloudflare challenge and cannot share a ten-second timeout.
+	indexerHTTP := &http.Client{Timeout: indexerHTTPTimeout}
+
+	// 1337x is the only indexer wrapped in the cache: its pages cost ~9 s and a
+	// browser each, while YTS and TPB answer in under a second and would only be
+	// made stale by caching.
+	x1337 := indexer.NewCache(indexer.NewX1337(indexer.NewMinter(cfg.MinterURL)), cfg.SearchCacheTTL)
+	aggregator := indexer.NewAggregator(
+		[]indexer.Indexer{indexer.NewYTS(indexerHTTP), indexer.NewTPB(indexerHTTP), x1337},
+		cfg.SearchTimeout,
+		cfg.SearchCacheTTL,
+	)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
-	api.New(db, api.ScannerFunc(library.Scan), matcher, cfg.LibraryMovies, log).Register(mux)
+	apiSrv := api.New(db, api.ScannerFunc(library.Scan), matcher, cfg.LibraryMovies, log).
+		WithSearch(aggregator)
+	apiSrv.Register(mux)
+	apiSrv.RegisterSearch(mux)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr(),

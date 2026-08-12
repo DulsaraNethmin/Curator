@@ -7,8 +7,8 @@ embedded Next.js UI. Read [`docs/architecture.md`](docs/architecture.md) for the
 [`docs/decisions.md`](docs/decisions.md) before overturning anything — several decisions here
 reversed an earlier plan for reasons that were expensive to establish.
 
-**Phase 1 is done** (verified 2026-08-12). **Current phase: 2 (indexers).** Tasks live in
-[`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
+**Phases 1 and 2 are done** (both verified 2026-08-12). **Current phase: 3 (downloads).** Tasks live
+in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 
 ---
 
@@ -49,7 +49,19 @@ service that gets past Cloudflare. `POST /fetch {"url": "..."}` returns rendered
 
 **Cookie reuse does not work.** Cloudflare binds `cf_clearance` to the exit IP, User-Agent *and* TLS
 fingerprint, and no uTLS profile reproduces minter's patched Firefox 151 — measured, all three
-fingerprints differ. Do not try to be clever and skip the browser. Needed for 1337x in phase 2.
+fingerprints differ. Do not try to be clever and skip the browser. 1337x goes through it; YTS and TPB
+do not need it.
+
+**Use `http://127.0.0.1:8191`, not `localhost`.** minter binds IPv4 only, so `localhost` resolves to
+`::1` first and the connection fails. That is `MINTER_URL`'s default. Inside Docker the name `minter`
+resolves correctly. Before calling a 1337x failure a code bug, check minter is actually up.
+
+### The indexer domains move
+
+`yts.mx` is NXDOMAIN — YTS is reached at `https://movies-api.accel.li/api/v2`
+([D12](docs/decisions.md#d12--yts-is-reached-at-movies-apiaccelli-not-ytsmx)). `yts.rs` and `yts.hn`
+resolve and look plausible but are clone sites running a re-implemented API. Check the base URL before
+concluding the parser broke.
 
 ### Do not touch the Pi's running stack
 
@@ -77,7 +89,7 @@ internal/store/      SQLite: schema, queries
 internal/library/    disk scan, Title (Year) parsing
 internal/tmdb/       metadata lookup
 internal/api/        HTTP handlers
-internal/indexer/    release search — absorbed from cfprobe, NOT wired until phase 2
+internal/indexer/    release search — YTS, TPB, 1337x behind one interface, merged and ranked
 testdata/library/    29 fixture dirs mirroring the real library
 web/                 Next.js UI (phase 5)
 ```
@@ -107,7 +119,8 @@ npx -y @mermaid-js/mermaid-cli@11 -i docs/diagram.mmd -o /tmp/out.svg
 | Library | `/media/storage/media/movies` — 29 folders on a 916 GB USB disk |
 | Downloads | `/media/storage/media/downloads` — same filesystem, so imports hardlink |
 | TMDB | `TMDB_API_KEY` env var, free key from themoviedb.org |
-| minter | `MINTER_URL`, default `http://localhost:8191` (phase 2) |
+| minter | `MINTER_URL`, default `http://127.0.0.1:8191` — IPv4 only, so not `localhost` |
+| Search | `SEARCH_TIMEOUT` default `30s`, `SEARCH_CACHE_TTL` default `1h` |
 
 ## Known broken upstream
 
