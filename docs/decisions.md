@@ -242,3 +242,67 @@ One consequence to carry into phase 4: qBittorrent reports content paths in **it
 `/downloads/complete/curator/...`, because its mount is host `/media/storage/media/downloads` →
 container `/downloads`. Phase 3 stores what it is told, verbatim, and translates nothing. The
 translation belongs where the hardlink is made, not buried in a client that only reads.
+
+---
+
+## D14 — The importer is driven by the poller's torrent list, not by a completion event
+
+**Status:** decided · **Rejects:** hooking the transition into `completed`, and a
+"completed but not imported" store query
+
+The importer runs inside the poller's existing tick, over the torrent list that tick already fetched.
+Its trigger is a **state**, not an event: *this torrent reads `completed` and its row does not read
+`imported`*.
+
+**Hooking the transition is not crash safe.** The obvious design imports when a row moves from
+`downloading` to `completed`, which is where phase 3 already stamps `completed_at`. Restart curator
+between that write and a failed import and the transition never happens again — the torrent is
+`completed` on both sides of every later tick, no edge is ever observed, and the row is stuck for
+ever with no error and nothing to retry. Triggering on the state instead means **the recovery path
+and the normal path are the same code**, which is the only version of a recovery path that is
+actually exercised.
+
+It also costs nothing. The tick already holds the torrent, `ContentPath` included, and has already
+read the row to update its progress. The importer needs exactly those two things, so this is a
+function call, not a second source of work.
+
+**No second loop, and no `DownloadsAwaitingImport` query.** A store query for "completed but not
+imported" would be a *second, divergent* answer to "what needs importing" — one derived from our
+table, one from qBittorrent — and they disagree the moment a torrent is removed from qBittorrent by
+hand. The torrent list is the work list, and the row is only ever consulted about torrents that are
+in it. The `downloads` table therefore needs **no new column and no index**, which is why this repo
+still has never run a migration: `downloads.state` already carries `imported`
+([T2](tasks/T2-store.md) wrote the value into the schema comment in phase 1) and `movies` already
+has `library_path` and `imported_at`.
+
+The cost is accepted with open eyes: **a permanently failing import retries every poll interval for
+ever.** That is the correct behaviour for the failures that actually happen — a torrent still being
+moved, a full disk, a library root not yet mounted — all of which fix themselves. It is handled by
+suppressing the repeat *log* per hash rather than by backoff, because backoff would add state and a
+timer to solve a problem that is only noise.
+
+---
+
+## D15 — The Jellyfin refresh is best-effort, and its key is optional
+
+**Status:** decided
+
+`JELLYFIN_API_KEY` unset **disables the refresh and does not fail startup** — the posture already
+established for an unset `TMDB_API_KEY` and an unset `QBIT_USER`. Jellyfin is 10.10.7 at
+192.168.1.26:8096, and there is no API key yet, so this is the state curator ships in today.
+
+**A refresh failure must never fail an import.** The file is hardlinked into the library and the row
+says `imported`; whether a media server has noticed yet is a different, softer fact. Jellyfin also
+rescans on its own schedule, so the worst case of a failed refresh is that the film appears later
+rather than not at all. Letting a 500 from Jellyfin roll back a correct import would trade a real
+outcome for a cosmetic one.
+
+That guarantee is put in the **type**, not in a comment: the method the poller calls returns no error
+at all, so there is nothing for a caller to mishandle. The client underneath it does return errors —
+it has to, or the live test could not fail on a bad status — and the swallowing happens at exactly
+one seam, where it is deliberate.
+
+The refresh is fired **once per tick, not once per import**, and only when something was actually
+imported. `POST /Library/Refresh` is a whole-library scan; asking for one per file in a batch of six
+would queue six scans of the same library, and asking for one every ten seconds for ever would be
+worse.

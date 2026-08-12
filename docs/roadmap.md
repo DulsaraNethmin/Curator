@@ -8,7 +8,7 @@ until the last one.
 | **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **done** |
 | **2** | Indexers — YTS, TPB, then 1337x through minter | **done** |
 | **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** |
-| 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | **next** |
+| 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | **specified** |
 | 5 | Interface — Next.js screens, static export embedded via `embed.FS` | |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | |
 
@@ -62,11 +62,23 @@ directory.
 ## Phase 4 — Import
 
 Completion watcher, hardlink into `movies/Title (Year)/`, Jellyfin refresh. The only part that touches
-the filesystem, so it is deliberately conservative: tag-scoped so it never touches torrents added by
-hand, and it never deletes source files.
+the filesystem, so it is deliberately conservative: category-scoped so it never touches torrents added
+by hand, and it never deletes source files. Spec in [`phase-4.md`](phase-4.md); tasks T17–T21 in
+[`tasks/`](tasks/).
 
 **Done when** a download completes and the file appears in the library and in Jellyfin unaided, with
 `stat` showing link count 2 and `df` unchanged.
+
+Two decisions were settled while specifying: the importer is driven by the poller's existing torrent
+list and triggers on a **state** rather than a completion transition, which is what makes it crash
+safe ([D14](decisions.md#d14--the-importer-is-driven-by-the-pollers-torrent-list-not-by-a-completion-event)),
+and the Jellyfin refresh is best-effort with an optional key
+([D15](decisions.md#d15--the-jellyfin-refresh-is-best-effort-and-its-key-is-optional)).
+
+> **Verified locally, never on the Pi.** This is the first phase that writes to disk, and the *arr
+> stack keeps serving until phase 6. Hardlinks are proven in `t.TempDir()` by equal inode plus link
+> count 2 — `df` unchanged is a weak signal on a copy-on-write macOS temp dir, so that half of the
+> "done when" defers to cutover.
 
 ## Phase 5 — Interface
 

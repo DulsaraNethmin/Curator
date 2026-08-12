@@ -3,7 +3,8 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-12 · **Phases 1 and 2 complete** · phase 3 built, one verification outstanding
+**Last updated:** 2026-08-12 · **Phases 1 and 2 complete** · phase 3 built, one verification
+outstanding · phase 4 specified
 
 ---
 
@@ -14,7 +15,7 @@ what is **done, verified, and outstanding**. Update it when a phase closes or a 
 | **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **done** — verified 2026-08-12 |
 | **2** | Indexers — YTS, TPB, then 1337x through minter | **done** — verified 2026-08-12 |
 | **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** — T13–T16 done; live dispatch pending qBittorrent credentials |
-| 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | |
+| 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | **specified** — T17–T21 |
 | 5 | Interface — Next.js screens embedded via `embed.FS` | |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | back up the *arr configs first |
 
@@ -266,6 +267,62 @@ existed since [T2](tasks/T2-store.md), so this phase needs **no migration**.
 - **qBittorrent's hashes are lower-case and `indexer.InfoHash` is upper-case.** Unnormalised, every
   lookup silently misses.
 - **`imported` stays phase 4's to set.** A completed torrent is a file, not a library entry.
+
+## Phase 4 tasks
+
+Specified 2026-08-12, no code yet. Spec in [`phase-4.md`](phase-4.md). **No migration** — the
+importer is driven by the poller's existing torrent list, so it needs no new column and no second
+loop ([D14](decisions.md#d14--the-importer-is-driven-by-the-pollers-torrent-list-not-by-a-completion-event)).
+
+| Task | Owns | Status |
+|---|---|---|
+| [T17](tasks/T17-library-link.md) naming + hardlink | `internal/library/link.go` | |
+| [T18](tasks/T18-import-store.md) import transaction | `internal/store/imports.go` | |
+| [T19](tasks/T19-jellyfin-client.md) Jellyfin client | `internal/jellyfin/` | |
+| [T20](tasks/T20-importer.md) importer | `internal/importer/` | |
+| [T21](tasks/T21-import-wiring.md) wiring | config, `cmd/curator`, poller hook, API | |
+
+Two decisions were settled while specifying:
+[D14](decisions.md#d14--the-importer-is-driven-by-the-pollers-torrent-list-not-by-a-completion-event)
+(state, not transition — the crash-safe trigger) and
+[D15](decisions.md#d15--the-jellyfin-refresh-is-best-effort-and-its-key-is-optional) (the refresh is
+best-effort and its key optional).
+
+### Measured on the Pi while specifying, so the implementation does not have to guess
+
+Read-only, 2026-08-12. Nothing was written to the Pi.
+
+| Measurement | Value |
+|---|---|
+| qBittorrent's file modes | **`0644`**, owner `nethmin:nethmin`, directories `0755` |
+| The library's own file modes | **identical** — `0644 nethmin:nethmin` on the *arr stack's hardlinks |
+| Downloads and library filesystem | both device **`2049`**, so [D8](decisions.md#d8--import-by-hardlink)'s hardlink still holds |
+| `Session\TempPath` | `/downloads/incomplete/` — but `Session\TempPathEnabled` is **absent**, so it takes qBittorrent's default of false; the directory is empty and inert |
+| Categories on the Pi | `radarr` → `/downloads/complete/movies`, `sonarr` → `/downloads/complete/tv`. **No `curator` category exists yet** |
+| Jellyfin | `jellyfin/jellyfin:10.10.7`, healthy, 28 h uptime |
+
+**The modes are the one that mattered.** A hardlink is a second name for one inode and has no
+permission bits of its own, so it inherits the source's — and a `chmod` on the link changes the file
+qBittorrent is still seeding. Had qBittorrent been writing `0600`, every import would have produced a
+library entry Jellyfin cannot open: a film visible in the UI that silently does not play, with the
+obvious fix being the one that corrupts the seeding copy. It writes `0644`, which is already exactly
+what the library's existing files are, so **the importer needs no `chmod` and must not add one.**
+
+**Two of the three measurements could not be taken.** The real `content_path` and `save_path` for a
+`curator` torrent need `torrents/info?category=curator`, which needs a session, which needs
+`QBIT_USER` and `QBIT_PASS` — still absent from `.env`. The category does not exist on the Pi yet
+either, because nothing has ever been dispatched into it. Rather than guess, phase 4 is designed not
+to depend on the answer: `content_path` is treated as **either a file or a directory**, the importer
+only ever looks at torrents whose state maps to `completed` (and phase 3 already maps `moving` to
+`downloading`, so a torrent mid-relocation never qualifies), and a wrong path leaves the row
+`completed` for the next tick to retry.
+
+### Phase 3's outstanding verification was not run
+
+`QBIT_USER` and `QBIT_PASS` are still not in `.env` — it carries `TMDB_API_KEY`, `LIBRARY_MOVIES` and
+`PORT` and nothing else. The live dispatch block in [`phase-3.md`](phase-3.md#verification) is
+therefore still unrun and **phase 3 remains built, not verified**. Nothing was added to the `radarr`
+or `sonarr` categories and nothing was deleted.
 
 ## Corrections made to the docs
 
