@@ -1,4 +1,6 @@
-curator
+# Anchored: an unanchored "curator" also matches the cmd/curator/ directory,
+# which silently excluded the whole command from git.
+/curator
 *.db
 *.db-shm
 *.db-wal
