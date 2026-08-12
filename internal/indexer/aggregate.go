@@ -1,0 +1,395 @@
+package indexer
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/sync/errgroup"
+)
+
+// ErrReleaseExpired reports that an id cannot be resolved: either its search has
+// aged out or it was never issued. The two are deliberately not distinguished —
+// both mean "search again", and telling a caller which of the two it was would
+// disclose whether an id it guessed had ever existed.
+//
+// It is a sentinel so the API layer can answer 410 Gone rather than a vague 500.
+var ErrReleaseExpired = errors.New("release id unknown or its search has expired")
+
+// Found is a release after merging: the release itself, the opaque id a magnet is
+// later resolved by, and every indexer that carried it.
+//
+// Release itself is left alone — it is phase 1's ported shape and describes what a
+// single indexer returned. Identity and provenance are properties of the merge,
+// so they live here.
+type Found struct {
+	Release
+	ID string
+	// Indexers is every indexer that carried this release, in the order they were
+	// configured. More than one means the copies deduplicated onto a shared info
+	// hash.
+	Indexers []string
+
+	// owner is the indexer whose copy of this release survived dedup — the only
+	// one that can read its detail path back. It is tracked separately from
+	// Indexers because dedup keeps the copy with the most seeders while merging
+	// the names, so Indexers[0] is whichever indexer was seen first and need not
+	// be the one this release actually came from.
+	owner string
+}
+
+// Outcome is one indexer's report from a search. It exists so that "a failing
+// indexer is omitted, never fatal" cannot decay into "a failing indexer is
+// invisible" — which is minter's 200-carrying-a-failure bug wearing a different
+// hat. A search where 1337x is down is still a success, and still says so.
+type Outcome struct {
+	Name  string
+	OK    bool
+	Count int
+	Error string
+}
+
+// SearchResult is one whole search: the merged, ranked releases and what each
+// indexer had to say.
+type SearchResult struct {
+	Releases []Found
+	Outcomes []Outcome
+}
+
+// Aggregator searches every indexer at once and merges the results. It does no
+// HTTP itself — the indexers do that.
+type Aggregator struct {
+	indexers []Indexer
+	timeout  time.Duration
+
+	// ttl bounds how long an id stays resolvable. It matches the search cache's
+	// TTL: an id is only useful while the search that issued it is still around,
+	// because resolving one means reading back the unexported detail path that
+	// search recorded. Without it, ResolveMagnet would either grow a map forever
+	// or silently re-search, and re-searching answers a different question than
+	// the one the caller asked.
+	ttl time.Duration
+
+	// now is injected so expiry can be tested by moving a clock rather than by
+	// sleeping.
+	now func() time.Time
+
+	mu   sync.Mutex
+	byID map[string]issued
+}
+
+// issued is a release handed out under an id, with the indexer that produced it —
+// the only one that knows how to read its detail path back.
+type issued struct {
+	release Found
+	indexer Indexer
+	expires time.Time
+}
+
+// NewAggregator returns an Aggregator over indexers. timeout bounds a whole
+// search; ttl is how long the ids it stamps stay resolvable, and should match the
+// search cache's TTL.
+func NewAggregator(indexers []Indexer, timeout, ttl time.Duration) *Aggregator {
+	return &Aggregator{
+		indexers: indexers,
+		timeout:  timeout,
+		ttl:      ttl,
+		now:      time.Now,
+		byID:     make(map[string]issued),
+	}
+}
+
+// SearchMovie searches every indexer concurrently and returns the merged, ranked
+// releases with a per-indexer outcome for each.
+//
+// The error return is for the caller's own context being cancelled. An indexer
+// failing — even all of them — is not an error: it is reported in Outcomes, and
+// the search still succeeded.
+func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (SearchResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+
+	// Results land in per-indexer slots rather than an append-shared slice so that
+	// a straggler still running after the deadline has somewhere defined to write.
+	type slot struct {
+		reported bool
+		releases []Release
+		err      error
+	}
+	slots := make([]slot, len(a.indexers))
+	var mu sync.Mutex
+
+	// A plain errgroup.Group, deliberately not errgroup.WithContext: WithContext
+	// cancels every sibling the moment one goroutine returns non-nil, which is
+	// exactly backwards here — one downed indexer would silently empty an
+	// otherwise good search. Each goroutine records its own outcome and returns
+	// nil, so nothing is ever cancelled on a sibling's behalf.
+	var g errgroup.Group
+	for i, ix := range a.indexers {
+		g.Go(func() error {
+			releases, err := ix.SearchMovie(ctx, title, year)
+			mu.Lock()
+			defer mu.Unlock()
+			slots[i] = slot{reported: true, releases: releases, err: err}
+			return nil
+		})
+	}
+
+	// Wait for the fan-out, but not past the deadline: an indexer that ignores its
+	// context must not hold the whole search open. Whatever has reported by then is
+	// what the search returns.
+	done := make(chan struct{})
+	go func() {
+		_ = g.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+
+	mu.Lock()
+	snapshot := make([]slot, len(slots))
+	copy(snapshot, slots)
+	mu.Unlock()
+
+	out := SearchResult{Outcomes: make([]Outcome, len(a.indexers))}
+	var all []Found
+	for i, ix := range a.indexers {
+		name := ix.Name()
+		s := snapshot[i]
+		switch {
+		case !s.reported:
+			out.Outcomes[i] = Outcome{Name: name, OK: false, Error: fmt.Sprintf("timed out after %s", a.timeout)}
+		case s.err != nil:
+			out.Outcomes[i] = Outcome{Name: name, OK: false, Error: s.err.Error()}
+		default:
+			out.Outcomes[i] = Outcome{Name: name, OK: true, Count: len(s.releases)}
+			for _, r := range s.releases {
+				all = append(all, Found{Release: r, ID: releaseID(r), Indexers: []string{name}, owner: name})
+			}
+		}
+	}
+
+	out.Releases = rank(dedupe(all))
+	a.issue(out.Releases)
+	return out, nil
+}
+
+// indexerByName maps an indexer's name back to the indexer itself. Resolution
+// needs the concrete indexer that produced a release — only it knows how to read
+// its detail path back — while a merged release carries just the names.
+func (a *Aggregator) indexerByName(name string) Indexer {
+	for _, ix := range a.indexers {
+		if ix.Name() == name {
+			return ix
+		}
+	}
+	return nil
+}
+
+// issue records the ids this search handed out so ResolveMagnet can read them back,
+// and prunes anything already expired. Pruning happens here, on write, rather than
+// in a background goroutine: this is a single-user service with a handful of
+// searches an hour, and a janitor ticker that outlives its owner is a leak waiting
+// to be found in phase 6.
+func (a *Aggregator) issue(found []Found) {
+	now := a.now()
+	expires := now.Add(a.ttl)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, e := range a.byID {
+		if !e.expires.After(now) {
+			delete(a.byID, id)
+		}
+	}
+	for _, f := range found {
+		ix := a.indexerByName(f.owner)
+		if ix == nil {
+			continue
+		}
+		a.byID[f.ID] = issued{release: f, indexer: ix, expires: expires}
+	}
+}
+
+// ResolveMagnet returns the magnet for a stamped id.
+//
+// YTS and TPB releases already carry theirs and cost nothing. A 1337x release is
+// fetched from its detail page at this point and not before — that is what keeps a
+// 20-result search one protected request through minter rather than 21, at ~9 s
+// each.
+func (a *Aggregator) ResolveMagnet(ctx context.Context, id string) (string, error) {
+	a.mu.Lock()
+	e, ok := a.byID[id]
+	expired := ok && !e.expires.After(a.now())
+	if expired {
+		delete(a.byID, id)
+	}
+	a.mu.Unlock()
+
+	if !ok || expired {
+		return "", fmt.Errorf("resolve %s: %w", id, ErrReleaseExpired)
+	}
+	if e.release.Magnet != "" {
+		return e.release.Magnet, nil
+	}
+
+	resolver, ok := resolverFor(e.indexer)
+	if !ok {
+		return "", fmt.Errorf("resolve %s: indexer %s has no magnet for it and cannot resolve one", id, e.indexer.Name())
+	}
+	magnet, err := resolver.ResolveMagnet(ctx, e.release.Release)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", id, err)
+	}
+	return magnet, nil
+}
+
+// resolverFor finds the MagnetResolver behind an indexer, reaching through any
+// decorators wrapping it.
+//
+// A plain type assertion is not enough, and the case it misses is the one that
+// matters: 1337x is the only indexer needing resolution and the only one wrapped
+// in a Cache, and a Cache is deliberately not a MagnetResolver — Go method sets
+// are not conditional, so forwarding the method would make a Cache around YTS
+// claim to resolve magnets it never has to. Asserting on the outer value alone
+// would mean composing the cache silently disabled lazy resolution, turning every
+// 1337x pick into "no magnet" with nothing to point at.
+func resolverFor(ix Indexer) (MagnetResolver, bool) {
+	for ix != nil {
+		if r, ok := ix.(MagnetResolver); ok {
+			return r, true
+		}
+		u, ok := ix.(interface{ Unwrap() Indexer })
+		if !ok {
+			return nil, false
+		}
+		inner := u.Unwrap()
+		if inner == ix {
+			// A decorator returning itself would spin here forever.
+			return nil, false
+		}
+		ix = inner
+	}
+	return nil, false
+}
+
+// releaseID is the opaque, deterministic id a release is identified by:
+// sha256(indexer + "\x00" + title + "\x00" + detailPath|magnet), first 8 bytes,
+// hex.
+//
+// Deterministic so the same release gets the same id on every search, and opaque
+// so it says nothing about how the indexer works. The alternative — exporting the
+// detail path so the client hands it back — would mean the API accepting a URL
+// from a caller and passing it to minter to fetch, which is request forgery
+// through a service built to fetch convincingly. See D10.
+func releaseID(r Release) string {
+	locator := r.detailPath
+	if locator == "" {
+		locator = r.Magnet
+	}
+	sum := sha256.Sum256([]byte(r.Indexer + "\x00" + r.Title + "\x00" + locator))
+	return hex.EncodeToString(sum[:8])
+}
+
+// dedupe collapses releases sharing an info hash, keeping the copy with the most
+// seeders and recording every indexer that carried it.
+//
+// A release with no hash — every unresolved 1337x row, since its magnet is still
+// on a detail page — cannot be deduplicated against and passes through untouched.
+// A near-duplicate row is the honest outcome; guessing by name similarity would
+// merge genuinely different releases and is not worth the one row it saves.
+func dedupe(in []Found) []Found {
+	out := make([]Found, 0, len(in))
+	at := make(map[string]int, len(in))
+
+	for _, f := range in {
+		hash := InfoHash(f.Magnet)
+		if hash == "" {
+			out = append(out, f)
+			continue
+		}
+		i, seen := at[hash]
+		if !seen {
+			at[hash] = len(out)
+			out = append(out, f)
+			continue
+		}
+		kept := out[i]
+		names := appendMissing(kept.Indexers, f.Indexers...)
+		if f.Seeders > kept.Seeders {
+			// The higher seeder count is the more useful answer to "will this
+			// finish", and it brings its own id and magnet with it.
+			f.Indexers = names
+			out[i] = f
+			continue
+		}
+		kept.Indexers = names
+		out[i] = kept
+	}
+	return out
+}
+
+func appendMissing(dst []string, add ...string) []string {
+	for _, s := range add {
+		found := false
+		for _, existing := range dst {
+			if existing == s {
+				found = true
+				break
+			}
+		}
+		if !found {
+			dst = append(dst, s)
+		}
+	}
+	return dst
+}
+
+// FilterFound keeps only merged releases whose quality matches one of want. An
+// empty want keeps everything.
+//
+// It defers to the ported FilterQuality one release at a time rather than
+// reimplementing the match, so the spellings a caller may type — "1080" without
+// the p, "4k" for 2160p — keep a single definition.
+func FilterFound(in []Found, want []string) []Found {
+	if len(want) == 0 {
+		return in
+	}
+	out := make([]Found, 0, len(in))
+	for _, f := range in {
+		if len(FilterQuality([]Release{f.Release}, want)) == 1 {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// rank orders releases by seeders descending, ties broken by quality then name.
+//
+// Not by quality first: a 1-seeder 2160p above a 500-seeder 1080p is the wrong
+// answer to the only question a manual picker is actually asking, which is whether
+// this will finish downloading. Seeders predict that; resolution does not. Quality
+// is offered as a filter instead — see D11. The tie-breaks make the order total,
+// so a test can assert it exactly.
+func rank(in []Found) []Found {
+	sort.SliceStable(in, func(i, j int) bool {
+		a, b := in[i], in[j]
+		if a.Seeders != b.Seeders {
+			return a.Seeders > b.Seeders
+		}
+		ra, rb := QualityRank(a.Quality), QualityRank(b.Quality)
+		if ra != rb {
+			return ra < rb
+		}
+		return strings.ToLower(a.Title) < strings.ToLower(b.Title)
+	})
+	return in
+}
