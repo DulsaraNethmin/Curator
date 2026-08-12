@@ -157,14 +157,20 @@ far more likely than a genuine error:
 
 | qBittorrent | ours |
 |---|---|
-| `queuedDL`, `stalledDL`, `metaDL`, `allocating`, `checkingDL`, `checkingResumeData` | `queued` |
+| `queuedDL`, `stalledDL`, `metaDL`, `allocating`, `checkingDL`, `checkingResumeData`, `pausedDL`, `stoppedDL` | `queued` |
 | `downloading`, `forcedDL`, `moving` | `downloading` |
-| `uploading`, `stalledUP`, `queuedUP`, `forcedUP`, `checkingUP`, `pausedUP` | `completed` |
+| `uploading`, `stalledUP`, `queuedUP`, `forcedUP`, `checkingUP`, `pausedUP`, `stoppedUP` | `completed` |
 | `error`, `missingFiles` | `failed` |
-| `pausedDL` | `queued` |
 
 `pausedUP` is **completed**, not paused-and-therefore-stuck: a torrent that has finished downloading
 and been paused has the file we wanted. `pausedDL` is a partial download and stays `queued`.
+
+**`stoppedUP` and `stoppedDL` are the spellings that actually arrive.** qBittorrent 5.0 renamed
+pause/resume to stop/start and the Web API states followed, so the Pi's 5.1.2 sends `stopped*` where
+4.x sent `paused*`. This was missed when the table was first written, and it is not cosmetic: without
+`stoppedUP`, a finished-and-stopped torrent falls through to the default and reads `downloading`
+for ever, so phase 4 would never see a completed download to import. Both spellings are mapped —
+the `paused*` pair costs nothing and keeps a 4.x instance working.
 
 ---
 
