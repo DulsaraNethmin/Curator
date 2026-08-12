@@ -80,6 +80,29 @@ nothing. `ssh pi` reaches it. The library is `/media/storage/media/movies`.
   say what we measured.
 - Config from environment, read once into `internal/config`.
 
+## Git workflow
+
+**Branch first, never commit to `main`.** Create the branch before the first commit of a piece of
+work and name it for the work — `phase-2-indexers`, not `wip`.
+
+**Do not push, and do not merge.** Both are Nethmin's, including the merge into `main` and anything
+that reaches `origin`. Leave the finished branch local and say it is ready.
+
+**One commit per task**, each of which **builds, vets, tests and cross-compiles on its own**, so a
+bisect lands on one task and not on a half-finished phase:
+
+```bash
+go build ./... && go vet ./... && go test -race ./... && GOOS=linux GOARCH=arm64 go build ./...
+```
+
+Verify that per commit rather than only at the end — a temporary worktree per commit
+(`git worktree add --detach`) is how phase 2's five were checked. A dependency belongs in the commit
+that first imports it: `golang.org/x/sync` landed with T11's `errgroup`, not earlier.
+
+Commit messages explain **why**, in the body, at the length the reasoning needs. The subject is
+`T<n> <area>: <what>`. If a commit encodes a decision, say what the alternative was and why it lost —
+`git log` is where the reasoning is looked for once the docs have moved on.
+
 ## Layout
 
 ```
