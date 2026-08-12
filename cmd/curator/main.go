@@ -12,7 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DulsaraNethmin/curator/internal/api"
 	"github.com/DulsaraNethmin/curator/internal/config"
+	"github.com/DulsaraNethmin/curator/internal/library"
+	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/tmdb"
 )
 
 // shutdownTimeout bounds the wait for in-flight requests. A scan holds the
@@ -40,8 +44,25 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	db, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	// A nil Matcher is a supported state: with no key the library still scans and
+	// everything is reported unmatched. Declared as the interface so the nil stays
+	// a nil interface rather than a non-nil interface holding a nil pointer.
+	var matcher api.Matcher
+	if cfg.TMDBAPIKey == "" {
+		log.Warn("TMDB_API_KEY is unset: the library will scan but nothing will be matched")
+	} else {
+		matcher = tmdb.New(cfg.TMDBAPIKey, nil)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
+	api.New(db, api.ScannerFunc(library.Scan), matcher, cfg.LibraryMovies, log).Register(mux)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr(),
