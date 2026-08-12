@@ -140,3 +140,45 @@ titles are 2026 releases where a confident-but-wrong match is plausible.
 including `Tom Clancy's Jack Ryan - Ghost War` → 1380291, whose canonical TMDB title is
 `Tom Clancy's Jack Ryan: Ghost War` — a colon exactly where the folder has ` - `. The collapse
 fallback never fires on this library; it stays as a safety net for folders that drift.
+
+---
+
+## D10 — Releases are identified by an opaque id, not a URL
+
+**Status:** decided · **Resolves:** the gap left open when cfprobe was absorbed
+
+1337x puts magnets on detail pages, so a search knows a release's *path* but not its magnet, and that
+path has to survive from search to pick. `Release` in [`architecture.md`](architecture.md#indexers)
+has no field for it — noted during [T6](tasks/T6-absorb-cfprobe.md), where it became an unexported
+`detailPath`.
+
+The obvious fix, exporting it so the client hands it back, is the wrong one. It would mean the API
+accepts a URL from the caller and passes it to minter to fetch — server-side request forgery through
+a service whose entire job is fetching arbitrary pages convincingly.
+
+So the path stays unexported and server-side, and every release carries a deterministic opaque id:
+`sha256(indexer + "\x00" + title + "\x00" + detailPath|magnet)`, first 8 bytes, hex. Stable across
+searches, and it discloses nothing about the source. `GET /api/releases/{id}/magnet` resolves it out
+of the search cache — a detail-page fetch for 1337x, free for YTS and TPB, which already carry
+theirs.
+
+A resolve after the cache has expired is a `410 Gone`, not a silent re-search: the caller asked for a
+specific release, and quietly returning a different one is worse than saying no. An hour is far
+longer than a manual pick takes, so this is rare.
+
+---
+
+## D11 — Rank by seeders; quality is a filter, not a score
+
+**Status:** decided · **Narrows:** the roadmap's "ranked by seeders and quality preference"
+
+Releases sort by seeders descending, ties broken by quality then name. Quality is offered as a
+filter (`?quality=1080p`), reusing the `FilterQuality` already ported from cfprobe.
+
+Ranking by quality first puts a 1-seeder 2160p above a 500-seeder 1080p, which is the wrong answer to
+the only question a manual picker is actually asking — whether this will finish downloading. Seeders
+predict that; resolution does not.
+
+Weighing the two into a single score is where Radarr's custom formats begin, and
+[D5](#d5--manual-search-not-automatic-grabbing) declines to rebuild that. With a human choosing from
+a list, a filter plus an honest sort beats a scoring heuristic that has to be tuned and second-guessed.

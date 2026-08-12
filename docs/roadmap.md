@@ -28,11 +28,16 @@ See [`progress.md`](progress.md).
 ## Phase 2 — Indexers
 
 The `Indexer` interface with YTS and TPB (both plain JSON), then 1337x through minter. Concurrent
-search with `errgroup`, results merged and ranked by seeders and quality preference. A failing
-indexer is omitted, never fatal.
+search with `errgroup`, results merged and ranked. A failing indexer is omitted, never fatal.
+Spec in [`phase-2.md`](phase-2.md); tasks T8–T12 in [`tasks/`](tasks/).
 
 Most of the 1337x implementation already exists in `internal/indexer/`, absorbed from `cfprobe` in
 phase 1 but not yet wired.
+
+Two decisions were settled while specifying this phase: releases are identified by an opaque id
+rather than a URL ([D10](decisions.md#d10--releases-are-identified-by-an-opaque-id-not-a-url)), and
+ranking is by seeders with quality as a filter rather than part of a score
+([D11](decisions.md#d11--rank-by-seeders-quality-is-a-filter-not-a-score)).
 
 **Done when** `/api/search?title=Interstellar&year=2014` returns ranked releases with working
 magnets, a second search inside the hour launches no browser, and stopping minter degrades search to
