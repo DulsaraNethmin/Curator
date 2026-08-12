@@ -54,6 +54,11 @@ type Server struct {
 	matcher     Matcher // nil when TMDB_API_KEY is unset
 	libraryRoot string
 	log         *slog.Logger
+
+	// searcher is phase 2's release search. It is attached with WithSearch rather
+	// than passed to New so that phase 1's constructor — and every call to it —
+	// keeps its shape.
+	searcher Searcher
 }
 
 // New builds a Server. matcher may be nil; log may be nil, in which case the

@@ -4,6 +4,7 @@ go 1.25.4
 
 require (
 	github.com/PuerkitoBio/goquery v1.12.0
+	golang.org/x/sync v0.22.0
 	modernc.org/sqlite v1.56.0
 )
 
