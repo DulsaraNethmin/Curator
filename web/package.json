@@ -1,0 +1,21 @@
+{
+  "name": "curator-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build && node scripts/embed.mjs",
+    "start": "echo 'there is no server: this is a static export embedded in the Go binary' && exit 1"
+  },
+  "dependencies": {
+    "next": "16.3.0",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/react": "19.0.2",
+    "@types/react-dom": "19.0.2",
+    "typescript": "5.7.2"
+  }
+}
