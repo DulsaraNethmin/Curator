@@ -18,7 +18,7 @@ Turn a folder title and year into TMDB metadata, and be honest when it cannot.
    single space. Never do a bare `-` → `:` replacement — it corrupts `Spider-Man` and `X-Men`. See
    [`../decisions.md`](../decisions.md) D9.
 4. **Return no match rather than a wrong one.** If the year disagrees or nothing comes back, return a
-   nil match and no error — "not found" is a normal outcome, not a failure. Six titles are 2026
+   nil match and no error — "not found" is a normal outcome, not a failure. Seven titles are 2026
    releases where a confident-but-wrong match is plausible.
 5. `Match` carries `TMDBID`, `Title`, `Year`, `Overview`, `PosterPath`.
 6. Respect `ctx`, set a timeout, and treat a 401 as a configuration error worth surfacing clearly —

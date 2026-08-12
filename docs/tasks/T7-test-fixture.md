@@ -32,7 +32,7 @@ The three Spider-Man titles and `X-Men Origins - Wolverine` are the important on
 `-` → `:` replacement wrong.
 
 Also present: an apostrophe (`Tom Clancy's`), an ampersand (`Deadpool & Wolverine`), a two-character
-title (`F1 (2025)`), and six 2026 releases.
+title (`F1 (2025)`), and seven 2026 releases.
 
 Four dummy files exercise the size logic:
 

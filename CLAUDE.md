@@ -2,12 +2,13 @@
 
 `curator` replaces the seven-container *arr layer on a Raspberry Pi with one Go binary and an
 embedded Next.js UI. Read [`docs/architecture.md`](docs/architecture.md) for the system,
-[`docs/roadmap.md`](docs/roadmap.md) for where we are, and
+[`docs/progress.md`](docs/progress.md) for where we are right now,
+[`docs/roadmap.md`](docs/roadmap.md) for where we are going, and
 [`docs/decisions.md`](docs/decisions.md) before overturning anything — several decisions here
 reversed an earlier plan for reasons that were expensive to establish.
 
-**Current phase: 1 (foundation).** Tasks live in [`docs/tasks/`](docs/tasks/). Pick one, read its
-file, do only what it owns.
+**Phase 1 is done** (verified 2026-08-12). **Current phase: 2 (indexers).** Tasks live in
+[`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 
 ---
 
@@ -29,7 +30,7 @@ substitution, and even that is not guaranteed to be a colon rather than a real d
 
 The rule: query TMDB with the **raw folder title** and disambiguate by year — TMDB's search is fuzzy
 enough. Only on an empty result, retry with ` - ` collapsed to a space. On failure record
-`tmdb_id = NULL` and surface it; never guess. Six titles are 2026 releases where a confident-but-wrong
+`tmdb_id = NULL` and surface it; never guess. Seven titles are 2026 releases where a confident-but-wrong
 match is entirely plausible.
 
 8 of 29 titles contain ` - `. They are all in `testdata/library/movies/`, so the parser meets the
@@ -110,5 +111,7 @@ npx -y @mermaid-js/mermaid-cli@11 -i docs/diagram.mmd -o /tmp/out.svg
 
 ## Known broken upstream
 
-`gluetun` is exited and `qbittorrent` has never started on the Pi — an unresolved NordVPN
-`AUTH_FAILED`. This blocks phases 3–4 verification, nothing earlier.
+Nothing outstanding. `gluetun` was exited and `qbittorrent` had never started — an unresolved NordVPN
+`AUTH_FAILED` that blocked phases 3–4 verification. Both have been running healthy since 2026-08-12,
+so nothing is blocked. Container state drifts, so confirm with `ssh pi 'docker ps'` before relying
+on it.

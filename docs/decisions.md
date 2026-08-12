@@ -133,5 +133,10 @@ Colons are illegal in filenames and were replaced with ` - ` (8 of 29 titles). B
 `Spider-Man - No Way Home` contains one of each.
 
 Query TMDB with the raw folder title and disambiguate by year; its search is fuzzy enough. Only on an
-empty result, retry with ` - ` collapsed to a space. Record `tmdb_id = NULL` rather than guess — six
+empty result, retry with ` - ` collapsed to a space. Record `tmdb_id = NULL` rather than guess — seven
 titles are 2026 releases where a confident-but-wrong match is plausible.
+
+**Verified against the live API (2026-08-12):** all 8 hyphenated titles match on the raw query,
+including `Tom Clancy's Jack Ryan - Ghost War` → 1380291, whose canonical TMDB title is
+`Tom Clancy's Jack Ryan: Ghost War` — a colon exactly where the folder has ` - `. The collapse
+fallback never fires on this library; it stays as a safety net for folders that drift.

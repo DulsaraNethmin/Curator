@@ -5,9 +5,9 @@ until the last one.
 
 | Phase | What | Status |
 |---|---|---|
-| **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **in progress** |
-| 2 | Indexers — YTS, TPB, then 1337x through minter | next |
-| 3 | Downloads — qBittorrent client, magnet dispatch, state polling | blocked *(see below)* |
+| **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **done** |
+| **2** | Indexers — YTS, TPB, then 1337x through minter | **next** |
+| 3 | Downloads — qBittorrent client, magnet dispatch, state polling | |
 | 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | |
 | 5 | Interface — Next.js screens, static export embedded via `embed.FS` | |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | |
@@ -21,6 +21,9 @@ Go skeleton, SQLite schema, TMDB client, library scanner. Spec in
 
 **Done when** `GET /api/movies` returns all 29 movies scanned off disk with metadata attached, and
 `GOOS=linux GOARCH=arm64 go build ./...` passes.
+
+**Done, verified 2026-08-12** — 29/29 scanned and matched, rescan idempotent, arm64 build passes.
+See [`progress.md`](progress.md).
 
 ## Phase 2 — Indexers
 
@@ -41,9 +44,9 @@ qBittorrent Web API client, add-magnet tagged `curator`, state polling into the 
 
 **Done when** an API call puts a torrent into qBittorrent and progress is visible in the database.
 
-> **Blocked.** `gluetun` is exited on the Pi and `qbittorrent` has never started — an unresolved
-> NordVPN `AUTH_FAILED`. Nothing before this phase is affected, but this must be fixed before phase 3
-> can be verified.
+> **No longer blocked.** `gluetun` and `qbittorrent` were down on an unresolved NordVPN
+> `AUTH_FAILED`; both have been running healthy since 2026-08-12. Confirm with `ssh pi 'docker ps'`
+> before starting this phase.
 
 ## Phase 4 — Import
 
