@@ -8,8 +8,22 @@ embedded Next.js UI. Read [`docs/architecture.md`](docs/architecture.md) for the
 reversed an earlier plan for reasons that were expensive to establish.
 
 **Phases 1 and 2 are done** (both verified 2026-08-12). **Phase 3 is built**, with one verification
-outstanding — a dispatch against the real qBittorrent, which needs its Web UI password. Tasks live in
+outstanding — a dispatch against the real qBittorrent, which needs its Web UI password. **Phase 4 is
+built and verified locally**; it has never run against the Pi, on purpose. Tasks live in
 [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
+
+### Phase 4 writes to disk, and only ever locally
+
+The importer hardlinks; it never moves, copies over, renames or deletes a source file
+([D8](docs/decisions.md#d8--import-by-hardlink)). It is proven in `t.TempDir()` — equal inode plus a
+link count of 2, and bytes written through the source appearing through the destination. `df
+unchanged` is a weak signal on a copy-on-write macOS temp dir, so that check defers to the Pi at
+phase 6.
+
+Two traps worth naming. `syscall.Stat_t.Nlink` is `uint16` on darwin and `uint64` on linux, so read
+it through a converting helper or `GOOS=linux GOARCH=arm64 go vet ./...` breaks on a line that looks
+fine here. And **a folder does not imply a file** — 15 of the 29 library folders on the Pi are empty,
+and only 14 video files exist in total.
 
 ---
 
@@ -116,6 +130,8 @@ internal/api/        HTTP handlers
 internal/indexer/    release search — YTS, TPB, 1337x behind one interface, merged and ranked
 internal/qbit/       qBittorrent Web API v2 — adds and reads, never deletes
 internal/download/   dispatch a picked release, poll its progress into the database
+internal/importer/   hardlink a completed download into the library; the only package that knows deployment paths
+internal/jellyfin/   ask the media server to rescan, and nothing else
 testdata/library/    29 fixture dirs mirroring the real library
 web/                 Next.js UI (phase 5)
 ```
@@ -149,6 +165,8 @@ npx -y @mermaid-js/mermaid-cli@11 -i docs/diagram.mmd -o /tmp/out.svg
 | Search | `SEARCH_TIMEOUT` default `30s`, `SEARCH_CACHE_TTL` default `1h` |
 | qBittorrent | `QBIT_URL` default `http://127.0.0.1:8080`; `gluetun:8080` in Docker — it has no ports of its own |
 | Downloads | `QBIT_USER`/`QBIT_PASS` (unset = downloads off, not a startup error), `QBIT_CATEGORY` default `curator` |
+| Import | `DOWNLOADS_PATH` (empty = use `content_path` verbatim), `QBIT_DOWNLOADS_PATH` default `/downloads` |
+| Jellyfin | 10.10.7 at `192.168.1.26:8096`. `JELLYFIN_URL`, `JELLYFIN_API_KEY` (unset = no refresh, not a startup error) |
 
 ## Known broken upstream
 

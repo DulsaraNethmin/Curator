@@ -15,7 +15,9 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/api"
 	"github.com/DulsaraNethmin/curator/internal/config"
 	"github.com/DulsaraNethmin/curator/internal/download"
+	"github.com/DulsaraNethmin/curator/internal/importer"
 	"github.com/DulsaraNethmin/curator/internal/indexer"
+	"github.com/DulsaraNethmin/curator/internal/jellyfin"
 	"github.com/DulsaraNethmin/curator/internal/library"
 	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
@@ -94,7 +96,27 @@ func run() error {
 	} else {
 		log.Warn("QBIT_USER is unset: search works but nothing can be downloaded")
 	}
-	downloads := download.NewService(torrents, db, aggregator, cfg.QBitCategory, log)
+
+	// A nil refresher is a supported state, the third of the same shape: with no
+	// key the import still happens and only the "tell Jellyfin" step is skipped
+	// (decisions.md D15). Declared as the interface so the nil stays a nil
+	// interface rather than one holding a nil pointer.
+	var refresher importer.LibraryRefresher
+	if cfg.JellyfinConfigured() {
+		refresher = jellyfin.New(cfg.JellyfinURL, cfg.JellyfinAPIKey, indexerHTTP)
+	} else {
+		log.Warn("JELLYFIN_API_KEY is unset: imports will happen, but Jellyfin will not be told to refresh")
+	}
+
+	// The library root is the import destination as well as the scan source. An
+	// importer writing anywhere else would produce movies the scanner never sees.
+	imports := importer.New(db, cfg.LibraryMovies, importer.Paths{
+		Curator: cfg.DownloadsPath,
+		QBit:    cfg.QBitDownloadsPath,
+	}, refresher, log)
+
+	downloads := download.NewService(torrents, db, aggregator, cfg.QBitCategory, log).
+		WithImporter(imports)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
@@ -110,7 +132,8 @@ func run() error {
 	// all when downloads are unconfigured: a loop logging an authentication
 	// failure every ten seconds for ever is worse than no loop.
 	if torrents != nil {
-		poller := download.NewPoller(torrents, db, cfg.QBitCategory, cfg.DownloadPollInterval, log)
+		poller := download.NewPoller(torrents, db, cfg.QBitCategory, cfg.DownloadPollInterval, log).
+			WithImporter(imports)
 		go poller.Run(ctx)
 	}
 

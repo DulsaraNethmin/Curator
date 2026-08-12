@@ -24,6 +24,13 @@ type fakeDispatcher struct {
 	listErr    error
 	gotReq     download.Request
 	dispatches int
+
+	// Phase 4's manual import. The Dispatcher interface grew a method, so this
+	// fake grew one too; the import handler's own tests are in imports_test.go.
+	imported  store.Movie
+	importErr error
+	gotHash   string
+	imports   int
 }
 
 func (f *fakeDispatcher) Dispatch(_ context.Context, req download.Request) (store.Download, error) {
@@ -37,6 +44,15 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, req download.Request) (stor
 
 func (f *fakeDispatcher) Downloads(context.Context) ([]store.Download, error) {
 	return f.list, f.listErr
+}
+
+func (f *fakeDispatcher) Import(_ context.Context, hash string) (store.Movie, error) {
+	f.imports++
+	f.gotHash = hash
+	if f.importErr != nil {
+		return store.Movie{}, f.importErr
+	}
+	return f.imported, nil
 }
 
 func newDownloadServer(t *testing.T, d Dispatcher) http.Handler {

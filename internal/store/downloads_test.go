@@ -179,9 +179,14 @@ func TestManyWantedMoviesCoexistWithNullUniqueColumns(t *testing.T) {
 //
 // It does mean a film wanted before it was on disk ends up with a second row once
 // the scanner finds the folder: UpsertMovieByPath keys on library_path, and a
-// wanted row has none to match. Adopting the wanted row at import time is phase
-// 4's step, not the scanner's, and this test pins the current behaviour so that
-// change is a deliberate one.
+// wanted row has none to match. That is still exactly what happens — phase 4 did
+// not change the scan upsert, and every assertion below still holds.
+//
+// What phase 4 added is the other end of it. The two rows are not meant to stay
+// separate for ever: MarkImported folds them back into one at import time,
+// keeping the scanned row (it is what every future UpsertMovieByPath finds) and
+// deleting the wanted one. TestWantedThenScanThenMarkImported in imports_test.go
+// picks up exactly where this test stops, so the two read together.
 func TestWantedMovieDoesNotDisturbTheScanUpsert(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

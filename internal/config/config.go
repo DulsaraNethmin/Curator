@@ -30,6 +30,24 @@ type Config struct {
 	QBitPass             string
 	QBitCategory         string
 	DownloadPollInterval time.Duration
+
+	// Phase 4: import.
+	DownloadsPath     string
+	QBitDownloadsPath string
+	JellyfinURL       string
+	JellyfinAPIKey    string
+}
+
+// JellyfinConfigured reports whether the library refresh has somewhere to go.
+//
+// An unset JELLYFIN_API_KEY disables the refresh and is not a startup error —
+// the same posture as an unset TMDB_API_KEY and an unset QBIT_USER, and the
+// state curator ships in today, because the Pi's Jellyfin has no API key yet.
+// A refresh is the softest step of an import: the file is already hardlinked
+// into the library and Jellyfin rescans on its own schedule regardless
+// (decisions.md D15).
+func (c *Config) JellyfinConfigured() bool {
+	return c.JellyfinURL != "" && c.JellyfinAPIKey != ""
 }
 
 // DownloadsConfigured reports whether qBittorrent has credentials to work with.
@@ -83,6 +101,20 @@ const (
 	// One request per tick covers every download at once, so this is cheap; ten
 	// seconds is well inside what a human watching a progress bar expects.
 	defaultDownloadPollInterval = 10 * time.Second
+
+	// defaultQBitDownloadsPath is the downloads root inside qBittorrent's own
+	// namespace: its mount on the Pi is host /media/storage/media/downloads →
+	// container /downloads, so every path it reports starts here. It pairs with
+	// DOWNLOADS_PATH, which has no default at all — empty means "use the path
+	// qBittorrent reported verbatim", which is correct on a laptop and correct
+	// whenever curator shares qBittorrent's mount, and those are the two cases
+	// that should need no configuration.
+	defaultQBitDownloadsPath = "/downloads"
+
+	// defaultJellyfinURL is a laptop default, like defaultQBitURL. On the Pi
+	// Jellyfin is 10.10.7 at 192.168.1.26:8096, and http://jellyfin:8096 inside
+	// Docker.
+	defaultJellyfinURL = "http://127.0.0.1:8096"
 )
 
 // Load reads the configuration from the environment, applying defaults for
@@ -102,6 +134,14 @@ func Load() (*Config, error) {
 		QBitUser:      os.Getenv("QBIT_USER"),
 		QBitPass:      os.Getenv("QBIT_PASS"),
 		QBitCategory:  env("QBIT_CATEGORY", defaultQBitCategory),
+
+		// DOWNLOADS_PATH is read raw rather than through env(): it has no
+		// default, and empty is a meaningful value — "the path qBittorrent
+		// reports is already the path curator sees".
+		DownloadsPath:     os.Getenv("DOWNLOADS_PATH"),
+		QBitDownloadsPath: env("QBIT_DOWNLOADS_PATH", defaultQBitDownloadsPath),
+		JellyfinURL:       env("JELLYFIN_URL", defaultJellyfinURL),
+		JellyfinAPIKey:    os.Getenv("JELLYFIN_API_KEY"),
 	}
 
 	if raw := os.Getenv("PORT"); raw != "" {

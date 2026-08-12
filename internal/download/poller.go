@@ -23,6 +23,33 @@ type Poller struct {
 	interval time.Duration
 	log      *slog.Logger
 	now      func() time.Time
+
+	// importer is phase 4's, and is nil until it is attached. Nil leaves this
+	// poller behaving exactly as phase 3 shipped it, which is why every phase 3
+	// test still passes without being touched.
+	importer Importer
+}
+
+// Importer is phase 4's hardlink-into-the-library step, as a poll tick uses it.
+//
+// Neither method returns an error, and that is the point rather than an
+// oversight: an import must not be able to fail a tick, because the other
+// torrents in the same list still need reconciling, and a Jellyfin refresh must
+// not be able to fail an import (decisions.md D15). Putting it in the type
+// means there is nothing here for a future caller to mishandle.
+type Importer interface {
+	TryImport(ctx context.Context, t qbit.Torrent, d store.Download)
+	Refresh(ctx context.Context)
+}
+
+// WithImporter attaches the importer and returns the poller.
+//
+// It is a builder rather than a parameter to NewPoller so that phase 3's
+// constructor — and every test that calls it — keeps its shape. A hook that
+// forced an existing test to change would be a hook in the wrong place.
+func (p *Poller) WithImporter(im Importer) *Poller {
+	p.importer = im
+	return p
 }
 
 // NewPoller builds a Poller. The interval is a constructor argument rather than a
@@ -113,16 +140,39 @@ func (p *Poller) Tick(ctx context.Context) error {
 			completedAt = &at
 		}
 
-		if state == row.State && t.Progress == row.Progress && completedAt == nil {
-			continue // nothing moved; leave the row alone
+		// Nothing moved: skip the write, but NOT the rest of the iteration.
+		//
+		// This was a `continue`, and turning it into a condition around the write
+		// is what makes phase 4's retry possible. On every tick after the one
+		// that saw a torrent finish, the state and the progress are unchanged, so
+		// a `continue` here skipped the import too — and an import that failed
+		// once would never be attempted again.
+		if state != row.State || t.Progress != row.Progress || completedAt != nil {
+			if err := p.store.UpdateDownloadProgress(ctx, hash, state, t.Progress, completedAt); err != nil {
+				return err
+			}
+			if completedAt != nil {
+				p.log.Info("download completed", "hash", hash, "name", t.Name, "content_path", t.ContentPath)
+			}
 		}
 
-		if err := p.store.UpdateDownloadProgress(ctx, hash, state, t.Progress, completedAt); err != nil {
-			return err
+		// The trigger is a STATE, not the transition into it (decisions.md D14).
+		// Rows already reading `imported` were skipped further up, so anything
+		// completed at this point has not been imported yet — including one whose
+		// import failed on an earlier tick. That is the whole design: the
+		// recovery path and the normal path are the same code, so the recovery
+		// path is the one that actually gets exercised.
+		if p.importer != nil && state == store.DownloadCompleted {
+			p.importer.TryImport(ctx, t, row)
 		}
-		if completedAt != nil {
-			p.log.Info("download completed", "hash", hash, "name", t.Name, "content_path", t.ContentPath)
-		}
+	}
+
+	// Once per tick, not once per import: POST /Library/Refresh is a
+	// whole-library scan, and a batch of six imports asking for six scans of the
+	// same library would be worse than asking for none. The importer no-ops when
+	// nothing was imported.
+	if p.importer != nil {
+		p.importer.Refresh(ctx)
 	}
 	return nil
 }
