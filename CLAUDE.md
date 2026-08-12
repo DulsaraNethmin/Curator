@@ -7,8 +7,9 @@ embedded Next.js UI. Read [`docs/architecture.md`](docs/architecture.md) for the
 [`docs/decisions.md`](docs/decisions.md) before overturning anything — several decisions here
 reversed an earlier plan for reasons that were expensive to establish.
 
-**Phases 1 and 2 are done** (both verified 2026-08-12). **Current phase: 3 (downloads).** Tasks live
-in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
+**Phases 1 and 2 are done** (both verified 2026-08-12). **Phase 3 is built**, with one verification
+outstanding — a dispatch against the real qBittorrent, which needs its Web UI password. Tasks live in
+[`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 
 ---
 
@@ -113,6 +114,8 @@ internal/library/    disk scan, Title (Year) parsing
 internal/tmdb/       metadata lookup
 internal/api/        HTTP handlers
 internal/indexer/    release search — YTS, TPB, 1337x behind one interface, merged and ranked
+internal/qbit/       qBittorrent Web API v2 — adds and reads, never deletes
+internal/download/   dispatch a picked release, poll its progress into the database
 testdata/library/    29 fixture dirs mirroring the real library
 web/                 Next.js UI (phase 5)
 ```
@@ -144,6 +147,8 @@ npx -y @mermaid-js/mermaid-cli@11 -i docs/diagram.mmd -o /tmp/out.svg
 | TMDB | `TMDB_API_KEY` env var, free key from themoviedb.org |
 | minter | `MINTER_URL`, default `http://127.0.0.1:8191` — IPv4 only, so not `localhost` |
 | Search | `SEARCH_TIMEOUT` default `30s`, `SEARCH_CACHE_TTL` default `1h` |
+| qBittorrent | `QBIT_URL` default `http://127.0.0.1:8080`; `gluetun:8080` in Docker — it has no ports of its own |
+| Downloads | `QBIT_USER`/`QBIT_PASS` (unset = downloads off, not a startup error), `QBIT_CATEGORY` default `curator` |
 
 ## Known broken upstream
 
