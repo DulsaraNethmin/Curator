@@ -63,6 +63,11 @@ type Server struct {
 	// dispatcher is phase 3's downloads, attached with WithDownloads for the same
 	// reason.
 	dispatcher Dispatcher
+
+	// settings is phase 5's read-only status view, attached with WithSettings.
+	// It is a plain struct built by cmd/curator rather than a *config.Config, so
+	// this package still knows nothing about where configuration comes from.
+	settings *Settings
 }
 
 // New builds a Server. matcher may be nil; log may be nil, in which case the
