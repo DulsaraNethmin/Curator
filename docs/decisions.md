@@ -182,3 +182,37 @@ predict that; resolution does not.
 Weighing the two into a single score is where Radarr's custom formats begin, and
 [D5](#d5--manual-search-not-automatic-grabbing) declines to rebuild that. With a human choosing from
 a list, a filter plus an honest sort beats a scoring heuristic that has to be tuned and second-guessed.
+
+---
+
+## D12 — YTS is reached at `movies-api.accel.li`, not `yts.mx`
+
+**Status:** decided, measured · **Overtakes:** the base URL written into
+[T8](tasks/T8-yts-indexer.md) and [phase-2.md](phase-2.md#the-three-indexers)
+
+`yts.mx`, the host both documents name, **is NXDOMAIN** — no A record on 1.1.1.1, on 8.8.8.8, or from
+the Pi (2026-08-12). It is not an ISP block; the domain is simply gone, so there was no "keep the
+spec" option.
+
+The live API was found by following the historical domains: `yts.lt` and `yts.am` both 301 to
+`https://yts.gg/api/v2/…`, which serves the genuine response and says so in its own payload:
+
+```
+"status_message": "Query was successful. NOTICE: Base URL moving to https://movies-api.accel.li/api/v2/"
+```
+
+So the base is `https://movies-api.accel.li/api/v2` — the migration target the API itself names,
+reached through a redirect chain from the official domains rather than trusted on appearance. Its
+parsed `data` was diffed against `yts.gg`'s for the same query and is **equal**; it also answers
+without a User-Agent, which `yts.gg` needs. `yts.gg` is the fallback if accel.li goes the way of
+`yts.mx`, and both are one overridable constant.
+
+**Do not "fix" this by switching to `yts.rs` or `yts.hn`.** They resolve and look plausible, but
+return `{"message":"Cannot read property 'moviesPerPage' of undefined"}` — a different, re-implemented
+API behind a clone site, which is exactly what [D7](#d7--do-not-adopt-the-knaben-aggregator) declined
+to depend on.
+
+Two further measurements are recorded in `yts.go` because they are cheap to lose and expensive to
+rediscover: the **API host is not behind Cloudflare** while the `yts.gg` *site* is, so YTS needs no
+minter; and the API **clamps `seeds` at 100**, so YTS's contribution to a seeder-ranked list is a
+plateau rather than a spread.
