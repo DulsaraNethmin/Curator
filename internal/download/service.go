@@ -38,6 +38,7 @@ type Store interface {
 	InsertDownload(ctx context.Context, d store.Download) (store.Download, error)
 	UpdateDownloadProgress(ctx context.Context, hash, state string, progress float64, completedAt *time.Time) error
 	GetDownloadByHash(ctx context.Context, hash string) (store.Download, error)
+	ListDownloads(ctx context.Context) ([]store.Download, error)
 }
 
 // Resolver hands out the magnet and the metadata behind a release id. Phase 2's
@@ -51,6 +52,16 @@ type Resolver interface {
 // dispatch cannot run. It is a configuration state, not a failure of the request,
 // and the API layer answers it with a 503 naming the variable rather than a 500.
 var ErrUnconfigured = errors.New("downloads are not configured: set QBIT_USER and QBIT_PASS")
+
+// ErrClient reports that qBittorrent could not be reached, refused us, or took a
+// magnet without producing a torrent.
+//
+// It exists so the API layer can answer 502 — the request was fine and a
+// dependency was not — and keep 500 for curator's own failures, such as the
+// database. Without the distinction every downstream problem would be reported as
+// ours, which is the same dishonesty as a 200 carrying a failure, pointed the
+// other way.
+var ErrClient = errors.New("qbittorrent")
 
 // Request is one dispatch: the release to grab, and the film it is for.
 //
@@ -133,7 +144,7 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	}
 
 	if err := s.client.AddMagnet(ctx, magnet, s.category); err != nil {
-		return store.Download{}, fmt.Errorf("dispatch %s: %w", req.ReleaseID, err)
+		return store.Download{}, fmt.Errorf("dispatch %s: %w: %w", req.ReleaseID, ErrClient, err)
 	}
 
 	// torrents/add answers 200 Ok. for a magnet it ignored just as readily as for
@@ -141,11 +152,12 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	// torrent can be found. This is the step that earns the right to write a row.
 	torrent, err := s.client.TorrentByHash(ctx, hash)
 	if err != nil {
-		return store.Download{}, fmt.Errorf("dispatch %s: confirming the add: %w", req.ReleaseID, err)
+		return store.Download{}, fmt.Errorf("dispatch %s: confirming the add: %w: %w", req.ReleaseID, ErrClient, err)
 	}
 	if torrent == nil {
 		return store.Download{}, fmt.Errorf(
-			"dispatch %s: qBittorrent accepted the magnet but has no torrent %s — it was ignored", req.ReleaseID, hash)
+			"dispatch %s: %w accepted the magnet but has no torrent %s — it was ignored",
+			req.ReleaseID, ErrClient, hash)
 	}
 
 	movie, err := s.store.UpsertWantedMovie(ctx, req.Title, req.Year, req.TMDBID)
@@ -169,4 +181,13 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	s.log.Info("dispatched", "release", release.Title, "hash", hash,
 		"indexer", saved.Indexer, "movie_id", movie.ID, "category", s.category)
 	return saved, nil
+}
+
+// Downloads lists every recorded download, newest first.
+//
+// It reads through to the store rather than qBittorrent: the table is the record
+// of what curator dispatched, and it stays answerable when qBittorrent is down —
+// which is exactly when someone is most likely to be looking.
+func (s *Service) Downloads(ctx context.Context) ([]store.Download, error) {
+	return s.store.ListDownloads(ctx)
 }

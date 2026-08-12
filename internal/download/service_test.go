@@ -104,6 +104,15 @@ func (f *fakeStore) UpdateDownloadProgress(_ context.Context, hash, state string
 	return f.updateErr
 }
 
+func (f *fakeStore) ListDownloads(context.Context) ([]store.Download, error) {
+	f.calls = append(f.calls, "list-downloads")
+	out := make([]store.Download, 0, len(f.byHash))
+	for _, d := range f.byHash {
+		out = append(out, d)
+	}
+	return out, nil
+}
+
 func (f *fakeStore) GetDownloadByHash(_ context.Context, hash string) (store.Download, error) {
 	f.calls = append(f.calls, "get")
 	if f.getErr != nil {
