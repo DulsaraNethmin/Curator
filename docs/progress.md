@@ -3,7 +3,7 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-12 · **Phases 1 and 2 complete** · phase 3 next
+**Last updated:** 2026-08-12 · **Phases 1 and 2 complete** · phase 3 specified, not started
 
 ---
 
@@ -13,7 +13,7 @@ what is **done, verified, and outstanding**. Update it when a phase closes or a 
 |---|---|---|
 | **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **done** — verified 2026-08-12 |
 | **2** | Indexers — YTS, TPB, then 1337x through minter | **done** — verified 2026-08-12 |
-| **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **next** — unblocked (was NordVPN `AUTH_FAILED`) |
+| **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **next** — [spec](phase-3.md) and tasks written, no code yet |
 | 4 | Import — completion watcher, hardlink, rename, Jellyfin refresh | |
 | 5 | Interface — Next.js screens embedded via `embed.FS` | |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | back up the *arr configs first |
@@ -192,6 +192,41 @@ half-written files; each copy was diffed against the origin before its owned fil
 - **apibay caps a response at 100 rows** with no pagination, so a broad title is truncated at source.
 
 ---
+
+## Phase 3 tasks
+
+Specified 2026-08-12, no code yet. Spec in [`phase-3.md`](phase-3.md). The `downloads` table has
+existed since [T2](tasks/T2-store.md), so this phase needs **no migration**.
+
+| Task | Owns | Depends on | Status |
+|---|---|---|---|
+| [T13](tasks/T13-qbit-client.md) qBittorrent client | `internal/qbit/` | — | not started |
+| [T14](tasks/T14-downloads-store.md) downloads store | `internal/store/downloads.go` | — | not started |
+| [T15](tasks/T15-download-poller.md) dispatch + poller | `internal/download/` | T13, T14 | not started |
+| [T16](tasks/T16-downloads-api.md) API | `internal/api/downloads.go`, config, wiring | T15 | not started |
+
+**Measured on the Pi while specifying, so the implementation does not have to guess:**
+
+- **qBittorrent 5.1.2** (`lscr.io/linuxserver/qbittorrent`), Web API v2, sharing gluetun's network
+  namespace — it has no ports of its own, so it is `gluetun:8080` in Docker and `192.168.1.26:8080`
+  from a laptop.
+- **Authentication is required on every endpoint** — an unauthenticated call is `403`, not `401`.
+  The session is an `SID` cookie, and an expired session is indistinguishable from a wrong password.
+- **Mount is `/media/storage/media/downloads` → `/downloads`**, so every path qBittorrent reports is
+  in its own namespace. Phase 3 stores them verbatim; the translation belongs in phase 4's hardlink.
+- **Existing categories are `radarr` and `sonarr`.** Curator gets its own with its own save path
+  ([D13](decisions.md#d13--downloads-are-scoped-by-a-qbittorrent-category-with-its-own-save-path)).
+
+**Traps the tasks call out as tests rather than comments:**
+
+- **`torrents/add` returns `200 Ok.` whether or not it accepted the magnet**, and never returns a
+  hash. The add is confirmed by looking the torrent up by `indexer.InfoHash` afterwards — the same
+  class of lie as minter's 200-carrying-a-failure.
+- **Nothing is written to the database until qBittorrent confirms.** A row written first would claim
+  a download no client has heard of, every time qBittorrent is down.
+- **qBittorrent's hashes are lower-case and `indexer.InfoHash` is upper-case.** Unnormalised, every
+  lookup silently misses.
+- **`imported` stays phase 4's to set.** A completed torrent is a file, not a library entry.
 
 ## Corrections made to the docs
 
