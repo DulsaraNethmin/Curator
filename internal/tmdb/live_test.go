@@ -84,3 +84,78 @@ func liveAPIKey(t *testing.T) string {
 	}
 	return ""
 }
+
+// The browse methods against the real API, under the same contract as the search
+// above: skip with no key or no network, but FAIL on a bad status, so a wrong
+// endpoint path cannot sit there green.
+//
+// These are also how the fixtures in testdata/ were recorded, which is why they
+// assert the same facts the fixture tests do — if TMDB changes the shape, the
+// live test fails here rather than the recordings quietly going stale.
+func TestLiveBrowse(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live TMDB check in -short mode")
+	}
+	key := liveAPIKey(t)
+	if key == "" {
+		t.Skip("no TMDB_API_KEY in the environment or ../../.env; skipping live check")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := New(key, nil)
+
+	t.Run("Movie", func(t *testing.T) {
+		got, err := client.Movie(ctx, 299534)
+		switch {
+		case errors.Is(err, ErrUnauthorized):
+			t.Fatalf("TMDB rejected the key: %v", err)
+		case err != nil:
+			t.Skipf("live TMDB unreachable: %v", err)
+		}
+		if got.Title != "Avengers: Endgame" || got.Runtime == 0 || len(got.Genres) == 0 {
+			t.Errorf("live details look wrong: %+v", got)
+		}
+		t.Logf("live: %s (%d), %d min, %v", got.Title, got.Year, got.Runtime, got.Genres)
+	})
+
+	t.Run("NotFound", func(t *testing.T) {
+		_, err := client.Movie(ctx, 999999999)
+		if err != nil && !errors.Is(err, ErrNotFound) && !strings.Contains(err.Error(), "unexpected status") {
+			t.Skipf("live TMDB unreachable: %v", err)
+		}
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("err = %v, want ErrNotFound for an id TMDB does not have", err)
+		}
+	})
+
+	t.Run("SearchMovies", func(t *testing.T) {
+		got, err := client.SearchMovies(ctx, "avengers", 0)
+		if err != nil {
+			t.Skipf("live TMDB unreachable: %v", err)
+		}
+		if len(got) == 0 {
+			t.Fatal("live search for avengers found nothing")
+		}
+		// The whole point of the redesign: the results are a choice, and the most
+		// popular one is not necessarily the one anybody wanted.
+		t.Logf("live: %d results, first is %q (%d)", len(got), got[0].Title, got[0].Year)
+	})
+
+	t.Run("TrendingAndPopular", func(t *testing.T) {
+		for name, call := range map[string]func() ([]Match, error){
+			"Trending": func() ([]Match, error) { return client.Trending(ctx) },
+			"Popular":  func() ([]Match, error) { return client.Popular(ctx) },
+		} {
+			got, err := call()
+			if err != nil {
+				t.Skipf("live TMDB unreachable: %v", err)
+			}
+			if len(got) == 0 {
+				t.Errorf("%s returned nothing", name)
+				continue
+			}
+			t.Logf("live %s: %d, first is %q", name, len(got), got[0].Title)
+		}
+	})
+}
