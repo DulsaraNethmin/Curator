@@ -172,3 +172,72 @@ Driven in a browser, with the *arr stack untouched:
 - **TV**, still. `media_type` carries it; no screen offers it.
 - **Mobile-native anything.** This is a LAN web UI embedded in a Go binary.
 - **The cutover.** Phase 6, and the *arr config backup comes first.
+
+---
+
+# The TMDB-first redesign — T27–T31
+
+Added 2026-08-13, after the first real download exposed the design fault the original Search screen
+had: it learned what a film was called from whatever was typed.
+
+**Done when** you search a title, pick a film from a grid of posters, land on a page with its
+backdrop and details, press **Find releases**, and dispatch — with the title, year and `tmdb_id` all
+coming from TMDB rather than from a text box.
+
+## Why
+
+Searching `avengers` with no year recorded `title='avengers', year=0` and produced three failures
+from one row: an import that failed on every tick for ever, a poster showing **Avengers: Doomsday
+(2026)** because a yearless TMDB query guesses, and a folder named after the search box. Requiring a
+year was a stopgap; making the movie the primary object is the fix.
+
+See [D20](decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it) — including the
+measured table showing that a canonical title with a colon **silently loses 1337x** — and
+[D21](decisions.md#d21--the-movie-page-is-movieid--because-the-ui-is-a-static-export) for why the
+movie page is a query-string route.
+
+## Tasks
+
+| Task | Owns | Depends on |
+|---|---|---|
+| [T27](tasks/T27-tmdb-browse.md) TMDB browsing | `internal/tmdb/` — `get`, `Details`, four methods | — |
+| [T28](tasks/T28-query-title.md) query normalisation | `internal/indexer/query.go`, one line of `aggregate.go` | — |
+| [T29](tasks/T29-library-by-tmdb.md) library index | `internal/store/movies.go` | — |
+| [T30](tasks/T30-browse-api.md) browse endpoints | `internal/api/browse.go`, wiring | T27, T29 |
+| [T31](tasks/T31-browse-ui.md) the screens | `web/` — Discover, cards, movie page | T30 |
+
+T27, T28 and T29 are independent and can land in any order.
+
+## The shape
+
+| Route | Answers |
+|---|---|
+| `GET /api/tmdb/discover` | `{rows:[{id,title,ok,error,results:[card]}]}` — trending and popular |
+| `GET /api/tmdb/search?query=&year=` | `{query,year,results:[card]}` |
+| `GET /api/tmdb/movies/{id}` | a card plus tagline, runtime, genres, status, studios, languages |
+
+Everything TMDB-backed lives under `/api/tmdb/`, and the prefix is the rule: **if it is under
+`/api/tmdb/`, it goes dark without a key**. `/api/movies` stays the library and cannot be confused
+with it. `GET /api/search` is untouched — it is the fallback.
+
+Every card carries `library: {movie_id, state, library_path} | null`, where `state` is one of
+`imported`, `downloading`, `wanted`. That is the green check on a poster.
+
+Screens: `/` becomes Discover (trending and popular rails), `/search/?q=` returns movie cards with a
+toggle back to release-name search, and `/movie/?id=` is the detail page. Releases load **only when
+asked**, so browsing Discover costs no indexer traffic and launches no browser.
+
+## The traps
+
+- **A colon loses 1337x.** `NormaliseQuery` strips it, in the aggregator, above the cache. The
+  canonical title with its colon is still what gets stored and what becomes the folder — the two must
+  not be conflated (D20).
+- **`store.StatusDownloading` is declared and never written.** `UpsertWantedMovie` inserts `wanted`
+  and the importer writes `imported`, so a film at 60% would be labelled "wanted" on a card. The
+  library index derives `downloading` from an `EXISTS` over `downloads`, not from `movies.status`.
+- **`scrubURL` is not enforced by anything.** Four new TMDB endpoints are four new chances to leak
+  `api_key=` into a log line. Every one goes through a single `get`, and the leak test is
+  table-driven over every exported method so a fifth cannot skip it.
+- **`useSearchParams()` without `<Suspense>` fails the build**, which is the good outcome (D21).
+- **A film with no release date has year 0** and cannot become a folder. Download is disabled with
+  that as the reason — a rare true sentence rather than "you forgot to type a year".

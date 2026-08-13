@@ -68,6 +68,9 @@ type Server struct {
 	// It is a plain struct built by cmd/curator rather than a *config.Config, so
 	// this package still knows nothing about where configuration comes from.
 	settings *Settings
+
+	// logs is the in-memory tail of the process log, attached with WithLogs.
+	logs LogTail
 }
 
 // New builds a Server. matcher may be nil; log may be nil, in which case the
@@ -150,6 +153,20 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, m := range missing {
+		// A row with no year is not matched, it is surfaced. TMDB's search is
+		// fuzzy by design, and an unconstrained query for a bare title returns a
+		// confident wrong answer: "avengers" with no year matches
+		// Avengers: Doomsday (2026). D9 is explicit that the fallback is to
+		// record NULL and surface it rather than guess, and it names 2026
+		// releases as exactly where a plausible wrong match lives. A folder on
+		// disk always has a year; a row wanted from a yearless search does not.
+		if m.Year <= 0 {
+			s.log.Warn("not matched: no year, and TMDB would guess without one",
+				"title", m.Title, "movie_id", m.ID)
+			out.Unmatched++
+			continue
+		}
+
 		if err := s.match(ctx, m); err != nil {
 			// One failure must not abort the scan. The row keeps tmdb_id NULL and
 			// is surfaced by the unmatched count.

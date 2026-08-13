@@ -407,3 +407,51 @@ func copyFile(srcInfo fs.FileInfo, src, dst string) error {
 	}
 	return nil
 }
+
+// RemoveMovieFolder deletes a movie's folder and everything in it.
+//
+// It is the inverse of what Link and the importer create, and it is the ONLY
+// deletion this package performs. The containment check is the whole safety
+// argument: root is LIBRARY_MOVIES, folder must resolve to something strictly
+// inside it, and the root itself is refused. A library_path that had drifted —
+// or been crafted — into "/" would otherwise be an rm -rf with a friendly name.
+//
+// A folder that is already gone is success. Deletion gets retried after a
+// partial failure, and a retry that fails because the work was already done is
+// a retry nobody can complete.
+func RemoveMovieFolder(root, folder string) error {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("remove %s: %w", folder, err)
+	}
+	absFolder, err := filepath.Abs(folder)
+	if err != nil {
+		return fmt.Errorf("remove %s: %w", folder, err)
+	}
+
+	if absFolder == absRoot {
+		return fmt.Errorf("remove %s: that is the library root itself, not a movie", folder)
+	}
+	rel, err := filepath.Rel(absRoot, absFolder)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("remove %s: outside the library root %s", folder, root)
+	}
+
+	info, err := os.Lstat(absFolder)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil // already gone
+	case err != nil:
+		return fmt.Errorf("remove %s: %w", folder, err)
+	}
+	// Lstat, and a directory only: a symlink at the library path would otherwise
+	// have RemoveAll follow it out of the library and delete whatever it names.
+	if !info.IsDir() {
+		return fmt.Errorf("remove %s: not a directory", folder)
+	}
+
+	if err := os.RemoveAll(absFolder); err != nil {
+		return fmt.Errorf("remove %s: %w", folder, err)
+	}
+	return nil
+}

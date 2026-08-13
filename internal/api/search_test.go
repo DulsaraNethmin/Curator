@@ -322,3 +322,36 @@ func TestPhase1RoutesSurviveSearchRegistration(t *testing.T) {
 		t.Errorf("/api/movies/abc = %d, want 400", rec.Code)
 	}
 }
+
+// The other half of D20, at the layer that decides the folder name.
+//
+// The aggregator strips the colon before asking an indexer, because a colon
+// costs 1337x every result it would have returned. What must NOT change is what
+// the API echoes: dispatch stores that title and library.DestFolder turns it
+// into "Avengers - Endgame (2019)". If the normalisation ever leaked up to here,
+// the library would fill with folders named after a search query.
+func TestSearchEchoesTheCanonicalTitleColonIncluded(t *testing.T) {
+	fake := &fakeSearcher{}
+	rec := do(t, newSearchServer(t, fake), http.MethodGet, "/api/search?title=Avengers%3A+Endgame&year=2019")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var body struct {
+		Title string `json:"title"`
+		Year  int    `json:"year"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Title != "Avengers: Endgame" {
+		t.Errorf("echoed title = %q, want the canonical %q — this becomes the folder name",
+			body.Title, "Avengers: Endgame")
+	}
+	// And the handler hands the searcher what it was given; normalising is the
+	// aggregator's job, one layer down, where the cache key is decided.
+	if fake.gotTitle != "Avengers: Endgame" {
+		t.Errorf("the searcher was asked %q, want the title verbatim", fake.gotTitle)
+	}
+}

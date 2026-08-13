@@ -19,6 +19,7 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/indexer"
 	"github.com/DulsaraNethmin/curator/internal/jellyfin"
 	"github.com/DulsaraNethmin/curator/internal/library"
+	"github.com/DulsaraNethmin/curator/internal/logs"
 	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
@@ -50,7 +51,17 @@ func run() error {
 		return err
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	// Every record still goes to stderr exactly as before; the buffer keeps a
+	// copy for GET /api/logs and the Logs screen, so nobody has to SSH into the
+	// Pi to see what curator is doing.
+	//
+	// The secrets are handed over so they can be scrubbed on the way in. That is
+	// the second line of defence, not the first — internal/tmdb already strips
+	// the API key out of transport errors at the source — but a log line is now
+	// a log line on the network, and the guarantee has to hold for log calls
+	// nobody has written yet (docs/decisions.md D18).
+	logBuffer := logs.NewBuffer(cfg.LogBufferLines, cfg.TMDBAPIKey, cfg.QBitPass, cfg.JellyfinAPIKey)
+	log := slog.New(logBuffer.Handler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
 	slog.SetDefault(log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -124,11 +135,14 @@ func run() error {
 	apiSrv := api.New(db, api.ScannerFunc(library.Scan), matcher, cfg.LibraryMovies, log).
 		WithSearch(aggregator).
 		WithDownloads(downloads).
-		WithSettings(settingsView(cfg, matcher, torrents, indexerHTTP))
+		WithSettings(settingsView(cfg, matcher, torrents, indexerHTTP)).
+		WithLogs(logBuffer)
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
 	apiSrv.RegisterDownloads(mux)
 	apiSrv.RegisterSettings(mux)
+	apiSrv.RegisterLogs(mux)
+	apiSrv.RegisterMovieDelete(mux)
 
 	// The UI is mounted last and at "/", so it can never shadow an API pattern.
 	// Go 1.22 routing prefers the more specific pattern anyway, but the order is

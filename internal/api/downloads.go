@@ -25,6 +25,10 @@ type Dispatcher interface {
 	// is the same service, reached from the same handler set, and a second
 	// interface over one implementation would only be more names.
 	Import(ctx context.Context, hash string) (store.Movie, error)
+
+	// DeleteMovie removes a film from the library and the disk (D19). It is the
+	// only destructive thing on this interface, and the only one in the API.
+	DeleteMovie(ctx context.Context, id int64) (download.Deletion, error)
 }
 
 // WithDownloads attaches release dispatch and returns the server.

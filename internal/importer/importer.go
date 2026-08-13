@@ -312,3 +312,20 @@ func (im *Importer) assertInsideLibrary(dest string) error {
 	}
 	return nil
 }
+
+// RemoveFromLibrary deletes a movie's folder and the hardlink inside it.
+//
+// It lives here rather than in the delete service because this package created
+// that folder, and because it is the one place that holds LIBRARY_MOVIES —
+// keeping the root in a single place is what makes the containment check
+// meaningful rather than something a caller could pass the wrong value to.
+//
+// The bytes do not go away when this returns. A hardlink is one of two names for
+// an inode, so removing ours frees nothing until the download copy is gone too;
+// that is qBittorrent's to delete, and the caller asks it (docs/decisions.md D19).
+func (im *Importer) RemoveFromLibrary(libraryPath string) error {
+	if strings.TrimSpace(libraryPath) == "" {
+		return nil // a wanted film was never on disk; nothing to remove
+	}
+	return library.RemoveMovieFolder(im.moviesRoot, libraryPath)
+}

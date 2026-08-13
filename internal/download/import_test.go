@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,10 @@ type fakeImporter struct {
 	refreshes int
 	movie     store.Movie
 	err       error
+
+	// D19's delete path.
+	removed   []string
+	removeErr error
 }
 
 type importCall struct {
@@ -31,6 +36,11 @@ func (f *fakeImporter) TryImport(_ context.Context, t qbit.Torrent, d store.Down
 }
 
 func (f *fakeImporter) Refresh(context.Context) { f.refreshes++ }
+
+func (f *fakeImporter) RemoveFromLibrary(path string) error {
+	f.removed = append(f.removed, path)
+	return f.removeErr
+}
 
 func (f *fakeImporter) Import(_ context.Context, t qbit.Torrent, d store.Download) (store.Movie, error) {
 	f.tried = append(f.tried, importCall{hash: d.TorrentHash, contentPath: t.ContentPath})
@@ -322,5 +332,193 @@ func TestServiceImportRefusesAnUnfinishedTorrent(t *testing.T) {
 	}
 	if len(im.tried) != 0 {
 		t.Error("the importer ran for a torrent that has not finished")
+	}
+}
+
+// Measured against the real qBittorrent 5.1.2, not assumed: torrents/add
+// answers "Fails." for a magnet it ALREADY HOLDS. Phase 3's spec says a
+// duplicate add is silently idempotent — it is not, and that survived only
+// because it was never run against a real client.
+//
+// So the add is advisory and the hash lookup is authoritative. Re-dispatching
+// after a database reset, a restart, or a second click has to converge on the
+// existing torrent rather than 502.
+func TestDispatchConvergesWhenQBittorrentAlreadyHasTheTorrent(t *testing.T) {
+	torrent := completedTorrent()
+	client := &fakeClient{
+		addErr: errors.New(`qbit torrents/add: qBittorrent answered "Fails.", having accepted no magnet`),
+		byHash: &torrent,
+	}
+	st := newFakeStore()
+
+	saved, err := newImportService(client, st, nil).
+		Dispatch(context.Background(), Request{ReleaseID: "r1", Title: "Interstellar", Year: 2014})
+	if err != nil {
+		t.Fatalf("Dispatch: %v — a refused duplicate add must converge, not fail", err)
+	}
+	if saved.TorrentHash == "" {
+		t.Error("no row was written for a torrent qBittorrent already had")
+	}
+	// The row is still only written after the hash lookup confirmed it.
+	if got := strings.Join(client.calls, ","); got != "add,confirm" {
+		t.Errorf("client calls = %q, want add then confirm", got)
+	}
+}
+
+// The other half: a refused add AND no torrent afterwards is a real failure,
+// and it must carry the add's own reason rather than a vaguer one.
+func TestDispatchStillFailsWhenTheAddWasRefusedAndNothingIsThere(t *testing.T) {
+	client := &fakeClient{
+		addErr: errors.New("qbittorrent is out of disk"),
+		byHash: nil,
+	}
+	st := newFakeStore()
+
+	_, err := newImportService(client, st, nil).
+		Dispatch(context.Background(), Request{ReleaseID: "r1", Title: "Interstellar", Year: 2014})
+	if !errors.Is(err, ErrClient) {
+		t.Fatalf("err = %v, want ErrClient", err)
+	}
+	if !strings.Contains(err.Error(), "out of disk") {
+		t.Errorf("err = %q, want the add's own reason", err)
+	}
+	if st.writeCount != 0 {
+		t.Errorf("wrote %d times; nothing may be recorded when there is no torrent", st.writeCount)
+	}
+}
+
+// --- delete (D19) -----------------------------------------------------------
+
+func newDeleteService(client TorrentClient, st Store, im ManualImporter) *Service {
+	return NewService(client, st, newResolver("magnet:?xt=urn:btih:"+testHash), "curator", quiet()).
+		WithImporter(im)
+}
+
+// The order is the decision: torrent and its files, then our hardlink, then the
+// rows. A failure at any step has to leave something a retry can finish, and the
+// rows survive longest because files with no row are silently re-adopted by the
+// next scan.
+func TestDeleteMovieRemovesTorrentThenLinkThenRows(t *testing.T) {
+	path := "/library/movies/Interstellar (2014)"
+	size := int64(3_219_186_473)
+
+	client := &fakeClient{}
+	st := newFakeStore()
+	st.movie = store.Movie{ID: 1, Title: "Interstellar", Year: 2014, LibraryPath: &path, SizeBytes: &size}
+	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadImported}
+	im := &fakeImporter{}
+
+	report, err := newDeleteService(client, st, im).DeleteMovie(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DeleteMovie: %v", err)
+	}
+
+	if report.TorrentsRemoved != 1 || report.BytesFreed != size {
+		t.Errorf("report = %+v, want 1 torrent and %d bytes", report, size)
+	}
+	// Deleting the files is the whole point: a hardlink removal alone frees
+	// nothing, because the download copy still holds the inode.
+	if !client.deleteFiles {
+		t.Error("deleteFiles was false; the disk would not actually be freed")
+	}
+	if client.deleteCategory != "curator" {
+		t.Errorf("required category = %q, want curator", client.deleteCategory)
+	}
+	if len(im.removed) != 1 || im.removed[0] != path {
+		t.Errorf("removed from library = %v, want %q", im.removed, path)
+	}
+	if !st.deletedMovie {
+		t.Error("the rows were not deleted")
+	}
+
+	// And the order.
+	order := strings.Join(st.calls, ",") + "|" + strings.Join(client.calls, ",")
+	if !strings.Contains(order, "delete-movie") || !strings.HasSuffix(strings.Join(st.calls, ","), "delete-movie") {
+		t.Errorf("store calls = %v, want the row delete last", st.calls)
+	}
+}
+
+// A torrent that could not be removed stops everything: the film is still in the
+// library and still on disk, which is a state a retry can finish.
+func TestDeleteMovieStopsWhenTheTorrentCannotBeRemoved(t *testing.T) {
+	path := "/library/movies/Interstellar (2014)"
+
+	client := &fakeClient{deleteErr: errors.New("connection refused")}
+	st := newFakeStore()
+	st.movie = store.Movie{ID: 1, Title: "Interstellar", Year: 2014, LibraryPath: &path}
+	st.byHash[testHash] = store.Download{TorrentHash: testHash}
+	im := &fakeImporter{}
+
+	_, err := newDeleteService(client, st, im).DeleteMovie(context.Background(), 1)
+	if !errors.Is(err, ErrClient) {
+		t.Fatalf("err = %v, want ErrClient", err)
+	}
+	if len(im.removed) != 0 {
+		t.Error("the library folder was removed even though the torrent was not")
+	}
+	if st.deletedMovie {
+		t.Error("the rows were deleted even though the torrent was not removed")
+	}
+}
+
+// The guard reaching the caller: a torrent in someone else's category must
+// surface as a refusal, not as a partial delete.
+func TestDeleteMovieSurfacesTheCategoryGuard(t *testing.T) {
+	path := "/library/movies/Interstellar (2014)"
+
+	client := &fakeClient{deleteErr: fmt.Errorf("category radarr: %w", qbit.ErrWrongCategory)}
+	st := newFakeStore()
+	st.movie = store.Movie{ID: 1, Title: "Interstellar", Year: 2014, LibraryPath: &path}
+	st.byHash[testHash] = store.Download{TorrentHash: testHash}
+	im := &fakeImporter{}
+
+	_, err := newDeleteService(client, st, im).DeleteMovie(context.Background(), 1)
+	if !errors.Is(err, qbit.ErrWrongCategory) {
+		t.Fatalf("err = %v, want ErrWrongCategory to reach the caller", err)
+	}
+	if st.deletedMovie || len(im.removed) != 0 {
+		t.Error("something was deleted despite the category guard firing")
+	}
+}
+
+// A film scanned off disk has no torrent at all, and deleting it must not need
+// one.
+func TestDeleteMovieWithNoDownloads(t *testing.T) {
+	path := "/library/movies/Interstellar (2014)"
+
+	client := &fakeClient{}
+	st := newFakeStore()
+	st.movie = store.Movie{ID: 1, Title: "Interstellar", Year: 2014, LibraryPath: &path}
+	im := &fakeImporter{}
+
+	report, err := newDeleteService(client, st, im).DeleteMovie(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DeleteMovie: %v", err)
+	}
+	if report.TorrentsRemoved != 0 {
+		t.Errorf("removed %d torrents, want 0", report.TorrentsRemoved)
+	}
+	if len(im.removed) != 1 || !st.deletedMovie {
+		t.Error("the folder and the row should still have been removed")
+	}
+}
+
+// A wanted film was never on disk: there is no folder, and asking to remove one
+// must not fail the delete.
+func TestDeleteMovieThatWasNeverImported(t *testing.T) {
+	client := &fakeClient{}
+	st := newFakeStore()
+	st.movie = store.Movie{ID: 1, Title: "Interstellar", Year: 2014} // LibraryPath nil
+	im := &fakeImporter{}
+
+	report, err := newDeleteService(client, st, im).DeleteMovie(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DeleteMovie: %v", err)
+	}
+	if report.LibraryPath != "" {
+		t.Errorf("library_path = %q, want empty", report.LibraryPath)
+	}
+	if !st.deletedMovie {
+		t.Error("the row was not deleted")
 	}
 }

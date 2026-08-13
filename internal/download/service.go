@@ -30,15 +30,26 @@ type TorrentClient interface {
 	AddMagnet(ctx context.Context, magnet, category string) error
 	TorrentByHash(ctx context.Context, hash string) (*qbit.Torrent, error)
 	Torrents(ctx context.Context, category string) ([]qbit.Torrent, error)
+
+	// DeleteTorrent is the one destructive call, added for D19. It takes the
+	// category it requires and refuses a torrent that is not in it, so curator
+	// cannot remove one of the *arr stack's torrents even by mistake.
+	DeleteTorrent(ctx context.Context, hash, requireCategory string, deleteFiles bool) error
 }
 
-// Store is the persistence dispatch and polling need.
+// Store is the persistence dispatch, polling and deletion need.
 type Store interface {
 	UpsertWantedMovie(ctx context.Context, title string, year int, tmdbID *int64) (store.Movie, error)
 	InsertDownload(ctx context.Context, d store.Download) (store.Download, error)
 	UpdateDownloadProgress(ctx context.Context, hash, state string, progress float64, completedAt *time.Time) error
 	GetDownloadByHash(ctx context.Context, hash string) (store.Download, error)
 	ListDownloads(ctx context.Context) ([]store.Download, error)
+
+	// The delete path (D19). The reads come first because the rows are removed
+	// last, and after the DELETE there is nothing left to look a torrent up by.
+	GetMovie(ctx context.Context, id int64) (store.Movie, error)
+	DownloadsForMovie(ctx context.Context, movieID int64) ([]store.Download, error)
+	DeleteMovie(ctx context.Context, id int64) (store.Deleted, error)
 }
 
 // Resolver hands out the magnet and the metadata behind a release id. Phase 2's
@@ -76,6 +87,11 @@ var ErrNotCompleted = errors.New("the torrent has not finished downloading")
 // reason it did not work. The same *importer.Importer satisfies both.
 type ManualImporter interface {
 	Import(ctx context.Context, t qbit.Torrent, d store.Download) (store.Movie, error)
+
+	// RemoveFromLibrary deletes a movie's folder. It is the importer's because
+	// the importer created it and holds LIBRARY_MOVIES, which is what makes its
+	// containment check meaningful (docs/decisions.md D19).
+	RemoveFromLibrary(libraryPath string) error
 }
 
 // Request is one dispatch: the release to grab, and the film it is for.
@@ -169,21 +185,40 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 		return store.Download{}, fmt.Errorf("dispatch %s: %w", req.ReleaseID, err)
 	}
 
-	if err := s.client.AddMagnet(ctx, magnet, s.category); err != nil {
-		return store.Download{}, fmt.Errorf("dispatch %s: %w: %w", req.ReleaseID, ErrClient, err)
-	}
+	// The add is ADVISORY; the lookup below is what is authoritative.
+	//
+	// torrents/add answers "200 Ok." for a magnet it ignored just as readily as
+	// for one it accepted, so a success proves nothing. Measured against the
+	// real qBittorrent 5.1.2, the converse is true as well: it answers "Fails."
+	// for a magnet it ALREADY HOLDS. Phase 3 assumed a duplicate add was
+	// silently idempotent — it is not, and that assumption survived only because
+	// it was never run against a real client.
+	//
+	// So a rejected add is carried rather than returned. Re-dispatching a
+	// release after a database reset, a restart, or a second click has to
+	// converge on the existing torrent, which is exactly what phase 3 promised
+	// and what this makes true.
+	addErr := s.client.AddMagnet(ctx, magnet, s.category)
 
-	// torrents/add answers 200 Ok. for a magnet it ignored just as readily as for
-	// one it accepted, and returns no hash, so the add is only real once the
-	// torrent can be found. This is the step that earns the right to write a row.
 	torrent, err := s.client.TorrentByHash(ctx, hash)
 	if err != nil {
 		return store.Download{}, fmt.Errorf("dispatch %s: confirming the add: %w: %w", req.ReleaseID, ErrClient, err)
 	}
 	if torrent == nil {
+		// Nothing there, so the add really did fail — now the error matters, and
+		// it is the more specific of the two.
+		if addErr != nil {
+			return store.Download{}, fmt.Errorf("dispatch %s: %w: %w", req.ReleaseID, ErrClient, addErr)
+		}
 		return store.Download{}, fmt.Errorf(
 			"dispatch %s: %w accepted the magnet but has no torrent %s — it was ignored",
 			req.ReleaseID, ErrClient, hash)
+	}
+	if addErr != nil {
+		// The torrent is there and the add was refused: qBittorrent already had
+		// it. Worth a line, because it is also what a duplicate click looks like.
+		s.log.Info("qBittorrent already had this torrent; the add was refused and the existing one is used",
+			"hash", hash, "err", addErr)
 	}
 
 	movie, err := s.store.UpsertWantedMovie(ctx, req.Title, req.Year, req.TMDBID)
@@ -249,6 +284,79 @@ func (s *Service) Import(ctx context.Context, hash string) (store.Movie, error) 
 	}
 
 	return s.importer.Import(ctx, *torrent, row)
+}
+
+// Deletion is what DeleteMovie removed, so the caller can say so precisely.
+type Deletion struct {
+	Title           string `json:"title"`
+	Year            int    `json:"year"`
+	LibraryPath     string `json:"library_path,omitempty"`
+	TorrentsRemoved int    `json:"torrents_removed"`
+	BytesFreed      int64  `json:"bytes_freed"`
+}
+
+// DeleteMovie removes a film from the library and from the disk.
+//
+// The order is D19's and it is not arbitrary: the torrent and its downloaded
+// files, then our hardlink, then the rows. Every step is idempotent, so a
+// failure part-way through leaves something a retry can finish — and the rows
+// survive longest on purpose, because a row pointing at files that are already
+// gone is repairable by hand, while files with no row are silently re-adopted
+// by the next scan.
+//
+// qBittorrent deletes the download, not curator. It created that file and owns
+// it, and asking it avoids the state a direct unlink produces: a torrent whose
+// files have vanished underneath it, which qBittorrent reports as missingFiles
+// and the poller then records as `failed` for a download nobody failed to get.
+func (s *Service) DeleteMovie(ctx context.Context, id int64) (Deletion, error) {
+	if s.importer == nil {
+		return Deletion{}, ErrUnconfigured
+	}
+
+	movie, err := s.store.GetMovie(ctx, id)
+	if err != nil {
+		return Deletion{}, fmt.Errorf("delete movie %d: %w", id, err)
+	}
+	downloads, err := s.store.DownloadsForMovie(ctx, id)
+	if err != nil {
+		return Deletion{}, fmt.Errorf("delete movie %d: %w", id, err)
+	}
+
+	report := Deletion{Title: movie.Title, Year: movie.Year}
+	if movie.LibraryPath != nil {
+		report.LibraryPath = *movie.LibraryPath
+	}
+	if movie.SizeBytes != nil {
+		report.BytesFreed = *movie.SizeBytes
+	}
+
+	// 1. The torrents and their files. A nil client means downloads were never
+	//    configured, so there is nothing in qBittorrent to remove — the rows are
+	//    still cleaned up below.
+	for _, download := range downloads {
+		if s.client == nil {
+			break
+		}
+		if err := s.client.DeleteTorrent(ctx, download.TorrentHash, s.category, true); err != nil {
+			return Deletion{}, fmt.Errorf(
+				"delete movie %d: removing torrent %s: %w: %w", id, download.TorrentHash, ErrClient, err)
+		}
+		report.TorrentsRemoved++
+	}
+
+	// 2. Our own hardlink and the folder holding it.
+	if err := s.importer.RemoveFromLibrary(report.LibraryPath); err != nil {
+		return Deletion{}, fmt.Errorf("delete movie %d: %w", id, err)
+	}
+
+	// 3. The rows, last.
+	if _, err := s.store.DeleteMovie(ctx, id); err != nil {
+		return Deletion{}, fmt.Errorf("delete movie %d: %w", id, err)
+	}
+
+	s.log.Info("deleted", "movie_id", id, "title", movie.Title, "year", movie.Year,
+		"torrents_removed", report.TorrentsRemoved, "bytes_freed", report.BytesFreed)
+	return report, nil
 }
 
 // Downloads lists every recorded download, newest first.

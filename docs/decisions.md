@@ -368,3 +368,156 @@ needs — every screen's real question is "can I press this button", not "what i
 Configuration stays in the environment, read once at startup
 ([CLAUDE.md](../CLAUDE.md#conventions)). One source of truth beats a database layer that shadows it,
 disagrees with it after a restart, and has to be reconciled.
+
+---
+
+## D18 — The log tail is readable without authentication, so it is redacted at the source
+
+**Status:** decided · **Extends:** [D17](#d17--settings-is-read-only-and-the-settings-table-stays-unused)
+
+`GET /api/logs` serves the last `LOG_BUFFER_LINES` of curator's own log, and the Logs screen shows
+it live. Until now a log line went to stderr on a machine you had to SSH into. Behind an endpoint it
+goes to any browser on the LAN, and there is no authentication in front of it.
+
+So **secrets are scrubbed on the way into the buffer**, not on the way out. `internal/tmdb` already
+strips the API key out of transport errors at the source — `scrubURL` exists precisely because
+`*url.Error` stringifies a URL carrying `api_key=` — but that is one careful call site, and this has
+to hold for log calls nobody has written yet. The buffer is handed `TMDB_API_KEY`, `QBIT_PASS` and
+`JELLYFIN_API_KEY` at startup and replaces any occurrence before storing. Values under six
+characters are ignored: redacting an empty or two-character secret would mangle every line while
+protecting nothing.
+
+The tail is **in memory only**. It cannot read a file, a journal, or anything else on the host — it
+holds what this process wrote, and it dies with the process. A log endpoint that could be pointed at
+a path would be a file-read primitive with a friendly name.
+
+Entries carry a monotonic cursor, and the API reports how many lines **fell off the ring** before the
+caller asked. A log with a silent gap in it is worse than one that admits the gap, because the reader
+draws conclusions from what is not there.
+
+---
+
+## D19 — Deleting a movie removes the file, and asks qBittorrent to remove its own
+
+**Status:** decided · **Reverses:** [D8](#d8--import-by-hardlink)'s "source files are never deleted"
+
+D8 said curator never deletes a source file and that cleanup stays qBittorrent's business.
+`internal/qbit` was built with no delete method at all, so that guarantee was structural rather than
+a promise. Removing a film from the library now has to actually free the disk, which reverses that.
+
+**The reversal is narrowed to one rule: curator only ever deletes a file it created itself.** It
+unlinks its own hardlink in `LIBRARY_MOVIES`, and for the downloaded copy it asks **qBittorrent** to
+delete it, because qBittorrent created it and owns it. Curator never reaches into the download
+directory and unlinks something there. That also avoids the state a naive delete produces — a
+torrent whose files have vanished underneath it, which qBittorrent reports as `missingFiles` and the
+poller then records as `failed`, for a download nobody failed to get.
+
+Three guards make this safe while the *arr stack still shares that qBittorrent until phase 6:
+
+1. **Only torrents in our category are deletable.** `DeleteTorrent` takes the category it requires,
+   looks the torrent up first, and refuses if it does not match. A hash belonging to `radarr` cannot
+   be removed by curator even if something hands it one — the check is in the client, at the lowest
+   level, not only in the caller.
+2. **Only paths inside `LIBRARY_MOVIES` are removable**, asserted after resolution, and never the
+   root itself. The same containment check the importer makes before it writes.
+3. **The order puts the recoverable failure last.** Torrent and its data, then our hardlink, then the
+   database rows. A failure at any step leaves something a retry can finish, and the row survives
+   longest — a row pointing at files that are already gone is repairable, while files with no row are
+   silently re-adopted by the next scan.
+
+[D13](#d13--downloads-are-scoped-by-a-qbittorrent-category-with-its-own-save-path) is what makes this
+possible at all. The `curator` category has **its own save path**, so nothing in it was ever
+hardlinked by radarr, and deleting it cannot pull a file out from under the stack we have not
+replaced yet.
+
+**There is no undo and no authentication.** Deleting is as reachable as reading, for anyone on the
+LAN, which is the same posture as the rest of curator and as the *arr stack it replaces — but delete
+is the first request that destroys something. The UI therefore says exactly what will be removed and
+how much disk it frees before it does it.
+
+---
+
+## D20 — The film comes from TMDB; the search box only finds it
+
+**Status:** decided, from a failure in the first real download · **Replaces:** typing a title and a
+year into a search box
+
+Curator used to learn what a film was called from whatever was typed. Searching `avengers` with no
+year recorded `title='avengers', year=0`, and that one row produced three separate failures: the
+import failed on every poll tick for ever, because `DestFolder` correctly refuses a year of 0; the
+scan matched the yearless row against TMDB and got **Avengers: Doomsday (2026)**, which is the
+confident-wrong-match [D9](#d9--query-tmdb-with-the-raw-folder-title) warns about in those exact
+words; and the folder it would have written was `Avengers Endgame (2019)` rather than the film's
+actual name.
+
+So **the movie is the primary object.** You search TMDB, pick a film from a grid of posters, and the
+releases hang off that film. Title, year and `tmdb_id` then come from TMDB and are authoritative:
+`POST /api/downloads` has always accepted a `tmdb_id` and has never been sent one, and
+`library.DestFolder` already turns the canonical `Avengers: Endgame` into the correct folder
+`Avengers - Endgame (2019)` by D9's colon rule.
+
+The measurement that settled it: **the first result TMDB returns for `avengers` is Avengers:
+Doomsday.** The old code took position one. A human looking at posters does not.
+
+### The canonical title is not the title the indexers answer
+
+Measured against the live indexers, and the reason this is a decision rather than a refactor:
+
+| query | 1337x | yts | tpb |
+|---|---|---|---|
+| `Avengers: Endgame` | **0** | 7 | 100 |
+| `Avengers Endgame` | **20** | 7 | 100 |
+| `Avengers: Infinity War` | **0** | 6 | 100 |
+| `Avengers Infinity War` | **20** | 6 | 100 |
+| `Spider-Man: No Way Home` | 20 | 6 | 55 |
+| `Dune: Part Two` | 20 | 6 | 73 |
+
+A colon silently loses 1337x on some films and not others, and it does it **without an error**:
+`indexers[]` reports `ok: true, count: 0`, which is indistinguishable from a film nobody has
+uploaded. Stripping the colon never lost a result in any case measured.
+
+So there are now **two titles**, and conflating them is the bug this prevents:
+
+- the **canonical** title — `Avengers: Endgame` — is what the API echoes, what dispatch stores, and
+  what becomes the library folder;
+- the **query** title — `Avengers Endgame` — is what the indexers are asked.
+
+`NormaliseQuery` strips the colon and **nothing else**. Not the hyphen: `Spider-Man` and `X-Men`
+contain real ones, and D9 exists because of that. Not the ampersand or the apostrophe — unmeasured,
+and this function is a record of a measurement rather than a guess.
+
+It is applied **once, in the aggregator, above the cache**. Putting it inside `x1337.searchQuery` —
+the narrower option — would leave `indexer.Cache` holding two entries, `avengers: endgame` and
+`avengers endgame`, for one identical minter fetch, so the TMDB path and the manual path would each
+pay their own browser launch. Normalising above the cache means the key is the string actually
+queried. This does **not** change `cacheNormaliseTitle`, which still refuses to fold punctuation on
+its own, for the reason its comment gives: it must not merge queries that are genuinely different,
+and after `NormaliseQuery` they are literally the same string.
+
+### The key stays optional
+
+An unset `TMDB_API_KEY` remains a supported state, as for `QBIT_USER` and `JELLYFIN_API_KEY`. With
+no key, Search falls back to the release-name search that exists today and dispatch still demands a
+year. Two paths, one of them already built — the cost of keeping "partially useful without every
+integration" true.
+
+---
+
+## D21 — The movie page is `/movie/?id=…`, because the UI is a static export
+
+**Status:** decided, forced by [D16](#d16--the-ui-is-embedded-with-all-and-a-committed-placeholder-keeps-go-build-honest)
+
+`output: 'export'` cannot build a dynamic route like `/movie/[tmdbId]/` without
+`generateStaticParams`, and TMDB ids cannot be enumerated at build time. So the id rides in a query
+string on a static route.
+
+It costs a slightly uglier URL and buys the single-binary embed, which is the whole point of the
+project. `internal/web`'s `resolve()` needs **no change**: `r.URL.Path` is `/movie/`, the query is
+not part of it, and the export writes `dist/movie/index.html`.
+
+Teaching `internal/web` to rewrite `/movie/{id}/` was rejected. It would work in the binary and 404
+under `next dev`, so the dev server and the shipped artifact would disagree about which URLs exist —
+which is the class of surprise `web.go` already refuses a catch-all for.
+
+`useSearchParams()` requires a `<Suspense>` boundary; without one the **build fails**, so this is
+enforced by the toolchain rather than by remembering.

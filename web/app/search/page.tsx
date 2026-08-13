@@ -69,7 +69,7 @@ export default function Search() {
   }
 
   async function dispatch(release: Release) {
-    if (!result) return;
+    if (!result || !result.year) return;
     setDispatching(release.id);
     setDispatchError(null);
     try {
@@ -145,6 +145,19 @@ export default function Search() {
         />
       )}
 
+      {result && !result.year && (
+        <div className="banner warn">
+          <strong>Add a year before downloading</strong>
+          <span className="small">
+            The title and year you searched for become the library folder —{' '}
+            <span className="mono">Title (Year)</span> — and curator will not guess a year it was not
+            given. A release name is not a safe source for one either:{' '}
+            <span className="mono">Blade Runner 2049 (2017)</span> would yield 2049. Search again
+            with the year and the download button will work.
+          </span>
+        </div>
+      )}
+
       {result && <Indexers result={result} />}
 
       {result && result.releases.length === 0 && (
@@ -189,12 +202,17 @@ export default function Search() {
                         <button
                           onClick={() => dispatch(release)}
                           disabled={
-                            dispatching !== null || downloadsConfigured === false || searching
+                            dispatching !== null ||
+                            downloadsConfigured === false ||
+                            searching ||
+                            !result.year
                           }
                           title={
                             downloadsConfigured === false
                               ? 'Downloads are not configured: set QBIT_USER and QBIT_PASS'
-                              : undefined
+                              : !result.year
+                                ? 'Search with a year first — it becomes the library folder name'
+                                : undefined
                           }
                         >
                           {dispatching === release.id ? 'Sending…' : 'Download'}
@@ -237,8 +255,13 @@ function Indexers({ result }: { result: SearchResult }) {
     <>
       <p className="small muted" style={{ margin: '0 0 .75rem' }}>
         {result.releases.length} release{result.releases.length === 1 ? '' : 's'} for{' '}
-        <strong>{result.title}</strong>
-        {result.year ? ` (${result.year})` : ''} ·{' '}
+        {/* Shown exactly as it will be written to the library, so a sloppy
+            search term is visible before it becomes a folder name. */}
+        <strong>
+          {result.title}
+          {result.year ? ` (${result.year})` : ''}
+        </strong>{' '}
+        ·{' '}
         {result.indexers.map((indexer, i) => (
           <span key={indexer.name}>
             {i > 0 && ' · '}

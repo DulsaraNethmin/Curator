@@ -698,3 +698,87 @@ func TestLiveListCuratorCategory(t *testing.T) {
 	}
 	t.Logf("live: %d torrent(s) in category %q at %s", len(torrents), testCategory, base)
 }
+
+// The guard that matters. The *arr stack shares this qBittorrent until phase 6,
+// so a hash belonging to radarr must not be deletable through this client even
+// if something hands it one — and the check is here, at the lowest level,
+// rather than only in the caller (docs/decisions.md D19).
+func TestDeleteTorrentRefusesAnotherCategory(t *testing.T) {
+	var deleteCalled bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, pathLogin):
+			http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "s"})
+			fmt.Fprint(w, bodyOK)
+		case strings.HasSuffix(r.URL.Path, pathTorrentsInfo):
+			fmt.Fprint(w, `[{"hash":"aaaa","name":"someone else's","category":"radarr"}]`)
+		case strings.HasSuffix(r.URL.Path, pathTorrentsDelete):
+			deleteCalled = true
+			fmt.Fprint(w, bodyOK)
+		}
+	}))
+	defer srv.Close()
+
+	err := New(srv.URL, "u", "p", srv.Client()).DeleteTorrent(context.Background(), "AAAA", "curator", true)
+	if !errors.Is(err, ErrWrongCategory) {
+		t.Fatalf("err = %v, want ErrWrongCategory", err)
+	}
+	if deleteCalled {
+		t.Error("torrents/delete was called for a torrent in category radarr")
+	}
+}
+
+func TestDeleteTorrentRemovesOurOwn(t *testing.T) {
+	var gotHashes, gotDeleteFiles string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, pathLogin):
+			http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "s"})
+			fmt.Fprint(w, bodyOK)
+		case strings.HasSuffix(r.URL.Path, pathTorrentsInfo):
+			fmt.Fprint(w, `[{"hash":"aaaa","name":"ours","category":"curator"}]`)
+		case strings.HasSuffix(r.URL.Path, pathTorrentsDelete):
+			_ = r.ParseForm()
+			gotHashes, gotDeleteFiles = r.FormValue("hashes"), r.FormValue("deleteFiles")
+			fmt.Fprint(w, bodyOK)
+		}
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL, "u", "p", srv.Client()).DeleteTorrent(context.Background(), "AAAA", "curator", true); err != nil {
+		t.Fatalf("DeleteTorrent: %v", err)
+	}
+	if gotHashes != "aaaa" {
+		t.Errorf("hashes = %q, want the normalised lower-case hash", gotHashes)
+	}
+	if gotDeleteFiles != "true" {
+		t.Errorf("deleteFiles = %q, want true — the disk has to actually be freed", gotDeleteFiles)
+	}
+}
+
+// Delete gets retried after a partial failure, so a retry that fails because
+// the work was already done is a retry nobody can complete.
+func TestDeleteTorrentOnAMissingTorrentIsSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, pathLogin):
+			http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "s"})
+			fmt.Fprint(w, bodyOK)
+		case strings.HasSuffix(r.URL.Path, pathTorrentsInfo):
+			fmt.Fprint(w, `[]`)
+		default:
+			t.Errorf("unexpected call to %s for a torrent that is not there", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL, "u", "p", srv.Client()).DeleteTorrent(context.Background(), "AAAA", "curator", true); err != nil {
+		t.Errorf("DeleteTorrent on a missing torrent: %v, want success", err)
+	}
+}
+
+func TestDeleteTorrentRejectsAnEmptyHash(t *testing.T) {
+	if err := New("http://127.0.0.1:9", "u", "p", nil).DeleteTorrent(context.Background(), "  ", "curator", true); err == nil {
+		t.Error("an empty hash was accepted")
+	}
+}

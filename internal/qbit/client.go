@@ -1,10 +1,17 @@
 // Package qbit is a client for qBittorrent's Web API v2 — the one on the Pi is
 // 5.1.2, sharing gluetun's network namespace at http://gluetun:8080.
 //
-// It can log in, add a magnet and read torrents back. It deliberately cannot
-// delete, pause, resume or reprioritise anything: the *arr stack shares this
-// qBittorrent until phase 6 (docs/phase-3.md), and a method that does not exist
-// cannot be called by mistake at three in the morning.
+// It can log in, add a magnet, read torrents back, and delete a torrent that is
+// in a category it was told to require. It deliberately cannot pause, resume or
+// reprioritise anything: the *arr stack shares this qBittorrent until phase 6
+// (docs/phase-3.md), and a method that does not exist cannot be called by
+// mistake at three in the morning.
+//
+// Delete was added for D19 and is the one destructive call here, so it carries
+// its own guard rather than trusting its caller: it looks the torrent up first
+// and refuses unless the category matches what the caller demanded. A hash
+// belonging to radarr cannot be removed through this client even if something
+// hands it one.
 //
 // Three things about this API are worth knowing before reading the code.
 //
@@ -54,10 +61,11 @@ const requestTimeout = 15 * time.Second
 // The API root and the three endpoints this client uses. Nothing that mutates a
 // torrent beyond adding one is listed, on purpose — see the package comment.
 const (
-	apiPrefix        = "/api/v2"
-	pathLogin        = "auth/login"
-	pathTorrentsAdd  = "torrents/add"
-	pathTorrentsInfo = "torrents/info"
+	apiPrefix          = "/api/v2"
+	pathLogin          = "auth/login"
+	pathTorrentsAdd    = "torrents/add"
+	pathTorrentsInfo   = "torrents/info"
+	pathTorrentsDelete = "torrents/delete"
 )
 
 // sessionCookie is the cookie qBittorrent issues on login and expects back.
@@ -276,6 +284,53 @@ func (c *Client) TorrentByHash(ctx context.Context, hash string) (*Torrent, erro
 		}
 	}
 	return nil, nil
+}
+
+// ErrWrongCategory reports that a torrent exists but does not belong to the
+// category the caller required, so it was NOT deleted.
+//
+// It is a named error because the alternative — deleting it anyway — is how
+// curator would remove one of radarr's torrents, and the *arr stack shares this
+// qBittorrent until phase 6.
+var ErrWrongCategory = errors.New("the torrent is not in the required category")
+
+// DeleteTorrent removes a torrent, and its downloaded files when deleteFiles is
+// true. See docs/decisions.md D19.
+//
+// requireCategory is not optional in practice and should never be empty: the
+// torrent is looked up first and the delete is refused unless its category
+// matches. That check lives here, at the lowest level, rather than only in the
+// caller, because this is the one call in this package that destroys something.
+//
+// A torrent that is already gone is success, not an error. Delete is the kind of
+// operation that gets retried after a partial failure, and a retry that fails
+// because the work was already done is a retry nobody can complete.
+func (c *Client) DeleteTorrent(ctx context.Context, hash, requireCategory string, deleteFiles bool) error {
+	hash = NormalizeHash(hash)
+	if hash == "" {
+		return errors.New("qbit torrents/delete: delete a torrent by an empty hash")
+	}
+
+	torrent, err := c.TorrentByHash(ctx, hash)
+	if err != nil {
+		return err
+	}
+	if torrent == nil {
+		return nil // already gone; nothing to do and nothing to report
+	}
+	if requireCategory != "" && !strings.EqualFold(torrent.Category, requireCategory) {
+		return fmt.Errorf("qbit torrents/delete: %s is in category %q, not %q: %w",
+			hash, torrent.Category, requireCategory, ErrWrongCategory)
+	}
+
+	form := url.Values{}
+	form.Set("hashes", hash)
+	form.Set("deleteFiles", strconv.FormatBool(deleteFiles))
+
+	if _, err := c.do(ctx, http.MethodPost, pathTorrentsDelete, nil, form); err != nil {
+		return err
+	}
+	return nil
 }
 
 // NormalizeHash puts an info hash in the case this package uses: lower, which is
