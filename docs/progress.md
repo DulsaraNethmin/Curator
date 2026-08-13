@@ -3,8 +3,9 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-13 · **Phases 1 and 2 complete** · phase 3 built, one verification
-outstanding · phase 4 built and verified locally · **phase 5 built**
+**Last updated:** 2026-08-13 · **Phases 1 and 2 complete** · phase 3 built, and its outstanding
+dispatch now run against a real qBittorrent locally · phase 4 built and verified locally ·
+**phase 5 built, including the TMDB-first redesign (T27–T31)**
 
 ---
 
@@ -14,9 +15,9 @@ outstanding · phase 4 built and verified locally · **phase 5 built**
 |---|---|---|
 | **1** | Foundation — skeleton, SQLite, TMDB, library scanner | **done** — verified 2026-08-12 |
 | **2** | Indexers — YTS, TPB, then 1337x through minter | **done** — verified 2026-08-12 |
-| **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** — T13–T16 done; live dispatch pending qBittorrent credentials |
-| **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** — T17–T21 done, verified locally 2026-08-12; never run against the Pi |
-| **5** | Interface — Next.js screens embedded via `embed.FS` | **built** — T22–T26 done, verified locally 2026-08-13 |
+| **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** — T13–T16 done; dispatch verified 2026-08-13 against a local qBittorrent 5.1.2, never against the Pi's |
+| **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** — T17–T21 done, verified locally 2026-08-12 against a stub and 2026-08-13 against a real download; never run against the Pi |
+| **5** | Interface — Next.js screens embedded via `embed.FS` | **built** — T22–T26, then T27–T31's TMDB-first redesign, verified locally 2026-08-13 |
 | 6 | Cutover — run alongside, confirm parity, remove seven containers | back up the *arr configs first |
 
 ---
@@ -469,6 +470,85 @@ of this phase a test genuinely cannot cover, and it wants human eyes.
   `web/app/releases/` as its own screen; a release id is only valid while its search is cached, so a
   separate page would have to re-search and get different ids, or stash results and pretend. Recorded
   as a deviation rather than built as a route that lies about where its data came from.
+
+## The TMDB-first redesign — T27–T31
+
+Specified and built 2026-08-13, after the first real download recorded
+`title='avengers', year=0` and produced three failures from one row. Spec in
+[`phase-5.md`](phase-5.md#the-tmdb-first-redesign--t27t31). **No migration** — `movies.tmdb_id` has
+been nullable and unique since [T2](tasks/T2-store.md), and `POST /api/downloads` has always
+accepted a `tmdb_id` it had never been sent.
+
+| Task | Owns | Commit | Status |
+|---|---|---|---|
+| [T27](tasks/T27-tmdb-browse.md) TMDB browsing | `internal/tmdb/` — `get`, `Details`, four methods | `7141bdd` | done |
+| [T28](tasks/T28-query-title.md) query normalisation | `internal/indexer/query.go`, one line of `aggregate.go` | `9bb462d` | done |
+| [T29](tasks/T29-library-by-tmdb.md) library index | `internal/store/movies.go` | `600dafd` | done |
+| [T30](tasks/T30-browse-api.md) browse endpoints | `internal/api/browse.go`, wiring | `a97b3cb` | done |
+| [T31](tasks/T31-browse-ui.md) the screens | `web/` — Discover, cards, movie page | `b591997` `2009e1d` `9a0130b` `c5fd94d` `fbe7dbc` | done |
+
+T31 is five commits rather than one. The first is the `<Releases>` extraction, with no behaviour
+change, so that the movie page and the release-name fallback could not grow two implementations of
+dispatch; the last is two fixes found by driving the result. Each of the five builds, vets, tests
+and cross-compiles on its own, checked in five detached worktrees.
+
+Two decisions were settled while specifying:
+[D20](decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it) (the film comes from
+TMDB, and the canonical title is not the query title) and
+[D21](decisions.md#d21--the-movie-page-is-movieid--because-the-ui-is-a-static-export) (the movie
+page is `/movie/?id=`, forced by the static export).
+
+### What the redesign verified, and how
+
+Driven in a browser 2026-08-13 against the live TMDB, the live indexers, the running minter and a
+local **qBittorrent 5.1.2** in Docker — the same version the Pi runs. The Pi was not touched.
+
+| Check | Result |
+|---|---|
+| `/search/?q=avengers` | 20 cards with **Doomsday among them rather than silently chosen** — the measurement D20 turns on |
+| Library badges on cards | Endgame **downloading**, Infinity War **in library** — both derived, neither read off `movies.status` |
+| Card click | reaches `/movie/?id=299536`, and that URL is **reloadable in a fresh tab** — the static export resolving `/movie/` with the query intact, `internal/web` unchanged |
+| Movie page load | **no indexer request**: `/logs` carries only the three startup lines |
+| `?id=` missing, `abc`, `NaN` | empty state, and **zero `/api/` requests** on the network panel — no `/api/tmdb/movies/NaN` |
+| `?id=999999999` | `404` — "tmdb movie 999999999: no such movie", the API's own message |
+| **Find releases** on `Avengers: Endgame` | **124 releases · yts 7 · tpb 100 · 1337x 20** — the canonical colon title, and 1337x answering 20 rather than 0 |
+| One cold run exceeded `SEARCH_TIMEOUT` | 1337x `timed out after 30s`; 104 releases rendered anyway and the partial-results banner named the failure |
+| Dispatch | `movies` row 30 — `tmdb_id 299534`, `title "Avengers: Endgame"`, `year 2019` |
+| Import | folder **`Avengers - Endgame (2019)/Avengers - Endgame (2019).mp4`**, single-spaced |
+| Hardlink | inode **57988283**, link count **2**, shared with the download |
+| A second dispatch for the same film | reused `movie_id 30` rather than making a twin |
+| No `TMDB_API_KEY` | Search **opens in release mode and says why**, its film toggle disabled; Discover renders "Not configured"; the counters still read 30 / 1 / 0 |
+| A film with no release date (tmdb `1495483`) | no year, no runtime, no poster — the fallback rather than a broken image |
+| Light and dark palettes | both legible over a backdrop; the hero scrim is the page's own background at 90%, so the flip needs no second rule |
+| Every commit alone, in a detached worktree | builds, vets, tests and cross-compiles |
+
+**The folder is the result worth keeping.** `Avengers - Endgame (2019)` with `movies.tmdb_id` set is
+the exact row whose absence caused all three of D20's failures: the yearless import that retried for
+ever, the scan that matched **Avengers: Doomsday (2026)**, and a folder named after a search box.
+The colon reached `DestFolder` intact because nothing on the client stripped it — `NormaliseQuery`
+strips it server-side, above the cache, for the indexers only.
+
+This also runs the check [phase 3](phase-3.md#verification) listed as outstanding: qBittorrent
+accepted the magnet under the `curator` category, confirmation-by-hash found it, and the poller
+moved a real download from `queued` through `downloading` to `imported`. Against a local container,
+not the Pi's — phases 3 and 4 stay "never run against the Pi" until cutover.
+
+### Still live going out
+
+- **A dead magnet sits in qBittorrent as `metaDL`, and its row stays `queued` in Activity for ever.**
+  The 1337x `GalaxyRG` release advertises 2,508 seeders and its magnet carries only long-dead
+  trackers (`coppersurfer.tk`, `leechers-paradise.org`, `zer0day.to`); qBittorrent is healthy beside
+  it with 362 DHT nodes and a second torrent that finished at 2.2 MB/s. Nothing in curator is wrong
+  and nothing in curator will time it out — there is no notion of a download that never starts.
+- **The year-0 download button was not driven.** Its sentence is a prop on `<Releases>` and the
+  branch is shared with the release-name path, but no undated film that also has releases turned up
+  to press it against. Rare by construction, and unproven.
+- **Nobody has looked at the pre-redesign screens since.** Library, Activity, Settings and Logs were
+  glanced at rather than reviewed; the Library grid was confirmed still correct after `.movie`
+  became a link for the TMDB grids, and nothing else was re-checked.
+- **The counters strip, the rails and the hero are one reviewer's taste.** Phase 5's "not verified:
+  how it looks" is now half-answered — the new screens have been seen — and the rest still wants
+  human eyes.
 
 ## Corrections made to the docs
 

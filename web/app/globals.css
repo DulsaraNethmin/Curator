@@ -15,6 +15,11 @@
   --error: #a33232;
   --error-soft: #fbeceb;
   --radius: 8px;
+  /* The page's own background, at the opacity that keeps --text legible over a
+     film still. It is a colour rather than a filter because both themes write
+     text on it. */
+  --scrim: rgba(251, 251, 250, .9);
+  --scrim-edge: rgba(251, 251, 250, .45);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -30,6 +35,8 @@
     --warn-soft: #2a2318;
     --error: #e0736c;
     --error-soft: #2b1c1c;
+    --scrim: rgba(19, 19, 20, .9);
+    --scrim-edge: rgba(19, 19, 20, .4);
   }
 }
 
@@ -135,6 +142,20 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 
+/* A button that reads as a link: it changes what the screen does rather than
+   where it goes, so it must not be an <a> with a fake href. */
+.linkbutton {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linkbutton:hover:not(:disabled) { filter: brightness(1.15); }
+.linkbutton:disabled { color: var(--muted); text-decoration: none; }
+
 input, select {
   font: inherit;
   font-size: .92rem;
@@ -209,6 +230,47 @@ form.row input[name="title"] { flex: 1 1 20rem; }
 .card b { display: block; font-size: 1.6rem; font-weight: 600; letter-spacing: -0.02em; }
 .card span { color: var(--muted); font-size: .88rem; }
 
+/* --- the counters strip ---------------------------------------------------- */
+
+.strip {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: .5rem 1.9rem;
+  padding: .8rem 1.1rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.strip a { display: flex; align-items: baseline; gap: .45rem; text-decoration: none; }
+.strip a:hover span { color: var(--text); }
+.strip b { font-size: 1.2rem; font-weight: 600; letter-spacing: -0.01em; }
+.strip span { color: var(--muted); font-size: .88rem; }
+/* Pushed to the far end: it is the one link here that is an action rather than
+   a count, and reading as a fourth number would be a lie about it. */
+.strip a.push { margin-left: auto; }
+.strip a.push span { color: var(--accent); }
+
+/* --- discover rails --------------------------------------------------------- */
+
+/* A rail scrolls sideways rather than wrapping: twenty films wrapped into a
+   grid is the Library screen, and Discover is meant to be glanced at. */
+.rail {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 9.5rem;
+  gap: 1rem;
+  overflow-x: auto;
+  padding-bottom: .5rem;
+  scroll-snap-type: x proximity;
+  overscroll-behavior-x: contain;
+  /* macOS draws a full-width white bar here when "always show scrollbars" is
+     set, which is louder than the posters above it. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.rail > * { scroll-snap-align: start; }
+
 /* --- library grid --------------------------------------------------------- */
 
 .grid {
@@ -216,6 +278,12 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   gap: 1rem;
   grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
 }
+/* A card is a <div> on the Library screen and an <a> in a TMDB grid, where the
+   whole poster is the link to the film's page. */
+.movie { display: block; text-decoration: none; color: inherit; }
+a.movie:hover img, a.movie:hover .noposter { border-color: var(--muted); }
+a.movie:hover .title { color: var(--accent); }
+
 .movie img, .movie .noposter {
   width: 100%;
   aspect-ratio: 2 / 3;
@@ -225,7 +293,10 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   background: var(--panel);
   border: 1px solid var(--border);
 }
-.movie .noposter {
+/* Not scoped to .movie: the hero uses the same fallback, and left-aligned text
+   in the top corner of an empty box reads as a broken image rather than a
+   deliberate absence. */
+.noposter {
   display: grid;
   place-items: center;
   text-align: center;
@@ -250,6 +321,77 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   overflow: hidden;
 }
 .movie .meta { font-size: .78rem; color: var(--muted); display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+
+/* --- the movie screen ------------------------------------------------------ */
+
+/* The backdrop is a background image rather than an <img> so the scrim can sit
+   over it in one element. It is set inline from TMDB's path, which is why there
+   is no url() here. */
+.hero {
+  margin: 1.6rem 0 1.2rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--panel) center 20% / cover no-repeat;
+}
+
+/* Both themes have to stay readable over an arbitrary film still, and the text
+   colour is not ours to choose — it is --text, which flips. So the scrim is the
+   page's own background at 88%, fading out on the right where nothing is
+   written. A fixed dark overlay would put dark text on dark in light mode. */
+.hero-scrim {
+  display: flex;
+  gap: 1.5rem;
+  padding: 1.6rem;
+  background: linear-gradient(
+    to right,
+    var(--scrim) 0%,
+    var(--scrim) 52%,
+    var(--scrim-edge) 100%
+  );
+}
+
+.hero-poster {
+  width: 11rem;
+  flex: none;
+  aspect-ratio: 2 / 3;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.hero-text { min-width: 0; }
+.hero-text h1 { margin: 0 0 .5rem; font-size: 1.75rem; }
+.hero-text h1 .year { color: var(--muted); font-weight: 400; }
+.hero-text .meta {
+  display: flex;
+  gap: .6rem;
+  flex-wrap: wrap;
+  align-items: center;
+  color: var(--muted);
+  font-size: .88rem;
+}
+.hero-text .tagline { margin: .7rem 0 0; font-style: italic; color: var(--muted); }
+.hero-text .overview { margin: .55rem 0 1rem; max-width: 46rem; font-size: .94rem; }
+
+@media (max-width: 40rem) {
+  .hero-scrim { flex-direction: column; }
+  .hero-poster { width: 8rem; }
+}
+
+/* Three columns at full width, not five: "English, Japanese, Xhosa" and a
+   studio list are the widest values here, and a column narrow enough to wrap
+   them mid-list reads as damage. */
+.facts {
+  display: grid;
+  gap: .1rem 2rem;
+  grid-template-columns: repeat(auto-fit, minmax(21rem, 1fr));
+  margin: 0 0 1.5rem;
+  font-size: .88rem;
+}
+.facts > div { display: flex; gap: .5rem; padding: .3rem 0; border-bottom: 1px solid var(--border); }
+.facts dt { color: var(--muted); flex: none; min-width: 8.5rem; }
+.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
 /* --- logs ------------------------------------------------------------------ */
 

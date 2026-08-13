@@ -7,6 +7,8 @@ import Link from 'next/link';
 // and the exported files are directories holding index.html — the layout
 // http.FileServer resolves without any rewrite rules on the Go side.
 const screens = [
+  // Discover is '/', so it is the one href without a trailing segment to slice.
+  { href: '/', label: 'Discover' },
   { href: '/search/', label: 'Search' },
   { href: '/library/', label: 'Library' },
   { href: '/activity/', label: 'Activity' },
