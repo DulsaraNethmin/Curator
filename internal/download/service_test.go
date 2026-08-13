@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sort"
@@ -461,5 +462,49 @@ func TestResumeWithoutAClientIsNotAnError(t *testing.T) {
 	st := resumeStore(row("AAAA000000000000000000000000000000000000", store.DownloadDownloading, "magnet:?x"))
 	if err := NewService(nil, st, newResolver(""), "curator", quiet()).Resume(context.Background()); err != nil {
 		t.Fatalf("Resume with no client: %v", err)
+	}
+}
+
+// --- the dispatch guard (T37) ------------------------------------------------
+
+// TestDispatchRefusedByTheGuard: a refused dispatch must cost nothing and leave
+// nothing behind — no resolve, no add, no row. The same discipline the expired
+// release check already has.
+func TestDispatchRefusedByTheGuard(t *testing.T) {
+	client := &fakeClient{}
+	st := newFakeStore()
+	res := newResolver(testMagnet(testHash))
+
+	svc := newService(client, st, res).WithGuard(func(context.Context) error {
+		return fmt.Errorf("%w: the tunnel is down", ErrUnprotected)
+	})
+
+	_, err := svc.Dispatch(context.Background(), req())
+	if !errors.Is(err, ErrUnprotected) {
+		t.Fatalf("err = %v, want ErrUnprotected", err)
+	}
+	if len(client.calls) != 0 {
+		t.Errorf("the torrent client was called %v for a refused dispatch", client.calls)
+	}
+	if st.writeCount != 0 {
+		t.Errorf("%d writes for a refused dispatch, want none", st.writeCount)
+	}
+}
+
+// A guard that passes is invisible: the dispatch behaves exactly as it did
+// before there was one.
+func TestDispatchProceedsWhenTheGuardPasses(t *testing.T) {
+	client := &fakeClient{byHash: &torrent.Torrent{
+		Hash: testHash, Name: "Interstellar", State: torrent.StateDownloading, Progress: 0.1,
+	}}
+	var asked int
+	svc := newService(client, newFakeStore(), newResolver(testMagnet(testHash))).
+		WithGuard(func(context.Context) error { asked++; return nil })
+
+	if _, err := svc.Dispatch(context.Background(), req()); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if asked != 1 {
+		t.Errorf("the guard was asked %d times, want exactly 1", asked)
 	}
 }

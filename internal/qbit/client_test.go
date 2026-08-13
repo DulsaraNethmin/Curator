@@ -804,3 +804,37 @@ func TestDeleteTorrentRejectsAnEmptyHash(t *testing.T) {
 		t.Error("an empty hash was accepted")
 	}
 }
+
+// TestExternalAddressReadsTheServerState is the honest floor for a torrent
+// client curator does not route: libtorrent's own idea of how it looks from the
+// swarm, which is the only thing about an external client's exit that the Web
+// API exposes at all.
+//
+// The body is shaped as qBittorrent 5.1.2 sends it (measured 2026-08-13).
+func TestExternalAddressReadsTheServerState(t *testing.T) {
+	stub := newStub(t, serveJSON(`{"server_state":{"last_external_address_v4":"187.14.240.8",
+		"last_external_address_v6":"","connection_status":"connected","dht_nodes":365}}`))
+
+	got, err := stub.client.ExternalAddress(context.Background())
+	if err != nil {
+		t.Fatalf("ExternalAddress: %v", err)
+	}
+	if got != "187.14.240.8" {
+		t.Errorf("ExternalAddress = %q, want the v4 address", got)
+	}
+}
+
+// A client that has never talked to a swarm has never learned its address. That
+// is an empty string and not an error — the caller decides what to do with
+// "unknown", and it is not the same answer as "unprotected".
+func TestExternalAddressUnknownIsEmpty(t *testing.T) {
+	stub := newStub(t, serveJSON(`{"server_state":{"last_external_address_v4":"","last_external_address_v6":""}}`))
+
+	got, err := stub.client.ExternalAddress(context.Background())
+	if err != nil {
+		t.Fatalf("ExternalAddress: %v", err)
+	}
+	if got != "" {
+		t.Errorf("ExternalAddress = %q, want empty for a client that has not learned one", got)
+	}
+}

@@ -72,6 +72,7 @@ const requestTimeout = 15 * time.Second
 const (
 	apiPrefix          = "/api/v2"
 	pathLogin          = "auth/login"
+	pathSyncMaindata   = "sync/maindata"
 	pathTorrentsAdd    = "torrents/add"
 	pathTorrentsInfo   = "torrents/info"
 	pathTorrentsDelete = "torrents/delete"
@@ -349,6 +350,43 @@ func (c *Client) DeleteTorrent(ctx context.Context, hash, requireCategory string
 		return err
 	}
 	return nil
+}
+
+// ExternalAddress reports the address qBittorrent last learned about ITSELF
+// from the swarm — libtorrent's `last_external_address_v4`, served by
+// GET /api/v2/sync/maindata.
+//
+// It is how curator checks a torrent client it does not route. An external
+// qBittorrent's peer traffic is not curator's to tunnel, so the guarantee
+// becomes a check: if this address equals curator's own exit address, that
+// client is not behind a VPN and a dispatch would leave from the address the
+// VPN was installed to hide (docs/decisions.md D27).
+//
+// An empty string is a normal answer, not an error: a client that has never
+// talked to a swarm has nothing to report. Measured against qBittorrent 5.1.2
+// (2026-08-13), which answered this host's own address for a container with no
+// VPN — exactly the case this exists to catch.
+//
+// Read-only, like everything else in this package except the one delete.
+func (c *Client) ExternalAddress(ctx context.Context) (string, error) {
+	body, err := c.do(ctx, http.MethodGet, pathSyncMaindata, nil, nil)
+	if err != nil {
+		return "", err
+	}
+
+	var payload struct {
+		ServerState struct {
+			V4 string `json:"last_external_address_v4"`
+			V6 string `json:"last_external_address_v6"`
+		} `json:"server_state"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("qbit sync/maindata: qBittorrent's reply is not the JSON we expect (%s): %w", snippet(body), err)
+	}
+	if addr := strings.TrimSpace(payload.ServerState.V4); addr != "" {
+		return addr, nil
+	}
+	return strings.TrimSpace(payload.ServerState.V6), nil
 }
 
 // wireHash puts an info hash in the case qBittorrent's API uses: lower, which is

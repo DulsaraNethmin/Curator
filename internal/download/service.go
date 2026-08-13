@@ -79,6 +79,14 @@ var ErrUnconfigured = errors.New("downloads are not configured: set QBIT_USER an
 // other way.
 var ErrClient = errors.New("qbittorrent")
 
+// ErrUnprotected reports that a dispatch was refused because the download would
+// not have gone through a VPN.
+//
+// It is separated so the API can answer 503 and name the cause: the request is
+// well-formed, curator is working, and the refusal is deliberate. A mandatory
+// VPN that fails open is not one (docs/decisions.md D27).
+var ErrUnprotected = errors.New("refusing to dispatch: the download would not be protected")
+
 // ErrNotCompleted reports that an import was asked for a torrent that is still
 // downloading. It is separated so the API can answer 409 — the request is
 // well-formed and will be fine later — rather than 500 or a silent no-op.
@@ -125,6 +133,29 @@ type Service struct {
 	// as the poller's, and for the same reason: phase 3's constructor and its
 	// tests keep their shape.
 	importer ManualImporter
+
+	// guard is phase 6's, and nil means there is nothing to check. See
+	// WithGuard.
+	guard Guard
+}
+
+// Guard is a check that runs before a magnet is handed to the torrent client,
+// and refuses the dispatch when it returns an error.
+//
+// It is a func rather than an interface because there is exactly one question —
+// "is this download going to be protected?" — and the two answers to it look
+// nothing alike. With the embedded engine the tunnel either carries the traffic
+// or the dial fails, so the check is about configuration; with an external
+// qBittorrent curator cannot route the traffic at all and the check compares
+// exit addresses. internal/vpn owns both, because it owns what can be promised.
+type Guard func(ctx context.Context) error
+
+// WithGuard attaches the dispatch check and returns the service. A builder for
+// the same reason WithImporter is one: every existing constructor call keeps
+// its shape.
+func (s *Service) WithGuard(g Guard) *Service {
+	s.guard = g
+	return s
 }
 
 // WithImporter attaches the importer and returns the service.
@@ -160,6 +191,16 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	}
 	if strings.TrimSpace(req.Title) == "" {
 		return store.Download{}, fmt.Errorf("dispatch %s: title is required", req.ReleaseID)
+	}
+
+	// Before anything is resolved, added or written. A refusal here must cost
+	// nothing and leave nothing behind — the same discipline as the release
+	// lookup below, which fails an expired search before qBittorrent or the
+	// database has been touched.
+	if s.guard != nil {
+		if err := s.guard(ctx); err != nil {
+			return store.Download{}, fmt.Errorf("dispatch %s: %w", req.ReleaseID, err)
+		}
 	}
 
 	// The release is read before anything else: an expired search fails here,
