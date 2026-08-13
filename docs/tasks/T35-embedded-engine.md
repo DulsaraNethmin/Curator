@@ -1,6 +1,6 @@
 # T35 — the embedded engine
 
-**Owns:** `internal/engine/` — `engine.go`, `state.go`, `metainfo.go` and their tests
+**Owns:** `internal/engine/` — `engine.go`, `network.go` and their tests
 **Depends on:** T32 (gate passed), T34
 
 ## Goal
@@ -56,14 +56,18 @@ belongs in this commit and nowhere earlier — the same rule `golang.org/x/sync`
    T36's. Write to a temp file and rename, because a half-written metainfo that survives a crash is
    worse than none.
 7. **Cap the memory, and prove the cap.** Peak RSS tracked payload size ~1:1 in the spike — 822 MB
-   for 755 MB — on a Pi that has 8 GB and is also running Jellyfin. The levers, in the order worth
-   trying: `ClientConfig.MaxUnverifiedBytes`, `EstablishedConnsPerTorrent` /
-   `Torrent.SetMaxEstablishedConns` (`TORRENT_MAX_CONNS`), and the storage implementation the client
-   is given. **Measure before and after on a real payload** and put both numbers in the commit
-   message and in [`phase-6.md`](../phase-6.md). Target: peak RSS bounded by something that is not
-   the size of the file. If no lever gets a 755 MB download under ~400 MB, **say so with the
-   number** — a measured disappointment is a result, and shipping this silently is how a Pi gets
-   OOM-killed at 3 a.m. with nobody watching.
+   for 755 MB — on a Pi that has 8 GB and is also running Jellyfin. Tighten
+   `ClientConfig.MaxUnverifiedBytes` and `EstablishedConnsPerTorrent` below anacrolix's 64 MiB and
+   50, then **measure the same payload again** and put the numbers in the commit message and in
+   [`phase-6.md`](../phase-6.md).
+
+   **Measure the Go heap beside RSS**, because they answer different questions and only one of them
+   is the Pi's. Resident pages include the kernel's copy of a file being written and are reclaimed
+   under pressure; anonymous heap is what an OOM killer counts. **Measured: RSS 817.6 MB, heap
+   33.4 MB and flat** — so the budget the test asserts is on heap, and the conn and unverified-byte
+   levers turn out to move RSS by 2 % because they were never the thing holding it. If a number
+   ever does disappoint, **say so with the number**: a measured disappointment is a result, and
+   shipping this silently is how a Pi gets OOM-killed at 3 a.m. with nobody watching.
 8. `Close(ctx)` stops the client and is called from `main`'s shutdown path, so seeding ends with the
    process and no goroutine outlives `run()` — the rule the poller and the search cache already
    follow.

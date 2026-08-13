@@ -545,11 +545,21 @@ payload and was thrown away, which is what a spike is here:
 | arm64 binary, `-s -w` | 11.31 MB | **17.62 MB** |
 | `go.mod` requires | 14 | **85** (estimate was 60–80) |
 | `go list -m all` | 36 | **256** |
-| peak RSS, 755 MB download | — | **822 MB**, ~1:1 with the payload |
+| `go.mod` requires | 14 | **87** as built |
+| peak RSS, 755 MB download | — | **817.6 MB**, ~1:1 with the payload |
+| peak **Go heap**, same download | — | **33.4 MB**, flat throughout |
 
 The dependency jump is the real cost and it is paid once, with open eyes, in a repo that had three
-direct dependencies. The RSS figure is the one that could still lose the Pi, and capping it is a
-task with a number attached rather than a hope.
+direct dependencies.
+
+The RSS figure looked like the cost that could lose the Pi and **it is not one**. Measured through
+curator's own engine on the same payload: RSS climbs in lockstep with the percentage while the Go
+heap sits at 33 MB and does not move. Those resident pages are the kernel's copy of a file being
+written, which it reclaims under pressure; anonymous memory — the kind an OOM killer counts — is
+~35 MB. Halving anacrolix's conn budget and its unverified-byte budget moved RSS by 2 %, which is
+the confirmation: the lever was never there, because the memory was never the heap. The engine's
+budget is asserted on heap for that reason, and Linux accounts `ru_maxrss` differently enough that
+the Pi is worth re-measuring at phase 10.
 
 **What it buys, beyond the VPN.** Path translation between two namespaces stops existing, because
 there is one namespace. qBittorrent's ~110-line cookie session, its `200 Ok.`-means-nothing add, and

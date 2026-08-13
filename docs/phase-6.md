@@ -129,10 +129,16 @@ No bundled `qbittorrent-nox`, no gluetun sidecar. T34, T35 and T37 are on.
    measurement does not carry over.** A hardlink is a second name for one inode, so the library copy
    is `0444` too — readable, which is all Jellyfin needs, but this is now measured rather than
    assumed, and T47 has to re-measure it again under `PUID`/`PGID`.
-5. **Peak RSS tracked payload size ~1:1** — 822 MB for 755 MB. This is the one number that could
-   still lose the Pi, which has 8 GB and is running Jellyfin. T35 owns capping it and proving the
-   cap, and a phase that shipped without that would be shipping an OOM to hardware nobody is
-   watching.
+5. **Peak RSS tracked payload size ~1:1** — 822 MB for 755 MB — which looked like the one number
+   that could still lose the Pi. **T35 measured it again and it is not.** Same payload through
+   curator's own engine: peak RSS 817.6 MB, and peak **Go heap 33.4 MB**, flat from start to finish
+   while RSS climbed in lockstep with the percentage. The resident pages are the kernel's copy of a
+   file being written, which is reclaimable under memory pressure; the memory the process actually
+   owns is ~35 MB. Tightening anacrolix's conn and unverified-byte budgets moved RSS by 2 %, which
+   is the other half of the evidence: it was never the lever, because it was never the heap.
+   The budget in the code is therefore on heap, and it passes by a factor of twelve. Re-measure on
+   the Pi at phase 10 — `ru_maxrss` accounts differently on Linux — with the command in
+   `internal/engine/live_test.go`.
 
 ---
 
