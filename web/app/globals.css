@@ -142,6 +142,20 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 
+/* A button that reads as a link: it changes what the screen does rather than
+   where it goes, so it must not be an <a> with a fake href. */
+.linkbutton {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linkbutton:hover:not(:disabled) { filter: brightness(1.15); }
+.linkbutton:disabled { color: var(--muted); text-decoration: none; }
+
 input, select {
   font: inherit;
   font-size: .92rem;
