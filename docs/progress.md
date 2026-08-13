@@ -6,7 +6,7 @@ what is **done, verified, and outstanding**. Update it when a phase closes or a 
 **Last updated:** 2026-08-14 · **Phases 1 and 2 complete** · phase 3 built, and its outstanding
 dispatch now run against a real qBittorrent locally · phase 4 built and verified locally ·
 phase 5 built, including the TMDB-first redesign (T27–T31) · **phase 6 built and verified locally,
-except the tunnel, which has never met a real peer**
+tunnel included — a real NordLynx endpoint, and a torrent downloading through it**
 
 ---
 
@@ -593,6 +593,25 @@ qBittorrent 5.1.2 container. Never against the Pi.
 | peak RSS / peak Go heap on a real 755 MB download | **817.6 MB / 33.4 MB**, heap flat throughout ([D22](decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)) |
 | every commit alone | builds, vets, tests with `-race`, and cross-compiles to `linux/arm64` |
 
+Then the tunnel, 2026-08-14, against a real NordVPN (NordLynx) endpoint in Singapore — chosen in a
+different country from the one this laptop's own NordVPN app was using, so the two exits could not
+be confused for each other:
+
+| Check | Result |
+|---|---|
+| handshake with `sg701.nordvpn.com` | **up**, rx 92 B / tx 180 B, in well under a second |
+| exit address **through** the tunnel vs the host's | **187.15.102.106** vs **187.14.240.8** — it changes where traffic leaves from |
+| DNS and HTTPS inside the tunnel | both, against a real Linux endpoint — none of T33's Docker-Desktop checksum artifact |
+| the **engine** over the tunnel | metadata in **6.0 s**, then **9.5 MB from 5 peers in 12 s**, with `DisableTCP`, `DisableUTP` and `NoDHT` set — the client has no socket of its own to leak through |
+| the binary, `TORRENT_BACKEND=embedded` + `VPN_CONFIG_FILE` | `vpn tunnel up` then `torrent engine started tunnelled=true`; `/api/settings?probe=1` reports **torrents and vpn both reachable** |
+
+**The first run of that crashed, and it was our bug.** `ListenPacket("udp", ":0")` handed netstack a
+`net.UDPAddr` with a nil IP — what ":0" means everywhere else in Go — and gvisor does not reject
+that, it **panics**: `invalid protocol number = 0`, four frames inside its transport layer. It is
+the exact call the engine makes at start-up, so the embedded-plus-tunnel path would have panicked on
+boot for anybody who configured one. An unspecified host now becomes the tunnel's own address.
+Nothing hermetic could have caught it: there was no tunnel to bind to.
+
 **The hardlink is the result worth keeping.** It is phase 4's proof — equal inode, link count 2 —
 re-run against a backend phase 4 never saw, through the real store, the real poller and the real
 importer. The `0444` in that table is the measurement that retires
@@ -606,16 +625,14 @@ phase 4 built. It fired against the new backend exactly as designed. The check w
 
 ### Still live going out
 
-- **The tunnel has never met a real peer.** `internal/vpn`'s parser, UAPI conversion, status parsing
-  and all four branches of the external-client check are tested hermetically, but `vpn.New` — the
-  device, the netstack, the handshake — has only ever been compiled. T33 proved the *approach* with
-  throwaway code; this implementation of it is unproven. `internal/vpn/live_test.go` runs the moment
-  a `VPN_CONFIG_FILE` exists, and **fails rather than skips** when a configured tunnel does not
-  handshake or does not change where traffic leaves from.
-- **"Kill the tunnel mid-download and confirm traffic stops"** is therefore unrun. The claim rests
-  on construction — `DisableTCP`, `DisableUTP` and `NoDHT` leave the client no socket of its own,
-  measured as zero in T33 — and on the loopback `Network` test, which proves the binding carries a
-  whole torrent. It is not the same as watching the bytes stop.
+- **"Kill the tunnel mid-download and confirm traffic stops" is still unrun.** The tunnel now
+  demonstrably carries a torrent, but nobody has torn one down underneath a live download and
+  watched the bytes stop. The claim rests on construction — `DisableTCP`, `DisableUTP` and `NoDHT`
+  leave the client no socket of its own, measured as zero in T33 — and that is not the same as
+  seeing it.
+- **Only one provider, one server, one run.** NordLynx against a Singapore endpoint, once. Nothing
+  says how this behaves on a provider with a different MTU, an IPv6-only address, or a config
+  carrying `Table`/`PostUp` directives the parser ignores.
 - **Dispatch from the UI was not re-driven end to end.** The release-id path from search to
   `POST /api/downloads` is phase 2 and 3 code, unchanged here, and driving it to completion would
   mean downloading a real film. Everything downstream of the row — resume, engine, poller, importer,
