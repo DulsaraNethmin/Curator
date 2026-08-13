@@ -1,15 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import {
-  api,
-  ApiError,
-  formatBytes,
-  type Download,
-  type Release,
-  type SearchResult,
-} from '@/lib/api';
-import { Empty, Failure, Working } from '@/components/states';
+import { useState } from 'react';
+import { api, type SearchResult } from '@/lib/api';
+import { Failure, Working } from '@/components/states';
+import { Releases } from '@/components/releases';
 
 // Search and Releases are one screen, not two.
 //
@@ -27,37 +21,12 @@ export default function Search() {
   const [result, setResult] = useState<SearchResult | null>(null);
   const [error, setError] = useState<unknown>(null);
 
-  const [dispatching, setDispatching] = useState<string | null>(null);
-  const [dispatched, setDispatched] = useState<Record<string, Download>>({});
-  const [dispatchError, setDispatchError] = useState<unknown>(null);
-
-  const [downloadsConfigured, setDownloadsConfigured] = useState<boolean | null>(null);
-
-  // Ask once whether dispatch is even possible, rather than letting the button
-  // fail with a 503. QBIT_USER is unset right now, so this is the live case.
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .settings()
-      .then((s) => {
-        if (cancelled) return;
-        const qbit = s.integrations.find((i) => i.name === 'qbittorrent');
-        setDownloadsConfigured(qbit?.configured ?? false);
-      })
-      .catch(() => !cancelled && setDownloadsConfigured(null));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   async function runSearch(event?: React.FormEvent) {
     event?.preventDefault();
     if (!title.trim()) return;
 
     setSearching(true);
     setError(null);
-    setDispatchError(null);
-    setDispatched({});
     try {
       setResult(await api.search(title.trim(), year ? Number(year) : undefined, quality || undefined));
     } catch (e) {
@@ -67,29 +36,6 @@ export default function Search() {
       setSearching(false);
     }
   }
-
-  async function dispatch(release: Release) {
-    if (!result || !result.year) return;
-    setDispatching(release.id);
-    setDispatchError(null);
-    try {
-      const saved = await api.dispatch({
-        release_id: release.id,
-        // The film, not the release. A release id says nothing about which movie
-        // it is for — the caller picked it out of a search it made and is the
-        // only party that knows.
-        title: result.title,
-        year: result.year,
-      });
-      setDispatched((prev) => ({ ...prev, [release.id]: saved }));
-    } catch (e) {
-      setDispatchError(e);
-    } finally {
-      setDispatching(null);
-    }
-  }
-
-  const expired = dispatchError instanceof ApiError && dispatchError.expiredSearch;
 
   return (
     <>
@@ -136,15 +82,6 @@ export default function Search() {
       )}
       {error !== null && <Failure error={error} onRetry={() => runSearch()} />}
 
-      {dispatchError !== null && (
-        <Failure
-          error={dispatchError}
-          // A 410 is the one error whose correct fix is a user action: the ids
-          // belong to a search that has aged out, so offer to run it again.
-          onRetry={expired ? () => runSearch() : undefined}
-        />
-      )}
-
       {result && !result.year && (
         <div className="banner warn">
           <strong>Add a year before downloading</strong>
@@ -158,134 +95,22 @@ export default function Search() {
         </div>
       )}
 
-      {result && <Indexers result={result} />}
-
-      {result && result.releases.length === 0 && (
-        <Empty>
-          Nothing found for <strong>{result.title}</strong>
-          {result.year ? ` (${result.year})` : ''}. Try dropping the year, or a shorter title.
-        </Empty>
-      )}
-
-      {result && result.releases.length > 0 && (
-        <div className="panel">
-          <table>
-            <thead>
-              <tr>
-                <th>Release</th>
-                <th className="num">Seeders</th>
-                <th>Quality</th>
-                <th className="num">Size</th>
-                <th>Source</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {result.releases.map((release) => {
-                const saved = dispatched[release.id];
-                return (
-                  <tr key={release.id}>
-                    <td>{release.title}</td>
-                    {/* Seeders lead, because they are the only column that
-                        predicts whether the download finishes — which is the
-                        question a manual picker is actually asking (D11). */}
-                    <td className="num">{release.seeders.toLocaleString()}</td>
-                    <td>
-                      <span className="badge">{release.quality || '—'}</span>
-                    </td>
-                    <td className="num tight">{formatBytes(release.size_bytes)}</td>
-                    <td className="small muted">{release.indexers.join(', ')}</td>
-                    <td className="tight">
-                      {saved ? (
-                        <span className="badge ok">queued</span>
-                      ) : (
-                        <button
-                          onClick={() => dispatch(release)}
-                          disabled={
-                            dispatching !== null ||
-                            downloadsConfigured === false ||
-                            searching ||
-                            !result.year
-                          }
-                          title={
-                            downloadsConfigured === false
-                              ? 'Downloads are not configured: set QBIT_USER and QBIT_PASS'
-                              : !result.year
-                                ? 'Search with a year first — it becomes the library folder name'
-                                : undefined
-                          }
-                        >
-                          {dispatching === release.id ? 'Sending…' : 'Download'}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {downloadsConfigured === false && (
-        <div className="banner warn" style={{ marginTop: '1rem' }}>
-          <strong>Downloads are not configured</strong>
-          <span>
-            Set <span className="mono">QBIT_USER</span> and <span className="mono">QBIT_PASS</span>{' '}
-            to dispatch a release. Search works without them.
-          </span>
-        </div>
-      )}
-    </>
-  );
-}
-
-/**
- * Per-indexer status.
- *
- * A search with one source down is a SUCCESS carrying the other two's releases,
- * not an error page — but the failure has to be named. An aggregator that
- * silently hides a downed indexer is how somebody concludes a film does not
- * exist.
- */
-function Indexers({ result }: { result: SearchResult }) {
-  const failed = result.indexers.filter((i) => !i.ok);
-
-  return (
-    <>
-      <p className="small muted" style={{ margin: '0 0 .75rem' }}>
-        {result.releases.length} release{result.releases.length === 1 ? '' : 's'} for{' '}
-        {/* Shown exactly as it will be written to the library, so a sloppy
-            search term is visible before it becomes a folder name. */}
-        <strong>
-          {result.title}
-          {result.year ? ` (${result.year})` : ''}
-        </strong>{' '}
-        ·{' '}
-        {result.indexers.map((indexer, i) => (
-          <span key={indexer.name}>
-            {i > 0 && ' · '}
-            <span className={indexer.ok ? '' : 'badge bad'}>
-              {indexer.name} {indexer.ok ? indexer.count : 'failed'}
-            </span>
-          </span>
-        ))}
-      </p>
-
-      {failed.length > 0 && (
-        <div className="banner warn">
-          <strong>
-            {failed.length === 1 ? 'One indexer is down' : `${failed.length} indexers are down`} —
-            these results are partial
-          </strong>
-          {failed.map((indexer) => (
-            <span key={indexer.name} className="small">
-              <span className="mono">{indexer.name}</span>: {indexer.error ?? 'no reason given'}
-              <br />
-            </span>
-          ))}
-        </div>
-      )}
+      <Releases
+        result={result}
+        // What was typed, echoed by the search — this screen has no better
+        // source. The movie page does, which is why the film is a prop.
+        film={{ title: result?.title ?? '', year: result?.year ?? 0 }}
+        searching={searching}
+        onSearchAgain={() => runSearch()}
+        empty={
+          result && (
+            <>
+              Nothing found for <strong>{result.title}</strong>
+              {result.year ? ` (${result.year})` : ''}. Try dropping the year, or a shorter title.
+            </>
+          )
+        }
+      />
     </>
   );
 }
