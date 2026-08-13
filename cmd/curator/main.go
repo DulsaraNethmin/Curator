@@ -76,11 +76,19 @@ func run() error {
 	// A nil Matcher is a supported state: with no key the library still scans and
 	// everything is reported unmatched. Declared as the interface so the nil stays
 	// a nil interface rather than a non-nil interface holding a nil pointer.
-	var matcher api.Matcher
+	// One client behind two interfaces: Matcher is phase 1's scan-time lookup and
+	// Browser is the catalogue the browsing screens read. Both stay nil
+	// interfaces when there is no key — not interfaces holding a nil pointer.
+	var (
+		matcher api.Matcher
+		browser api.Browser
+	)
 	if cfg.TMDBAPIKey == "" {
-		log.Warn("TMDB_API_KEY is unset: the library will scan but nothing will be matched")
+		log.Warn("TMDB_API_KEY is unset: the library will scan but nothing will be matched, " +
+			"Discover is unavailable, and Search falls back to release names")
 	} else {
-		matcher = tmdb.New(cfg.TMDBAPIKey, nil)
+		client := tmdb.New(cfg.TMDBAPIKey, nil)
+		matcher, browser = client, client
 	}
 
 	// One HTTP client, shared by the indexers that speak plain JSON. minter gets
@@ -136,13 +144,15 @@ func run() error {
 		WithSearch(aggregator).
 		WithDownloads(downloads).
 		WithSettings(settingsView(cfg, matcher, torrents, indexerHTTP)).
-		WithLogs(logBuffer)
+		WithLogs(logBuffer).
+		WithBrowser(browser)
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
 	apiSrv.RegisterDownloads(mux)
 	apiSrv.RegisterSettings(mux)
 	apiSrv.RegisterLogs(mux)
 	apiSrv.RegisterMovieDelete(mux)
+	apiSrv.RegisterBrowse(mux)
 
 	// The UI is mounted last and at "/", so it can never shadow an API pattern.
 	// Go 1.22 routing prefers the more specific pattern anyway, but the order is

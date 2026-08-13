@@ -528,3 +528,127 @@ func TestDeleteMovieLeavesNoOrphanedDownloads(t *testing.T) {
 		t.Errorf("got %d downloads, want 0 — an orphan would violate the foreign key", len(downloads))
 	}
 }
+
+// --- LibraryByTMDBID --------------------------------------------------------
+
+func TestLibraryByTMDBIDIndexesOnlyMatchedFilms(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	matched, _, err := s.UpsertMovieByPath(ctx, scanned(importPath))
+	if err != nil {
+		t.Fatalf("UpsertMovieByPath: %v", err)
+	}
+	if err := s.SetTMDBMetadata(ctx, matched.ID, TMDBMatch{TMDBID: 299536}); err != nil {
+		t.Fatalf("SetTMDBMetadata: %v", err)
+	}
+	// A folder TMDB could not match. No card can ever match it either, so it must
+	// not be in the index.
+	if _, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Some Unmatched Folder (2019)")); err != nil {
+		t.Fatalf("second folder: %v", err)
+	}
+
+	byID, err := s.LibraryByTMDBID(ctx)
+	if err != nil {
+		t.Fatalf("LibraryByTMDBID: %v", err)
+	}
+	if len(byID) != 1 {
+		t.Fatalf("indexed %d films, want 1 — a NULL tmdb_id is not indexable", len(byID))
+	}
+
+	state, ok := byID[299536]
+	if !ok {
+		t.Fatal("the matched film is missing from the index")
+	}
+	if state.MovieID != matched.ID {
+		t.Errorf("movie_id = %d, want %d", state.MovieID, matched.ID)
+	}
+	if state.Status != StatusImported {
+		t.Errorf("status = %q, want %q", state.Status, StatusImported)
+	}
+	if state.LibraryPath == nil || *state.LibraryPath != importPath {
+		t.Errorf("library_path = %v, want %q", state.LibraryPath, importPath)
+	}
+	if state.Downloading {
+		t.Error("a film with no downloads reports Downloading")
+	}
+}
+
+// The reason Downloading is an EXISTS over downloads and not movies.status.
+//
+// store.StatusDownloading is declared and never written — UpsertWantedMovie
+// inserts 'wanted' and the importer writes 'imported' — so a card reading
+// movies.status would label a film whose torrent is at 60% as "wanted".
+func TestLibraryByTMDBIDReportsDownloadingFromTheDownloadNotTheStatus(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, ptrInt64(299536))
+	if err != nil {
+		t.Fatalf("UpsertWantedMovie: %v", err)
+	}
+	dispatch(t, s, movie.ID, importHash)
+
+	// The download is in flight. movies.status still says 'wanted', which is the
+	// trap.
+	byID, err := s.LibraryByTMDBID(ctx)
+	if err != nil {
+		t.Fatalf("LibraryByTMDBID: %v", err)
+	}
+	if got := byID[299536]; !got.Downloading {
+		t.Errorf("Downloading = false while a download is in flight; status was %q", got.Status)
+	}
+
+	// And once it is imported it stops being in flight, without movies.status
+	// ever having said 'downloading' at any point.
+	if _, err := s.MarkImported(ctx, importHash, importPath, importSize, importedAt); err != nil {
+		t.Fatalf("MarkImported: %v", err)
+	}
+	byID, err = s.LibraryByTMDBID(ctx)
+	if err != nil {
+		t.Fatalf("LibraryByTMDBID: %v", err)
+	}
+	got := byID[299536]
+	if got.Downloading {
+		t.Error("Downloading is still true after the import")
+	}
+	if got.Status != StatusImported {
+		t.Errorf("status = %q, want %q", got.Status, StatusImported)
+	}
+}
+
+// A failed download is not in flight; the film is not coming.
+func TestLibraryByTMDBIDIgnoresAFailedDownload(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, ptrInt64(299536))
+	if err != nil {
+		t.Fatalf("UpsertWantedMovie: %v", err)
+	}
+	dispatch(t, s, movie.ID, importHash)
+	if err := s.UpdateDownloadProgress(ctx, importHash, DownloadFailed, 0.3, nil); err != nil {
+		t.Fatalf("UpdateDownloadProgress: %v", err)
+	}
+
+	byID, err := s.LibraryByTMDBID(ctx)
+	if err != nil {
+		t.Fatalf("LibraryByTMDBID: %v", err)
+	}
+	if byID[299536].Downloading {
+		t.Error("a failed download counts as in flight")
+	}
+}
+
+func TestLibraryByTMDBIDEmptyIsAnEmptyMap(t *testing.T) {
+	byID, err := newTestStore(t).LibraryByTMDBID(context.Background())
+	if err != nil {
+		t.Fatalf("LibraryByTMDBID: %v", err)
+	}
+	if byID == nil {
+		t.Error("an empty library returned a nil map")
+	}
+	if len(byID) != 0 {
+		t.Errorf("got %d entries", len(byID))
+	}
+}

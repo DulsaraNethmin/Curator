@@ -270,3 +270,67 @@ func scanMovie(row rowScanner) (Movie, error) {
 	}
 	return m, nil
 }
+
+// LibraryState is what a TMDB card needs to know about a film curator already
+// has.
+//
+// Deliberately not a Movie. A card needs four facts, and reading thirteen
+// columns for every row in the library to annotate forty posters is a query
+// nobody should make twice.
+type LibraryState struct {
+	MovieID     int64
+	Status      string  // movies.status, as stored
+	LibraryPath *string // NULL until the film is actually on disk
+	Downloading bool
+}
+
+// LibraryByTMDBID indexes the library by tmdb_id — the annotation behind
+// "already in your library" on a poster.
+//
+// It returns the WHOLE set rather than taking a list of ids. The library is 29
+// films and will be hundreds; one query with no placeholders beats building an
+// IN clause per request, and it can never meet SQLite's variable limit. Rows
+// with tmdb_id NULL are excluded, because those are exactly the ones no TMDB
+// card could ever match.
+//
+// Downloading is an EXISTS over downloads rather than movies.status, and that is
+// not a detail. **store.StatusDownloading is declared and never written**:
+// UpsertWantedMovie inserts 'wanted' and the importer writes 'imported', so
+// nothing ever sets it. A card reading movies.status would label a film whose
+// torrent is at 60% as "wanted". The state that is true lives in
+// downloads.state, where 'imported' and 'failed' are the two that do not count
+// as in flight.
+func (s *Store) LibraryByTMDBID(ctx context.Context) (map[int64]LibraryState, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.tmdb_id, m.id, m.status, m.library_path,
+		       EXISTS (
+		           SELECT 1 FROM downloads d
+		            WHERE d.movie_id = m.id
+		              AND d.state NOT IN (?, ?)
+		       ) AS downloading
+		  FROM movies m
+		 WHERE m.tmdb_id IS NOT NULL`,
+		DownloadImported, DownloadFailed)
+	if err != nil {
+		return nil, fmt.Errorf("library by tmdb_id: %w", err)
+	}
+	defer rows.Close()
+
+	// Non-nil so a caller can index it without checking, and so an empty library
+	// is an empty map rather than a nil one.
+	byID := map[int64]LibraryState{}
+	for rows.Next() {
+		var (
+			tmdbID int64
+			state  LibraryState
+		)
+		if err := rows.Scan(&tmdbID, &state.MovieID, &state.Status, &state.LibraryPath, &state.Downloading); err != nil {
+			return nil, fmt.Errorf("library by tmdb_id: %w", err)
+		}
+		byID[tmdbID] = state
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("library by tmdb_id: %w", err)
+	}
+	return byID, nil
+}

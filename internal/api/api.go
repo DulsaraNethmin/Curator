@@ -27,6 +27,9 @@ type Store interface {
 	ListMovies(ctx context.Context) ([]store.Movie, error)
 	GetMovie(ctx context.Context, id int64) (store.Movie, error)
 	MoviesMissingMetadata(ctx context.Context) ([]store.Movie, error)
+
+	// LibraryByTMDBID annotates a TMDB card with what curator already has.
+	LibraryByTMDBID(ctx context.Context) (map[int64]store.LibraryState, error)
 }
 
 // Scanner walks the library root and reports what is on disk.
@@ -71,6 +74,10 @@ type Server struct {
 
 	// logs is the in-memory tail of the process log, attached with WithLogs.
 	logs LogTail
+
+	// browser is the TMDB catalogue behind the browsing screens, attached with
+	// WithBrowser. Nil when TMDB_API_KEY is unset, which is a supported state.
+	browser Browser
 }
 
 // New builds a Server. matcher may be nil; log may be nil, in which case the

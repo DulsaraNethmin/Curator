@@ -32,6 +32,20 @@ type fakeStore struct {
 	listErr   error
 	missErr   error
 	setErr    error // e.g. the UNIQUE violation two folders matching one TMDB id causes
+
+	// The library index behind a TMDB card's "already in your library" badge.
+	library    map[int64]store.LibraryState
+	libraryErr error
+}
+
+func (f *fakeStore) LibraryByTMDBID(context.Context) (map[int64]store.LibraryState, error) {
+	if f.libraryErr != nil {
+		return nil, f.libraryErr
+	}
+	if f.library == nil {
+		return map[int64]store.LibraryState{}, nil
+	}
+	return f.library, nil
 }
 
 func newFakeStore() *fakeStore {
