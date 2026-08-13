@@ -1,0 +1,65 @@
+package api
+
+import (
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/DulsaraNethmin/curator/internal/download"
+	"github.com/DulsaraNethmin/curator/internal/qbit"
+	"github.com/DulsaraNethmin/curator/internal/store"
+)
+
+// RegisterMovieDelete mounts the one destructive route curator has.
+//
+// It is registered separately from Register so that phase 1's route set keeps
+// its shape, and so that a deployment could omit it entirely.
+func (s *Server) RegisterMovieDelete(mux *http.ServeMux) {
+	mux.HandleFunc("DELETE /api/movies/{id}", s.handleDeleteMovie)
+}
+
+// handleDeleteMovie removes a film from the library and from the disk.
+//
+// This is the first request curator has ever had that destroys something, and
+// there is no authentication in front of it — the same posture as the rest, and
+// as the *arr stack it replaces (docs/decisions.md D19). The UI is what says
+// precisely what will go and how much disk it frees, before it asks for this.
+func (s *Server) handleDeleteMovie(w http.ResponseWriter, r *http.Request) {
+	if s.dispatcher == nil {
+		s.fail(w, http.StatusServiceUnavailable, errors.New("deleting is not configured"))
+		return
+	}
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, errors.New("id must be a whole number"))
+		return
+	}
+
+	report, err := s.dispatcher.DeleteMovie(r.Context(), id)
+	if err != nil {
+		s.failDelete(w, id, err)
+		return
+	}
+	s.respond(w, http.StatusOK, report)
+}
+
+func (s *Server) failDelete(w http.ResponseWriter, id int64, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.fail(w, http.StatusNotFound, errors.New("no movie with id "+strconv.FormatInt(id, 10)))
+	case errors.Is(err, qbit.ErrWrongCategory):
+		// The guard fired: something asked curator to delete a torrent that is
+		// not ours. 409, because the request is well-formed and the refusal is
+		// deliberate — the *arr stack shares that qBittorrent until phase 6.
+		s.fail(w, http.StatusConflict, err)
+	case errors.Is(err, download.ErrUnconfigured):
+		s.fail(w, http.StatusServiceUnavailable, err)
+	case errors.Is(err, download.ErrClient):
+		// The torrent could not be removed, so nothing else was touched. The
+		// film is still in the library and still on disk.
+		s.fail(w, http.StatusBadGateway, err)
+	default:
+		s.fail(w, http.StatusInternalServerError, err)
+	}
+}

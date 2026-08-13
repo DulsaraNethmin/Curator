@@ -19,6 +19,12 @@ type Config struct {
 	TMDBAPIKey    string
 	LogLevel      slog.Level
 
+	// LogBufferLines is how much of the process log is kept in memory for
+	// GET /api/logs and the Logs screen. It is a ring: the oldest line is
+	// dropped, and the API reports how many were dropped rather than serving a
+	// log with a silent gap in it.
+	LogBufferLines int
+
 	// Phase 2: indexers.
 	MinterURL      string
 	SearchTimeout  time.Duration
@@ -68,6 +74,12 @@ const (
 	defaultDBPath        = "./curator.db"
 	defaultLibraryMovies = "./testdata/library/movies"
 	defaultLogLevel      = "info"
+
+	// defaultLogBufferLines is a thousand lines — a few hundred kilobytes, and
+	// enough to cover either hours of an idle poller or the whole of a busy
+	// import. Large enough to be useful without being a memory leak with a
+	// friendly name.
+	defaultLogBufferLines = 1000
 
 	// defaultMinterURL is the literal IPv4 address, not "localhost": minter binds
 	// IPv4 only, so "localhost" resolves to ::1 first and the connection fails
@@ -135,6 +147,8 @@ func Load() (*Config, error) {
 		QBitPass:      os.Getenv("QBIT_PASS"),
 		QBitCategory:  env("QBIT_CATEGORY", defaultQBitCategory),
 
+		LogBufferLines: defaultLogBufferLines,
+
 		// DOWNLOADS_PATH is read raw rather than through env(): it has no
 		// default, and empty is a meaningful value — "the path qBittorrent
 		// reports is already the path curator sees".
@@ -153,6 +167,14 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("PORT %d: out of range 1-65535", port)
 		}
 		cfg.Port = port
+	}
+
+	if raw := os.Getenv("LOG_BUFFER_LINES"); raw != "" {
+		lines, err := strconv.Atoi(raw)
+		if err != nil || lines < 1 {
+			return nil, fmt.Errorf("LOG_BUFFER_LINES %q: want a positive whole number", raw)
+		}
+		cfg.LogBufferLines = lines
 	}
 
 	level, err := parseLevel(env("LOG_LEVEL", defaultLogLevel))

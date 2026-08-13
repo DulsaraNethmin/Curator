@@ -425,3 +425,106 @@ func dispatch(t *testing.T, s *Store, movieID int64, hash string) Download {
 	}
 	return d
 }
+
+// --- DeleteMovie ------------------------------------------------------------
+
+func TestDeleteMovieRemovesTheRowAndReportsItsDownloads(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const secondHash = "9999888877776666555544443333222211110000"
+
+	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	if err != nil {
+		t.Fatalf("UpsertWantedMovie: %v", err)
+	}
+	dispatch(t, s, movie.ID, importHash)
+	dispatch(t, s, movie.ID, secondHash)
+	if _, err := s.MarkImported(ctx, importHash, importPath, importSize, importedAt); err != nil {
+		t.Fatalf("MarkImported: %v", err)
+	}
+
+	deleted, err := s.DeleteMovie(ctx, movie.ID)
+	if err != nil {
+		t.Fatalf("DeleteMovie: %v", err)
+	}
+
+	// The caller needs every torrent: after the DELETE there is nothing left to
+	// look them up by, and each one has to be removed from qBittorrent.
+	if len(deleted.Downloads) != 2 {
+		t.Fatalf("reported %d downloads, want 2", len(deleted.Downloads))
+	}
+	if deleted.Movie.LibraryPath == nil || *deleted.Movie.LibraryPath != importPath {
+		t.Errorf("library_path = %v, want %q — the caller removes that folder", deleted.Movie.LibraryPath, importPath)
+	}
+
+	if _, err := s.GetMovie(ctx, movie.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the movie row survived: %v", err)
+	}
+	for _, hash := range []string{importHash, secondHash} {
+		if _, err := s.GetDownloadByHash(ctx, hash); !errors.Is(err, ErrNotFound) {
+			t.Errorf("download %s survived: %v", hash, err)
+		}
+	}
+	movies, err := s.ListMovies(ctx)
+	if err != nil {
+		t.Fatalf("ListMovies: %v", err)
+	}
+	if len(movies) != 0 {
+		t.Errorf("got %d movies, want 0", len(movies))
+	}
+}
+
+// A film scanned off disk has no downloads at all, and deleting it must not
+// depend on there being any.
+func TestDeleteMovieWithNoDownloads(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	movie, _, err := s.UpsertMovieByPath(ctx, scanned(importPath))
+	if err != nil {
+		t.Fatalf("UpsertMovieByPath: %v", err)
+	}
+
+	deleted, err := s.DeleteMovie(ctx, movie.ID)
+	if err != nil {
+		t.Fatalf("DeleteMovie: %v", err)
+	}
+	if len(deleted.Downloads) != 0 {
+		t.Errorf("reported %d downloads, want 0", len(deleted.Downloads))
+	}
+	if _, err := s.GetMovie(ctx, movie.ID); !errors.Is(err, ErrNotFound) {
+		t.Error("the movie row survived")
+	}
+}
+
+func TestDeleteMovieUnknownIDIsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.DeleteMovie(context.Background(), 999); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// Deleting the movie while a download still points at it is refused by SQLite,
+// which is why the downloads go first. If this ordering were reversed the
+// foreign key would fail the whole transaction.
+func TestDeleteMovieLeavesNoOrphanedDownloads(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	if err != nil {
+		t.Fatalf("UpsertWantedMovie: %v", err)
+	}
+	dispatch(t, s, movie.ID, importHash)
+
+	if _, err := s.DeleteMovie(ctx, movie.ID); err != nil {
+		t.Fatalf("DeleteMovie: %v", err)
+	}
+	downloads, err := s.ListDownloads(ctx)
+	if err != nil {
+		t.Fatalf("ListDownloads: %v", err)
+	}
+	if len(downloads) != 0 {
+		t.Errorf("got %d downloads, want 0 — an orphan would violate the foreign key", len(downloads))
+	}
+}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { api, formatBytes, posterURL, type Movie, type ScanResult } from '@/lib/api';
+import { api, formatBytes, posterURL, type Deletion, type Movie, type ScanResult } from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
 
 export default function Library() {
@@ -10,6 +10,9 @@ export default function Library() {
   const [scanning, setScanning] = useState(false);
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [onlyUnmatched, setOnlyUnmatched] = useState(false);
+  const [confirming, setConfirming] = useState<Movie | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleted, setDeleted] = useState<Deletion | null>(null);
 
   async function load() {
     setError(null);
@@ -42,7 +45,26 @@ export default function Library() {
   // nullable rather than dropping the folder precisely so this list can exist,
   // so hiding it would defeat the point of recording it.
   const unmatched = movies?.filter((m) => m.tmdb_id === null) ?? [];
+  // library_path is null until an import or a scan puts the film on disk, so a
+  // wanted row is emphatically NOT "on disk" and must not be counted as one.
+  const onDisk = movies?.filter((m) => m.library_path !== null) ?? [];
+  const wanted = movies?.filter((m) => m.library_path === null) ?? [];
   const shown = onlyUnmatched ? unmatched : (movies ?? []);
+
+  async function remove(movie: Movie) {
+    setDeleting(true);
+    setError(null);
+    try {
+      setDeleted(await api.deleteMovie(movie.id));
+      setConfirming(null);
+      await load();
+    } catch (e) {
+      setError(e);
+      setConfirming(null);
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   return (
     <>
@@ -62,7 +84,8 @@ export default function Library() {
           </button>
         )}
         <span className="small muted">
-          {movies ? `${movies.length} on disk` : 'loading…'}
+          {movies ? `${onDisk.length} on disk` : 'loading…'}
+          {wanted.length > 0 && ` · ${wanted.length} wanted, not yet imported`}
           {unmatched.length > 0 && ` · ${unmatched.length} unmatched by TMDB`}
         </span>
       </form>
@@ -90,6 +113,28 @@ export default function Library() {
 
       {error !== null && <Failure error={error} onRetry={load} />}
 
+      {deleted && (
+        <div className="banner info">
+          <strong>
+            Deleted {deleted.title} ({deleted.year})
+          </strong>
+          <span className="small">
+            {deleted.torrents_removed > 0
+              ? `${deleted.torrents_removed} torrent${deleted.torrents_removed === 1 ? '' : 's'} removed from qBittorrent, and ${formatBytes(deleted.bytes_freed)} freed.`
+              : 'The library folder was removed. There was no torrent to delete.'}
+          </span>
+        </div>
+      )}
+
+      {confirming && (
+        <ConfirmDelete
+          movie={confirming}
+          busy={deleting}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => remove(confirming)}
+        />
+      )}
+
       {movies && shown.length === 0 && (
         <Empty>
           {onlyUnmatched
@@ -100,14 +145,61 @@ export default function Library() {
 
       <div className="grid">
         {shown.map((movie) => (
-          <Card key={movie.id} movie={movie} />
+          <Card key={movie.id} movie={movie} onDelete={() => setConfirming(movie)} />
         ))}
       </div>
     </>
   );
 }
 
-function Card({ movie }: { movie: Movie }) {
+// The confirmation says exactly what will be destroyed before it is destroyed.
+// This is the only request in curator that removes anything, there is no undo,
+// and there is no authentication in front of it (docs/decisions.md D19).
+function ConfirmDelete({
+  movie,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  movie: Movie;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="banner error" role="alertdialog">
+      <strong>
+        Delete {movie.title}
+        {movie.year ? ` (${movie.year})` : ''}?
+      </strong>
+      <span className="small">
+        This removes the film from the library <em>and from the disk</em>, and cannot be undone.
+      </span>
+      <ul className="small" style={{ margin: '.5rem 0 0', paddingLeft: '1.1rem' }}>
+        {movie.library_path && (
+          <li>
+            the folder <span className="mono">{movie.library_path}</span>
+          </li>
+        )}
+        <li>
+          the downloaded file, deleted by qBittorrent, freeing{' '}
+          <strong>{formatBytes(movie.size_bytes)}</strong>
+        </li>
+        <li>the torrent stops seeding and is removed from qBittorrent</li>
+      </ul>
+      <div>
+        <button onClick={onConfirm} disabled={busy}>
+          {busy ? 'Deleting…' : 'Delete it'}
+        </button>{' '}
+        <button onClick={onCancel} disabled={busy}>
+          Keep it
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Card({ movie, onDelete }: { movie: Movie; onDelete: () => void }) {
   const poster = posterURL(movie.poster_path);
 
   return (
@@ -128,9 +220,9 @@ function Card({ movie }: { movie: Movie }) {
         {movie.title}
       </div>
       <div className="meta">
-        <span>{movie.year || '—'}</span>
+        <span>{movie.year || 'no year'}</span>
         <span>·</span>
-        <span>{formatBytes(movie.size_bytes)}</span>
+        <span>{movie.library_path === null ? 'not on disk' : formatBytes(movie.size_bytes)}</span>
         {movie.quality && <span className="badge">{movie.quality}</span>}
         {movie.tmdb_id === null && (
           <span className="badge warn" title="TMDB could not match this folder; it is recorded rather than guessed at">
@@ -139,6 +231,9 @@ function Card({ movie }: { movie: Movie }) {
         )}
         {movie.status !== 'imported' && <span className="badge">{movie.status}</span>}
       </div>
+      <button className="small" style={{ marginTop: '.4rem', width: '100%' }} onClick={onDelete}>
+        Delete
+      </button>
     </div>
   );
 }

@@ -31,6 +31,21 @@ type fakeDispatcher struct {
 	importErr error
 	gotHash   string
 	imports   int
+
+	// D19's delete path.
+	deletion  download.Deletion
+	deleteErr error
+	deletedID int64
+	deletes   int
+}
+
+func (f *fakeDispatcher) DeleteMovie(_ context.Context, id int64) (download.Deletion, error) {
+	f.deletes++
+	f.deletedID = id
+	if f.deleteErr != nil {
+		return download.Deletion{}, f.deleteErr
+	}
+	return f.deletion, nil
 }
 
 func (f *fakeDispatcher) Dispatch(_ context.Context, req download.Request) (store.Download, error) {

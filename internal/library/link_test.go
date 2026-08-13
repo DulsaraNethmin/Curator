@@ -698,3 +698,87 @@ func keysOf(m map[string]string) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// --- RemoveMovieFolder ------------------------------------------------------
+
+func TestRemoveMovieFolderDeletesOnlyInsideTheLibrary(t *testing.T) {
+	dir := t.TempDir()
+	root := mkdir(t, dir, "movies")
+	outside := mkdir(t, dir, "elsewhere")
+	mkFile(t, filepath.Join(outside, "precious.mkv"), 1024, 'p')
+
+	folder := mkdir(t, root, "Interstellar (2014)")
+	mkFile(t, filepath.Join(folder, "Interstellar (2014).mkv"), 2048, 'a')
+
+	if err := RemoveMovieFolder(root, folder); err != nil {
+		t.Fatalf("RemoveMovieFolder: %v", err)
+	}
+	if _, err := os.Stat(folder); !errors.Is(err, fs.ErrNotExist) {
+		t.Error("the folder is still there")
+	}
+	// The root survives, and so does everything beside it.
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("the library root was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "precious.mkv")); err != nil {
+		t.Errorf("a file outside the library was removed: %v", err)
+	}
+}
+
+// The containment check is the whole safety argument: a library_path that had
+// drifted, or been crafted, must not turn this into rm -rf with a friendly name.
+func TestRemoveMovieFolderRefusesAnythingOutsideOrTheRootItself(t *testing.T) {
+	dir := t.TempDir()
+	root := mkdir(t, dir, "movies")
+	outside := mkdir(t, dir, "elsewhere")
+	mkFile(t, filepath.Join(outside, "precious.mkv"), 1024, 'p')
+
+	for name, folder := range map[string]string{
+		"the root itself":    root,
+		"a parent":           dir,
+		"a sibling":          outside,
+		"a traversal":        filepath.Join(root, "..", "elsewhere"),
+		"an absolute escape": "/tmp",
+	} {
+		if err := RemoveMovieFolder(root, folder); err == nil {
+			t.Errorf("%s: %q was accepted", name, folder)
+		}
+	}
+
+	for _, path := range []string{root, outside, filepath.Join(outside, "precious.mkv")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("%s was removed: %v", path, err)
+		}
+	}
+}
+
+// A symlink at the library path would otherwise have RemoveAll follow it out of
+// the library and delete whatever it names.
+func TestRemoveMovieFolderRefusesASymlink(t *testing.T) {
+	dir := t.TempDir()
+	root := mkdir(t, dir, "movies")
+	outside := mkdir(t, dir, "elsewhere")
+	mkFile(t, filepath.Join(outside, "precious.mkv"), 1024, 'p')
+
+	link := filepath.Join(root, "Interstellar (2014)")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	if err := RemoveMovieFolder(root, link); err == nil {
+		t.Error("a symlinked folder was removed, following it out of the library")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "precious.mkv")); err != nil {
+		t.Errorf("the symlink target's contents were removed: %v", err)
+	}
+}
+
+func TestRemoveMovieFolderIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	root := mkdir(t, dir, "movies")
+	folder := filepath.Join(root, "Never Existed (2014)")
+
+	if err := RemoveMovieFolder(root, folder); err != nil {
+		t.Errorf("removing a folder that is not there: %v, want success", err)
+	}
+}

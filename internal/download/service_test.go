@@ -32,6 +32,22 @@ type fakeClient struct {
 	listErr    error
 	addedMagn  string
 	addedCateg string
+
+	// D19's delete path.
+	deleted        []string
+	deleteErr      error
+	deleteCategory string
+	deleteFiles    bool
+}
+
+func (f *fakeClient) DeleteTorrent(_ context.Context, hash, requireCategory string, deleteFiles bool) error {
+	f.calls = append(f.calls, "delete")
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, strings.ToUpper(hash))
+	f.deleteCategory, f.deleteFiles = requireCategory, deleteFiles
+	return nil
 }
 
 func (f *fakeClient) AddMagnet(_ context.Context, magnet, category string) error {
@@ -64,6 +80,10 @@ type fakeStore struct {
 	updates    []update
 	updateErr  error
 	writeCount int
+
+	// D19's delete path.
+	deleteErr    error
+	deletedMovie bool
 }
 
 type update struct {
@@ -111,6 +131,33 @@ func (f *fakeStore) ListDownloads(context.Context) ([]store.Download, error) {
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+func (f *fakeStore) GetMovie(_ context.Context, id int64) (store.Movie, error) {
+	f.calls = append(f.calls, "get-movie")
+	if f.movieErr != nil {
+		return store.Movie{}, f.movieErr
+	}
+	return f.movie, nil
+}
+
+func (f *fakeStore) DownloadsForMovie(_ context.Context, _ int64) ([]store.Download, error) {
+	f.calls = append(f.calls, "downloads-for-movie")
+	out := make([]store.Download, 0, len(f.byHash))
+	for _, d := range f.byHash {
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+func (f *fakeStore) DeleteMovie(_ context.Context, _ int64) (store.Deleted, error) {
+	f.calls = append(f.calls, "delete-movie")
+	f.writeCount++
+	if f.deleteErr != nil {
+		return store.Deleted{}, f.deleteErr
+	}
+	f.deletedMovie = true
+	return store.Deleted{Movie: f.movie}, nil
 }
 
 func (f *fakeStore) GetDownloadByHash(_ context.Context, hash string) (store.Download, error) {

@@ -368,3 +368,69 @@ needs — every screen's real question is "can I press this button", not "what i
 Configuration stays in the environment, read once at startup
 ([CLAUDE.md](../CLAUDE.md#conventions)). One source of truth beats a database layer that shadows it,
 disagrees with it after a restart, and has to be reconciled.
+
+---
+
+## D18 — The log tail is readable without authentication, so it is redacted at the source
+
+**Status:** decided · **Extends:** [D17](#d17--settings-is-read-only-and-the-settings-table-stays-unused)
+
+`GET /api/logs` serves the last `LOG_BUFFER_LINES` of curator's own log, and the Logs screen shows
+it live. Until now a log line went to stderr on a machine you had to SSH into. Behind an endpoint it
+goes to any browser on the LAN, and there is no authentication in front of it.
+
+So **secrets are scrubbed on the way into the buffer**, not on the way out. `internal/tmdb` already
+strips the API key out of transport errors at the source — `scrubURL` exists precisely because
+`*url.Error` stringifies a URL carrying `api_key=` — but that is one careful call site, and this has
+to hold for log calls nobody has written yet. The buffer is handed `TMDB_API_KEY`, `QBIT_PASS` and
+`JELLYFIN_API_KEY` at startup and replaces any occurrence before storing. Values under six
+characters are ignored: redacting an empty or two-character secret would mangle every line while
+protecting nothing.
+
+The tail is **in memory only**. It cannot read a file, a journal, or anything else on the host — it
+holds what this process wrote, and it dies with the process. A log endpoint that could be pointed at
+a path would be a file-read primitive with a friendly name.
+
+Entries carry a monotonic cursor, and the API reports how many lines **fell off the ring** before the
+caller asked. A log with a silent gap in it is worse than one that admits the gap, because the reader
+draws conclusions from what is not there.
+
+---
+
+## D19 — Deleting a movie removes the file, and asks qBittorrent to remove its own
+
+**Status:** decided · **Reverses:** [D8](#d8--import-by-hardlink)'s "source files are never deleted"
+
+D8 said curator never deletes a source file and that cleanup stays qBittorrent's business.
+`internal/qbit` was built with no delete method at all, so that guarantee was structural rather than
+a promise. Removing a film from the library now has to actually free the disk, which reverses that.
+
+**The reversal is narrowed to one rule: curator only ever deletes a file it created itself.** It
+unlinks its own hardlink in `LIBRARY_MOVIES`, and for the downloaded copy it asks **qBittorrent** to
+delete it, because qBittorrent created it and owns it. Curator never reaches into the download
+directory and unlinks something there. That also avoids the state a naive delete produces — a
+torrent whose files have vanished underneath it, which qBittorrent reports as `missingFiles` and the
+poller then records as `failed`, for a download nobody failed to get.
+
+Three guards make this safe while the *arr stack still shares that qBittorrent until phase 6:
+
+1. **Only torrents in our category are deletable.** `DeleteTorrent` takes the category it requires,
+   looks the torrent up first, and refuses if it does not match. A hash belonging to `radarr` cannot
+   be removed by curator even if something hands it one — the check is in the client, at the lowest
+   level, not only in the caller.
+2. **Only paths inside `LIBRARY_MOVIES` are removable**, asserted after resolution, and never the
+   root itself. The same containment check the importer makes before it writes.
+3. **The order puts the recoverable failure last.** Torrent and its data, then our hardlink, then the
+   database rows. A failure at any step leaves something a retry can finish, and the row survives
+   longest — a row pointing at files that are already gone is repairable, while files with no row are
+   silently re-adopted by the next scan.
+
+[D13](#d13--downloads-are-scoped-by-a-qbittorrent-category-with-its-own-save-path) is what makes this
+possible at all. The `curator` category has **its own save path**, so nothing in it was ever
+hardlinked by radarr, and deleting it cannot pull a file out from under the stack we have not
+replaced yet.
+
+**There is no undo and no authentication.** Deleting is as reachable as reading, for anyone on the
+LAN, which is the same posture as the rest of curator and as the *arr stack it replaces — but delete
+is the first request that destroys something. The UI therefore says exactly what will be removed and
+how much disk it frees before it does it.

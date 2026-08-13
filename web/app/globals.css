@@ -250,3 +250,34 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   overflow: hidden;
 }
 .movie .meta { font-size: .78rem; color: var(--muted); display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+
+/* --- logs ------------------------------------------------------------------ */
+
+.logs {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .5rem 0;
+  max-height: 70vh;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .8rem;
+  line-height: 1.55;
+}
+.logline {
+  display: grid;
+  grid-template-columns: 5.5rem 3.4rem 1fr;
+  gap: .6rem;
+  padding: .12rem .85rem;
+  align-items: baseline;
+}
+.logline:hover { background: var(--bg); }
+.logline .when { color: var(--muted); white-space: nowrap; }
+.logline .lvl { font-weight: 600; font-size: .72rem; letter-spacing: .03em; }
+.logline .lvl.DEBUG { color: var(--muted); }
+.logline .lvl.INFO  { color: var(--accent); }
+.logline .lvl.WARN  { color: var(--warn); }
+.logline .lvl.ERROR { color: var(--error); }
+.logline .body { word-break: break-word; }
+.logline .attr { color: var(--muted); margin-left: .5rem; }
+.logline .attr b { font-weight: 500; color: var(--text); opacity: .75; }

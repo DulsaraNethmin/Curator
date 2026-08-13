@@ -84,6 +84,33 @@ export type ScanResult = {
   unmatched: number;
 };
 
+export type LogEntry = {
+  seq: number;
+  time: string;
+  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | string;
+  msg: string;
+  attrs?: Record<string, string>;
+};
+
+export type LogsResult = {
+  entries: LogEntry[];
+  // The cursor to send back next poll, so an idle tick transfers an empty
+  // array rather than the whole tail again.
+  cursor: number;
+  // How many lines fell off the ring before we asked. Surfaced rather than
+  // hidden: a log with a silent gap is worse than one that admits the gap.
+  missed: number;
+  buffered: number;
+};
+
+export type Deletion = {
+  title: string;
+  year: number;
+  library_path?: string;
+  torrents_removed: number;
+  bytes_freed: number;
+};
+
 export type Integration = {
   name: string;
   env: string;
@@ -182,6 +209,18 @@ export const api = {
 
   import: (hash: string) =>
     request<Movie>(`/api/downloads/${encodeURIComponent(hash)}/import`, { method: 'POST' }),
+
+  // The only destructive call in the API. It removes the library folder, asks
+  // qBittorrent to delete the downloaded file, and then deletes the rows.
+  deleteMovie: (id: number) =>
+    request<Deletion>(`/api/movies/${id}`, { method: 'DELETE' }),
+
+  logs: (since = 0, level?: string, limit?: number) => {
+    const query = new URLSearchParams({ since: String(since) });
+    if (level) query.set('level', level);
+    if (limit) query.set('limit', String(limit));
+    return request<LogsResult>(`/api/logs?${query}`);
+  },
 
   // probe calls out to real services and one of them may wake a browser, so it
   // is opt-in: the page loads from configuration alone and checks on request.
