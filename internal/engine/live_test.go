@@ -1,21 +1,76 @@
 package engine
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/anacrolix/torrent/metainfo"
+
 	"github.com/DulsaraNethmin/curator/internal/torrent"
+	"github.com/DulsaraNethmin/curator/internal/vpn"
 )
+
+// tunnelConfig reads a wg-quick config from the environment, falling back to
+// the gitignored .env at the repo root. Nothing in it is ever logged.
+func tunnelConfig(t *testing.T) string {
+	t.Helper()
+
+	if inline := strings.TrimSpace(os.Getenv("VPN_CONFIG")); inline != "" {
+		return inline
+	}
+	path := strings.TrimSpace(os.Getenv("VPN_CONFIG_FILE"))
+	if path == "" {
+		f, err := os.Open(filepath.Join("..", "..", ".env"))
+		if err != nil {
+			return ""
+		}
+		defer f.Close()
+		scanner := bufio.NewScanner(f)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if strings.HasPrefix(line, "#") {
+				continue
+			}
+			name, value, found := strings.Cut(line, "=")
+			if !found {
+				continue
+			}
+			switch strings.TrimSpace(name) {
+			case "VPN_CONFIG":
+				return strings.Trim(strings.TrimSpace(value), `"'`)
+			case "VPN_CONFIG_FILE":
+				path = strings.Trim(strings.TrimSpace(value), `"'`)
+			}
+		}
+	}
+	if path == "" {
+		return ""
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = filepath.Join(home, path[2:])
+		}
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("VPN_CONFIG_FILE %s: %v", path, err)
+	}
+	return string(body)
+}
 
 // debianMagnet is the payload every measurement in phase 6 used: 755.0 MB in
 // 3020 × 256 KiB pieces. Keeping the same one is what makes the numbers
 // comparable across the spike, this engine, and the Pi at phase 10.
-const debianMagnet = "magnet:?xt=urn:btih:481b6e3617be4c88f96cb25e47c9d8272130071e" +
+const debianInfoHash = "481b6e3617be4c88f96cb25e47c9d8272130071e"
+
+const debianMagnet = "magnet:?xt=urn:btih:" + debianInfoHash +
 	"&dn=debian-13.6.0-amd64-netinst.iso" +
 	"&tr=http%3A%2F%2Fbttracker.debian.org%3A6969%2Fannounce"
 
@@ -128,4 +183,98 @@ func peakRSS() float64 {
 		scale = 1024
 	}
 	return float64(ru.Maxrss) * scale / (1 << 20)
+}
+
+// TestLiveEngineOverTunnel is the phase's whole claim in one test: peer traffic
+// leaving through a WireGuard tunnel curator brought up itself, with a client
+// that has no socket of its own to leak through.
+//
+// It needs a real tunnel, so it runs only when VPN_CONFIG_FILE (or VPN_CONFIG)
+// is set — the same contract internal/vpn's live test uses:
+//
+//	VPN_CONFIG_FILE=~/wg0.conf go test -run TestLiveEngineOverTunnel -v ./internal/engine
+//
+// It stops at the first megabytes rather than downloading all 755 MB. What is
+// under test is whether bytes can move at all through a netstack the client is
+// confined to: metadata from the swarm means DHT or a tracker answered, and
+// payload means uTP carried data. The full-payload version of this was T33's
+// spike, and its numbers are in docs/phase-6.md.
+func TestLiveEngineOverTunnel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping the live tunnel check in -short mode")
+	}
+	text := tunnelConfig(t)
+	if text == "" {
+		t.Skip("no VPN_CONFIG or VPN_CONFIG_FILE in the environment or ../../.env; skipping")
+	}
+
+	cfg, err := vpn.ParseConfig(text)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	tunnel, err := vpn.New(cfg, quiet())
+	if err != nil {
+		t.Fatalf("vpn.New: %v", err)
+	}
+	// Registered BEFORE the engine's own cleanup, so it runs after it: cleanups
+	// are LIFO, and closing the tunnel under a live engine makes the uTP socket
+	// print "error reading Socket PacketConn: EOF" as its read loop dies. main
+	// gets this right by the same rule with defers; this test has to model it
+	// rather than produce noise nobody can place.
+	t.Cleanup(func() { _ = tunnel.Close() })
+
+	e := start(t, Config{DataDir: t.TempDir(), Category: "curator", Network: tunnel})
+	if e.socket == nil {
+		t.Fatal("no shared uTP socket was opened on the tunnel")
+	}
+
+	ctx := context.Background()
+	if err := e.AddMagnet(ctx, debianMagnet, "curator"); err != nil {
+		t.Fatalf("AddMagnet: %v", err)
+	}
+
+	const want = 8 << 20 // enough to prove peers are sending, not enough to be a download
+	started := time.Now()
+	var gotMetadata time.Duration
+	deadline := time.Now().Add(5 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+
+		found, err := e.TorrentByHash(ctx, torrent.NormalizeHash(debianInfoHash))
+		if err != nil {
+			t.Fatalf("TorrentByHash: %v", err)
+		}
+		if found == nil {
+			continue
+		}
+		lt, ok := e.client.Torrent(mustHash(t, debianInfoHash))
+		if !ok {
+			t.Fatal("the torrent vanished from the client")
+		}
+		if gotMetadata == 0 && lt.Info() != nil {
+			gotMetadata = time.Since(started)
+			t.Logf("metadata through the tunnel in %s", gotMetadata.Round(time.Millisecond))
+		}
+		stats := lt.Stats()
+		read := stats.BytesReadData.Int64()
+		t.Logf("%4.0fs  %-11s %5.2f%%  %6.1f MB from %d peers",
+			time.Since(started).Seconds(), found.State, found.Progress*100,
+			float64(read)/(1<<20), stats.ActivePeers)
+
+		if read >= want {
+			t.Logf("PASS  %.1f MB carried entirely over the tunnel in %s — the client opened no socket of its own",
+				float64(read)/(1<<20), time.Since(started).Round(time.Second))
+			return
+		}
+	}
+	t.Fatalf("less than %d MB moved through the tunnel in 5 minutes", want>>20)
+}
+
+func mustHash(t *testing.T, hex string) metainfo.Hash {
+	t.Helper()
+	var ih metainfo.Hash
+	if err := ih.FromHexString(hex); err != nil {
+		t.Fatal(err)
+	}
+	return ih
 }

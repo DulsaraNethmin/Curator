@@ -284,8 +284,15 @@ container. The full table, and what is still unproven, is in
 - `TORRENT_BACKEND=qbittorrent` **refuses to dispatch with 503**, because that container's exit
   address is this host's — the honest floor, doing its job on the first thing it was pointed at
 
-**The tunnel is the gap.** Its device code has never brought up a real peer. That is the one part of
-this phase whose "done when" is unmet, and `internal/vpn/live_test.go` is what closes it.
+And the tunnel, against a real NordLynx endpoint in Singapore: **handshake up, exit address
+187.15.102.106 against the host's 187.14.240.8**, and the engine pulling **9.5 MB from 5 peers in
+12 s** through it with no socket of its own. The first attempt panicked inside gvisor —
+`ListenPacket("udp", ":0")` gave netstack a nil IP and it cannot infer an address family from one —
+which is the call the engine makes at boot, so nobody with a tunnel configured would have got past
+start-up. Nothing hermetic could have found it; there was no tunnel to bind to.
+
+**What is still unseen:** a tunnel torn down underneath a live download. The kill switch is a
+property of the construction rather than of an observation.
 
 ---
 

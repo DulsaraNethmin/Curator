@@ -35,6 +35,10 @@ type Tunnel struct {
 	log   *slog.Logger
 	peer  string // the resolved endpoint, for Status
 	built time.Time
+
+	// addrs is what the tunnel answers to, from the config's Address line. It
+	// is kept because netstack cannot invent one: see ListenPacket.
+	addrs []netip.Addr
 }
 
 // New brings up the device and returns once it is configured — not once it has
@@ -80,7 +84,7 @@ func New(cfg Config, log *slog.Logger) (*Tunnel, error) {
 	}
 
 	log.Info("vpn tunnel up", "endpoint", endpoint, "mtu", cfg.MTU, "dns", len(cfg.DNS))
-	return &Tunnel{dev: dev, net: tnet, log: log, peer: endpoint, built: time.Now()}, nil
+	return &Tunnel{dev: dev, net: tnet, log: log, peer: endpoint, built: time.Now(), addrs: cfg.Addresses}, nil
 }
 
 // DialContext dials through the tunnel. It satisfies the engine's Network.
@@ -95,6 +99,15 @@ func (t *Tunnel) DialContext(ctx context.Context, network, address string) (net.
 
 // ListenPacket opens a UDP socket inside the tunnel. uTP, DHT and UDP trackers
 // all run over one of these.
+//
+// **The local address is always filled in, and that is not a nicety.** A
+// net.UDPAddr with a nil IP — which is what ":0" and "" mean everywhere else in
+// Go — leaves netstack unable to tell IPv4 from IPv6, and gvisor does not
+// return an error for that: it PANICS, `invalid protocol number = 0`, four
+// frames down inside the transport layer. Measured the first time this package
+// met a real tunnel, on the exact call the engine makes at start-up. So an
+// unspecified host becomes the address the tunnel answers to, which is what a
+// client on a real interface would have bound to anyway.
 func (t *Tunnel) ListenPacket(_ context.Context, network, address string) (net.PacketConn, error) {
 	if !strings.HasPrefix(network, "udp") {
 		return nil, fmt.Errorf("vpn: %s is not a packet network this tunnel carries", network)
@@ -117,7 +130,40 @@ func (t *Tunnel) ListenPacket(_ context.Context, network, address string) (net.P
 			return nil, fmt.Errorf("vpn: listen port %q: %w", port, err)
 		}
 	}
+
+	if laddr.IP == nil {
+		local, err := t.localAddr(network)
+		if err != nil {
+			return nil, err
+		}
+		laddr.IP = local.AsSlice()
+	}
 	return t.net.ListenUDP(laddr)
+}
+
+// localAddr picks the tunnel address to bind to, in the family the caller asked
+// for. "udp" means either, and prefers IPv4: a v6 address on a tunnel whose
+// peer has no v6 route fails in a way that looks exactly like a dead tunnel.
+func (t *Tunnel) localAddr(network string) (netip.Addr, error) {
+	want6 := network == "udp6"
+	want4 := network == "udp4"
+
+	var fallback netip.Addr
+	for _, addr := range t.addrs {
+		switch {
+		case addr.Is4() && !want6:
+			return addr, nil
+		case addr.Is6() && !want4:
+			if !fallback.IsValid() {
+				fallback = addr
+			}
+		}
+	}
+	if fallback.IsValid() {
+		return fallback, nil
+	}
+	return netip.Addr{}, fmt.Errorf(
+		"vpn: the tunnel has no %s address of its own to listen on; check the config's Address line", network)
 }
 
 // HTTPClient is an http.Client whose transport dials through the tunnel. It is
