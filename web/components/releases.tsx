@@ -44,12 +44,18 @@ export function Releases({
   film,
   searching,
   empty,
+  noYearReason = 'Search with a year first — it becomes the library folder name',
   onSearchAgain,
 }: {
   result: SearchResult | null;
   film: Film;
   searching?: boolean;
   empty?: React.ReactNode;
+  // Why a year of 0 disables the button, which is a different sentence on each
+  // screen. Typing a title without a year is the caller's own omission; TMDB
+  // not knowing a release date is nobody's, and telling someone to "add a year"
+  // for a film they cannot edit would be advice they cannot take.
+  noYearReason?: string;
   onSearchAgain?: () => void;
 }) {
   const [dispatching, setDispatching] = useState<string | null>(null);
@@ -165,7 +171,7 @@ export function Releases({
                             downloadsConfigured === false
                               ? 'Downloads are not configured: set QBIT_USER and QBIT_PASS'
                               : !film.year
-                                ? 'Search with a year first — it becomes the library folder name'
+                                ? noYearReason
                                 : undefined
                           }
                         >

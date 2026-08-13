@@ -84,6 +84,78 @@ export type ScanResult = {
   unmatched: number;
 };
 
+/**
+ * LibraryState is what curator already has for a film, or null.
+ *
+ * `state` is a status the store writes, plus 'downloading', which
+ * movies.status never says — the Go side derives it from the downloads table
+ * so that a film at 60% is not labelled "wanted" on its poster.
+ */
+export type LibraryState = {
+  movie_id: number;
+  state: 'wanted' | 'downloading' | 'imported' | string;
+  library_path?: string;
+};
+
+/**
+ * MovieSummary is one film from TMDB as a poster grid shows it.
+ *
+ * This is the catalogue, not the library: `Movie` above is a row in curator's
+ * database and this is a film that may not be. The only overlap is `library`,
+ * which is non-null exactly when the two are the same film.
+ *
+ * poster_path and backdrop_path are '' rather than null when TMDB has no image
+ * — the Go side omits nothing — so both are strings and posterURL treats the
+ * empty one as absent.
+ */
+export type MovieSummary = {
+  tmdb_id: number;
+  title: string;
+  year: number;
+  overview: string;
+  poster_path: string;
+  backdrop_path: string;
+  vote_average: number;
+  library: LibraryState | null;
+};
+
+/** MovieDetails is a summary plus everything the movie screen shows. */
+export type MovieDetails = MovieSummary & {
+  tagline: string;
+  runtime: number;
+  genres: string[];
+  status: string;
+  release_date: string;
+  original_language: string;
+  spoken_languages: string[];
+  studios: string[];
+  homepage: string;
+  imdb_id: string;
+};
+
+export type TMDBSearchResult = {
+  query: string;
+  year: number;
+  results: MovieSummary[];
+};
+
+/**
+ * DiscoverRow is one rail on the home screen.
+ *
+ * ok and error are the indexers[] shape deliberately: one rail failing is a
+ * success carrying the other, and a failing source that renders as an empty row
+ * is indistinguishable from a source with nothing in it.
+ */
+export type DiscoverRow = {
+  id: string;
+  title: string;
+  ok: boolean;
+  error?: string;
+  results: MovieSummary[];
+};
+
+export type DiscoverResult = { rows: DiscoverRow[] };
+
 export type LogEntry = {
   seq: number;
   time: string;
@@ -191,12 +263,29 @@ export const api = {
   movies: () => request<Movie[]>('/api/movies'),
   scan: () => request<ScanResult>('/api/scan', { method: 'POST' }),
 
+  // The release-name search. It asks three indexers what files exist, which is
+  // a different question from tmdbSearch's "which film is this" — and it is the
+  // escape hatch for a film TMDB does not have, as well as the fallback when
+  // there is no key.
   search: (title: string, year?: number, quality?: string) => {
     const query = new URLSearchParams({ title });
     if (year) query.set('year', String(year));
     if (quality) query.set('quality', quality);
     return request<SearchResult>(`/api/search?${query}`);
   },
+
+  // Everything under /api/tmdb/ goes dark without a key, and the prefix is the
+  // rule: these three answer 503 naming TMDB_API_KEY, while /api/movies stays
+  // the library and keeps working.
+  discover: () => request<DiscoverResult>('/api/tmdb/discover'),
+
+  tmdbSearch: (query: string, year?: number) => {
+    const params = new URLSearchParams({ query });
+    if (year) params.set('year', String(year));
+    return request<TMDBSearchResult>(`/api/tmdb/search?${params}`);
+  },
+
+  tmdbMovie: (id: number) => request<MovieDetails>(`/api/tmdb/movies/${id}`),
 
   downloads: () => request<Download[]>('/api/downloads'),
 
@@ -259,9 +348,24 @@ export function formatWhen(iso: string | null): string {
   });
 }
 
+export function formatRuntime(minutes: number): string | null {
+  // 0 is TMDB's "we do not know", not a film of no length, so it is absent
+  // rather than "0m".
+  if (!minutes) return null;
+  const hours = Math.floor(minutes / 60);
+  return hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+}
+
 // TMDB serves poster_path as a bare path like "/abc.jpg"; the size segment is
 // ours to choose. w342 is about right for a grid and costs a fifth of the
 // original.
 export function posterURL(path: string | null): string | null {
   return path ? `https://image.tmdb.org/t/p/w342${path}` : null;
+}
+
+// A backdrop is one image behind one title rather than forty in a grid, so it
+// can afford w1280. There is no next/image optimiser in a static export, so the
+// size is chosen here or not at all.
+export function backdropURL(path: string | null): string | null {
+  return path ? `https://image.tmdb.org/t/p/w1280${path}` : null;
 }
