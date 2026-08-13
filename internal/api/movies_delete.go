@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/DulsaraNethmin/curator/internal/download"
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 // RegisterMovieDelete mounts the one destructive route curator has.
@@ -48,10 +48,10 @@ func (s *Server) failDelete(w http.ResponseWriter, id int64, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		s.fail(w, http.StatusNotFound, errors.New("no movie with id "+strconv.FormatInt(id, 10)))
-	case errors.Is(err, qbit.ErrWrongCategory):
+	case errors.Is(err, torrent.ErrWrongCategory):
 		// The guard fired: something asked curator to delete a torrent that is
 		// not ours. 409, because the request is well-formed and the refusal is
-		// deliberate — the *arr stack shares that qBittorrent until phase 6.
+		// deliberate — the *arr stack shares that qBittorrent until the cutover.
 		s.fail(w, http.StatusConflict, err)
 	case errors.Is(err, download.ErrUnconfigured):
 		s.fail(w, http.StatusServiceUnavailable, err)

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 // fakeImporter satisfies both seams: Importer, which the poll tick uses and
@@ -31,7 +31,7 @@ type importCall struct {
 	contentPath string
 }
 
-func (f *fakeImporter) TryImport(_ context.Context, t qbit.Torrent, d store.Download) {
+func (f *fakeImporter) TryImport(_ context.Context, t torrent.Torrent, d store.Download) {
 	f.tried = append(f.tried, importCall{hash: d.TorrentHash, contentPath: t.ContentPath})
 }
 
@@ -42,7 +42,7 @@ func (f *fakeImporter) RemoveFromLibrary(path string) error {
 	return f.removeErr
 }
 
-func (f *fakeImporter) Import(_ context.Context, t qbit.Torrent, d store.Download) (store.Movie, error) {
+func (f *fakeImporter) Import(_ context.Context, t torrent.Torrent, d store.Download) (store.Movie, error) {
 	f.tried = append(f.tried, importCall{hash: d.TorrentHash, contentPath: t.ContentPath})
 	if f.err != nil {
 		return store.Movie{}, f.err
@@ -50,16 +50,16 @@ func (f *fakeImporter) Import(_ context.Context, t qbit.Torrent, d store.Downloa
 	return f.movie, nil
 }
 
-func completedTorrent() qbit.Torrent {
-	return qbit.Torrent{
-		Hash: strings.ToLower(testHash), Name: "Interstellar.2014.1080p", State: "stalledUP",
+func completedTorrent() torrent.Torrent {
+	return torrent.Torrent{
+		Hash: testHash, Name: "Interstellar.2014.1080p", State: torrent.StateCompleted,
 		Progress: 1, ContentPath: "/downloads/complete/curator/Interstellar.2014.1080p",
-		Category: "curator", SavePath: "/downloads/complete/curator",
+		Category: "curator",
 	}
 }
 
 func TestTickImportsACompletedTorrent(t *testing.T) {
-	client := &fakeClient{torrents: []qbit.Torrent{completedTorrent()}}
+	client := &fakeClient{torrents: []torrent.Torrent{completedTorrent()}}
 	st := newFakeStore()
 	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadDownloading, Progress: 0.9}
 
@@ -90,7 +90,7 @@ func TestTickImportsACompletedTorrent(t *testing.T) {
 // never be attempted again. D14's whole point is that the recovery path and the
 // normal path are the same code.
 func TestTickRetriesTheImportOnEveryTickWhileTheStateHolds(t *testing.T) {
-	client := &fakeClient{torrents: []qbit.Torrent{completedTorrent()}}
+	client := &fakeClient{torrents: []torrent.Torrent{completedTorrent()}}
 	st := newFakeStore()
 
 	// The row as it looks after the tick that recorded completion: nothing about
@@ -123,7 +123,7 @@ func TestTickRetriesTheImportOnEveryTickWhileTheStateHolds(t *testing.T) {
 // importer must never see one, or every tick would re-link a film for as long as
 // its torrent kept seeding.
 func TestTickDoesNotImportARowThatIsAlreadyImported(t *testing.T) {
-	client := &fakeClient{torrents: []qbit.Torrent{completedTorrent()}}
+	client := &fakeClient{torrents: []torrent.Torrent{completedTorrent()}}
 	st := newFakeStore()
 	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadImported, Progress: 1}
 
@@ -137,12 +137,16 @@ func TestTickDoesNotImportARowThatIsAlreadyImported(t *testing.T) {
 }
 
 func TestTickDoesNotImportAnUnfinishedTorrent(t *testing.T) {
-	for _, state := range []string{"downloading", "stalledDL", "metaDL", "queuedDL", "moving", "error"} {
-		torrent := completedTorrent()
-		torrent.State = state
-		torrent.Progress = 0.5
+	// Curator's vocabulary, not qBittorrent's: which of its 23 states produce
+	// these — including `moving`, which is a finished torrent being relocated and
+	// must NOT be imported from mid-move — is asserted in internal/qbit's state
+	// test, where that vocabulary lives.
+	for _, state := range []string{torrent.StateDownloading, torrent.StateQueued, torrent.StateFailed} {
+		tor := completedTorrent()
+		tor.State = state
+		tor.Progress = 0.5
 
-		client := &fakeClient{torrents: []qbit.Torrent{torrent}}
+		client := &fakeClient{torrents: []torrent.Torrent{tor}}
 		st := newFakeStore()
 		st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadQueued}
 
@@ -156,36 +160,15 @@ func TestTickDoesNotImportAnUnfinishedTorrent(t *testing.T) {
 	}
 }
 
-// `moving` deserves its own note: qBittorrent reports it while relocating a
-// finished torrent, and phase 3 maps it to downloading. That is what keeps the
-// importer away from a content_path that is mid-move, which is the one thing
-// the unmeasured complete-vs-incomplete question could have bitten us on.
-func TestTickDoesNotImportATorrentBeingMoved(t *testing.T) {
-	torrent := completedTorrent()
-	torrent.State = "moving"
-
-	client := &fakeClient{torrents: []qbit.Torrent{torrent}}
-	st := newFakeStore()
-	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadDownloading, Progress: 1}
-
-	im := &fakeImporter{}
-	if err := newPoller(client, st).WithImporter(im).Tick(context.Background()); err != nil {
-		t.Fatalf("Tick: %v", err)
-	}
-	if len(im.tried) != 0 {
-		t.Error("a torrent being relocated was imported; its content_path is mid-move")
-	}
-}
-
 // POST /Library/Refresh is a whole-library scan, so a batch of imports must
 // produce one, not one each.
 func TestTickRefreshesOncePerTick(t *testing.T) {
-	var torrents []qbit.Torrent
+	var torrents []torrent.Torrent
 	st := newFakeStore()
 	for _, hash := range []string{testHash, "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"} {
-		torrent := completedTorrent()
-		torrent.Hash = strings.ToLower(hash)
-		torrents = append(torrents, torrent)
+		tor := completedTorrent()
+		tor.Hash = hash
+		torrents = append(torrents, tor)
 		st.byHash[hash] = store.Download{TorrentHash: hash, State: store.DownloadDownloading, Progress: 0.9}
 	}
 
@@ -213,7 +196,7 @@ func TestTickRefreshesOncePerTick(t *testing.T) {
 // A nil importer must leave the poller behaving exactly as phase 3 shipped it.
 // That is what lets every phase 3 test pass without being touched.
 func TestTickWithNoImporterIsPhaseThree(t *testing.T) {
-	client := &fakeClient{torrents: []qbit.Torrent{completedTorrent()}}
+	client := &fakeClient{torrents: []torrent.Torrent{completedTorrent()}}
 	st := newFakeStore()
 	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadDownloading, Progress: 0.9}
 
@@ -239,8 +222,8 @@ func newImportService(client TorrentClient, st Store, im ManualImporter) *Servic
 }
 
 func TestServiceImportRunsTheSameImporter(t *testing.T) {
-	torrent := completedTorrent()
-	client := &fakeClient{byHash: &torrent}
+	tor := completedTorrent()
+	client := &fakeClient{byHash: &tor}
 	st := newFakeStore()
 	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadCompleted, Progress: 1}
 
@@ -256,10 +239,10 @@ func TestServiceImportRunsTheSameImporter(t *testing.T) {
 	if len(im.tried) != 1 {
 		t.Fatalf("Import called %d times, want 1", len(im.tried))
 	}
-	// The content path came from qBittorrent, not from the caller: a client
-	// naming a path curator will hardlink from is the mistake D10 refused.
-	if im.tried[0].contentPath != torrent.ContentPath {
-		t.Errorf("content_path = %q, want qBittorrent's %q", im.tried[0].contentPath, torrent.ContentPath)
+	// The content path came from the torrent client, not from the caller: a
+	// client naming a path curator will hardlink from is the mistake D10 refused.
+	if im.tried[0].contentPath != tor.ContentPath {
+		t.Errorf("content_path = %q, want the client's %q", im.tried[0].contentPath, tor.ContentPath)
 	}
 }
 
@@ -273,17 +256,17 @@ func TestServiceImportWithoutCredentialsOrImporterIsUnconfigured(t *testing.T) {
 	}
 
 	// No importer attached at all.
-	torrent := completedTorrent()
-	if _, err := newImportService(&fakeClient{byHash: &torrent}, st, nil).Import(context.Background(), testHash); !errors.Is(err, ErrUnconfigured) {
+	tor := completedTorrent()
+	if _, err := newImportService(&fakeClient{byHash: &tor}, st, nil).Import(context.Background(), testHash); !errors.Is(err, ErrUnconfigured) {
 		t.Errorf("nil importer: err = %v, want ErrUnconfigured", err)
 	}
 }
 
 func TestServiceImportUnknownHash(t *testing.T) {
-	torrent := completedTorrent()
+	tor := completedTorrent()
 	im := &fakeImporter{}
 
-	_, err := newImportService(&fakeClient{byHash: &torrent}, newFakeStore(), im).
+	_, err := newImportService(&fakeClient{byHash: &tor}, newFakeStore(), im).
 		Import(context.Background(), testHash)
 	if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("err = %v, want store.ErrNotFound", err)
@@ -315,15 +298,15 @@ func TestServiceImportReportsQBittorrent(t *testing.T) {
 }
 
 func TestServiceImportRefusesAnUnfinishedTorrent(t *testing.T) {
-	torrent := completedTorrent()
-	torrent.State = "downloading"
-	torrent.Progress = 0.4
+	tor := completedTorrent()
+	tor.State = "downloading"
+	tor.Progress = 0.4
 
 	st := newFakeStore()
 	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadDownloading}
 	im := &fakeImporter{}
 
-	_, err := newImportService(&fakeClient{byHash: &torrent}, st, im).Import(context.Background(), testHash)
+	_, err := newImportService(&fakeClient{byHash: &tor}, st, im).Import(context.Background(), testHash)
 	if !errors.Is(err, ErrNotCompleted) {
 		t.Fatalf("err = %v, want ErrNotCompleted", err)
 	}
@@ -344,10 +327,10 @@ func TestServiceImportRefusesAnUnfinishedTorrent(t *testing.T) {
 // after a database reset, a restart, or a second click has to converge on the
 // existing torrent rather than 502.
 func TestDispatchConvergesWhenQBittorrentAlreadyHasTheTorrent(t *testing.T) {
-	torrent := completedTorrent()
+	tor := completedTorrent()
 	client := &fakeClient{
 		addErr: errors.New(`qbit torrents/add: qBittorrent answered "Fails.", having accepted no magnet`),
-		byHash: &torrent,
+		byHash: &tor,
 	}
 	st := newFakeStore()
 
@@ -466,14 +449,14 @@ func TestDeleteMovieStopsWhenTheTorrentCannotBeRemoved(t *testing.T) {
 func TestDeleteMovieSurfacesTheCategoryGuard(t *testing.T) {
 	path := "/library/movies/Interstellar (2014)"
 
-	client := &fakeClient{deleteErr: fmt.Errorf("category radarr: %w", qbit.ErrWrongCategory)}
+	client := &fakeClient{deleteErr: fmt.Errorf("category radarr: %w", torrent.ErrWrongCategory)}
 	st := newFakeStore()
 	st.movie = store.Movie{ID: 1, Title: "Interstellar", Year: 2014, LibraryPath: &path}
 	st.byHash[testHash] = store.Download{TorrentHash: testHash}
 	im := &fakeImporter{}
 
 	_, err := newDeleteService(client, st, im).DeleteMovie(context.Background(), 1)
-	if !errors.Is(err, qbit.ErrWrongCategory) {
+	if !errors.Is(err, torrent.ErrWrongCategory) {
 		t.Fatalf("err = %v, want ErrWrongCategory to reach the caller", err)
 	}
 	if st.deletedMovie || len(im.removed) != 0 {

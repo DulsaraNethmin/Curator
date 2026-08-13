@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/library"
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 // DefaultQBitDownloads is the downloads root inside qBittorrent's own
@@ -106,7 +106,7 @@ func New(st Store, moviesRoot string, paths Paths, refresher LibraryRefresher, l
 // records as a zero-size movie. And the link is made before the database is
 // written, because a row claiming a file that is not there is worse than a file
 // with no row — the file is found by the next scan, the row never heals itself.
-func (im *Importer) Import(ctx context.Context, t qbit.Torrent, d store.Download) (store.Movie, error) {
+func (im *Importer) Import(ctx context.Context, t torrent.Torrent, d store.Download) (store.Movie, error) {
 	fail := func(err error) (store.Movie, error) {
 		return store.Movie{}, fmt.Errorf("import %s: %w", d.TorrentHash, err)
 	}
@@ -186,7 +186,7 @@ func (im *Importer) Import(ctx context.Context, t qbit.Torrent, d store.Download
 // That is the point. An import must not be able to fail a tick — the other
 // torrents in the same list still need reconciling — and a method with no error
 // return puts that in the type rather than in a comment somebody has to obey.
-func (im *Importer) TryImport(ctx context.Context, t qbit.Torrent, d store.Download) {
+func (im *Importer) TryImport(ctx context.Context, t torrent.Torrent, d store.Download) {
 	if _, err := im.Import(ctx, t, d); err != nil {
 		im.logFailure(d.TorrentHash, t.Name, err)
 		return

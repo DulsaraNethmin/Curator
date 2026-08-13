@@ -16,20 +16,25 @@ import (
 	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
-// TorrentClient is the part of qBittorrent this package uses.
+// TorrentClient is the part of a torrent client this package uses.
 //
-// It is add-and-read on purpose. There is no delete, pause or resume here
-// because there is none in the client either: the *arr stack shares that
-// qBittorrent until phase 6, and the narrowest possible interface is the cheapest
-// guarantee that nothing here can disturb it.
+// It says nothing about which one. internal/qbit asks a qBittorrent over HTTP
+// and the embedded engine downloads it in this process; both answer in
+// torrent.Torrent, and every test in this package runs on a fake, so a new
+// backend is validated by tests that already exist (docs/decisions.md D22).
+//
+// It is add-and-read plus one delete. There is no pause or resume because there
+// is none in either client either: the *arr stack shares that qBittorrent until
+// the cutover, and the narrowest possible interface is the cheapest guarantee
+// that nothing here can disturb it.
 type TorrentClient interface {
 	AddMagnet(ctx context.Context, magnet, category string) error
-	TorrentByHash(ctx context.Context, hash string) (*qbit.Torrent, error)
-	Torrents(ctx context.Context, category string) ([]qbit.Torrent, error)
+	TorrentByHash(ctx context.Context, hash string) (*torrent.Torrent, error)
+	Torrents(ctx context.Context, category string) ([]torrent.Torrent, error)
 
 	// DeleteTorrent is the one destructive call, added for D19. It takes the
 	// category it requires and refuses a torrent that is not in it, so curator
@@ -86,7 +91,7 @@ var ErrNotCompleted = errors.New("the torrent has not finished downloading")
 // asked for an import over HTTP and is waiting for the answer deserves the
 // reason it did not work. The same *importer.Importer satisfies both.
 type ManualImporter interface {
-	Import(ctx context.Context, t qbit.Torrent, d store.Download) (store.Movie, error)
+	Import(ctx context.Context, t torrent.Torrent, d store.Download) (store.Movie, error)
 
 	// RemoveFromLibrary deletes a movie's folder. It is the importer's because
 	// the importer created it and holds LIBRARY_MOVIES, which is what makes its
@@ -200,11 +205,12 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	// and what this makes true.
 	addErr := s.client.AddMagnet(ctx, magnet, s.category)
 
-	torrent, err := s.client.TorrentByHash(ctx, hash)
+	// Named t, not `torrent`: that is the package holding the type now.
+	t, err := s.client.TorrentByHash(ctx, hash)
 	if err != nil {
 		return store.Download{}, fmt.Errorf("dispatch %s: confirming the add: %w: %w", req.ReleaseID, ErrClient, err)
 	}
-	if torrent == nil {
+	if t == nil {
 		// Nothing there, so the add really did fail — now the error matters, and
 		// it is the more specific of the two.
 		if addErr != nil {
@@ -232,8 +238,8 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 		Indexer:     strings.Join(release.Indexers, ","),
 		ReleaseName: release.Title,
 		Magnet:      magnet,
-		State:       qbit.MapState(torrent.State),
-		Progress:    torrent.Progress,
+		State:       t.State,
+		Progress:    t.Progress,
 	})
 	if err != nil {
 		return store.Download{}, fmt.Errorf("dispatch %s: %w", req.ReleaseID, err)
@@ -266,11 +272,11 @@ func (s *Service) Import(ctx context.Context, hash string) (store.Movie, error) 
 		return store.Movie{}, fmt.Errorf("import %s: %w", hash, err)
 	}
 
-	torrent, err := s.client.TorrentByHash(ctx, row.TorrentHash)
+	t, err := s.client.TorrentByHash(ctx, row.TorrentHash)
 	if err != nil {
 		return store.Movie{}, fmt.Errorf("import %s: %w: %w", hash, ErrClient, err)
 	}
-	if torrent == nil {
+	if t == nil {
 		// The row is ours and the torrent is not there: somebody removed it from
 		// qBittorrent. That is qBittorrent's business (D8), and there is nothing
 		// here to import from.
@@ -278,12 +284,16 @@ func (s *Service) Import(ctx context.Context, hash string) (store.Movie, error) 
 			"import %s: %w has no torrent with that hash, so there is nothing to import from", hash, ErrClient)
 	}
 
-	if state := qbit.MapState(torrent.State); state != store.DownloadCompleted {
+	// The backend's own word for this state does not cross the interface any
+	// more, so the message reports curator's. One diagnostic string is what the
+	// neutral type cost, and a seventh field to carry it back would be paying
+	// for it in the wrong currency.
+	if t.State != store.DownloadCompleted {
 		return store.Movie{}, fmt.Errorf(
-			"import %s: %w — qBittorrent reports %q, which is %q", hash, ErrNotCompleted, torrent.State, state)
+			"import %s: %w — the torrent client reports it as %q", hash, ErrNotCompleted, t.State)
 	}
 
-	return s.importer.Import(ctx, *torrent, row)
+	return s.importer.Import(ctx, *t, row)
 }
 
 // Deletion is what DeleteMovie removed, so the caller can say so precisely.

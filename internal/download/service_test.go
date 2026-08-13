@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 const testHash = "89599BF4DC369A3A8ECA26411C5CCF922D78B486"
@@ -26,9 +26,9 @@ type fakeClient struct {
 	calls []string
 
 	addErr     error
-	byHash     *qbit.Torrent
+	byHash     *torrent.Torrent
 	byHashErr  error
-	torrents   []qbit.Torrent
+	torrents   []torrent.Torrent
 	listErr    error
 	addedMagn  string
 	addedCateg string
@@ -56,12 +56,12 @@ func (f *fakeClient) AddMagnet(_ context.Context, magnet, category string) error
 	return f.addErr
 }
 
-func (f *fakeClient) TorrentByHash(_ context.Context, hash string) (*qbit.Torrent, error) {
+func (f *fakeClient) TorrentByHash(_ context.Context, hash string) (*torrent.Torrent, error) {
 	f.calls = append(f.calls, "confirm")
 	return f.byHash, f.byHashErr
 }
 
-func (f *fakeClient) Torrents(_ context.Context, category string) ([]qbit.Torrent, error) {
+func (f *fakeClient) Torrents(_ context.Context, category string) ([]torrent.Torrent, error) {
 	f.calls = append(f.calls, "list")
 	return f.torrents, f.listErr
 }
@@ -210,8 +210,8 @@ func req() Request {
 }
 
 func TestDispatchHappyPathInOrder(t *testing.T) {
-	client := &fakeClient{byHash: &qbit.Torrent{
-		Hash: strings.ToLower(testHash), Name: "Interstellar", State: "downloading", Progress: 0.1,
+	client := &fakeClient{byHash: &torrent.Torrent{
+		Hash: testHash, Name: "Interstellar", State: torrent.StateDownloading, Progress: 0.1,
 	}}
 	st := newFakeStore()
 	res := newResolver(testMagnet(testHash))

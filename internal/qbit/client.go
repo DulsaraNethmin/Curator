@@ -27,9 +27,16 @@
 // received this"; confirming the add is the caller's job, via TorrentByHash on
 // the hash taken from the magnet itself.
 //
-// Hashes here are lower-case, because that is how qBittorrent reports them, while
-// indexer.InfoHash and the downloads table use upper-case. NormalizeHash is the
-// one function both sides should go through.
+// Hashes on the wire are lower-case, because that is how qBittorrent reports
+// them and what its `hashes=` filter demands, while indexer.InfoHash and the
+// downloads table use upper-case. That difference stops at this package's edge:
+// wireHash keeps the lower-case form for the API and torrent.NormalizeHash puts
+// the upper-case one on everything that leaves.
+//
+// What leaves is a torrent.Torrent — the six fields curator reads, with the
+// state already translated into curator's four. This package is one of two
+// backends behind download.TorrentClient (docs/decisions.md D22), and none of
+// qBittorrent's vocabulary crosses that boundary.
 package qbit
 
 import (
@@ -45,6 +52,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 // DefaultBaseURL is where qBittorrent listens when curator runs beside it. In
@@ -85,11 +94,16 @@ const (
 // must not treat it as "qBittorrent is down" and retry it. Test with errors.Is.
 var ErrAuth = errors.New("qbittorrent refused the credentials")
 
-// Torrent is one entry of GET /api/v2/torrents/info. Only the fields phases 3 and
-// 4 need are decoded; qBittorrent sends around forty more.
-type Torrent struct {
-	// Hash is lower-case hex, normalised by NormalizeHash on the way in. Anything
-	// comparing it to indexer.InfoHash's upper-case output must normalise too.
+// info is one entry of GET /api/v2/torrents/info, as qBittorrent sends it. It
+// is unexported because it is a wire format: what this package hands out is a
+// torrent.Torrent, and the two are deliberately not the same shape.
+//
+// Only what curator reads is decoded; qBittorrent sends around forty more
+// fields. `size` and `save_path` used to be decoded here and were read by
+// nothing for three phases, so they are gone — a field nobody reads is a field
+// that can be wrong indefinitely without anyone noticing.
+type info struct {
+	// Hash is lower-case hex, normalised by wireHash on the way in.
 	Hash string `json:"hash"`
 
 	// Name is qBittorrent's display name, which for a magnet is the `dn` until
@@ -97,15 +111,12 @@ type Torrent struct {
 	Name string `json:"name"`
 
 	// State is qBittorrent's own vocabulary ("stalledUP", "metaDL", …), kept
-	// verbatim. MapState turns it into the downloads table's four.
+	// verbatim so a vocabulary change stays visible in a log line. mapState
+	// turns it into curator's four on the way out.
 	State string `json:"state"`
 
 	// Progress is 0..1, not a percentage.
 	Progress float64 `json:"progress"`
-
-	// Size is the bytes of the files selected for download, which is smaller than
-	// the torrent's total when some files are deselected.
-	Size int64 `json:"size"`
 
 	// ContentPath is where the payload lives *in qBittorrent's namespace*:
 	// /downloads/complete/curator/… , because its mount is host
@@ -118,9 +129,19 @@ type Torrent struct {
 	// Category is what scopes a torrent to us: everything curator adds is in
 	// `curator`, and the *arr stack's torrents are in `radarr` and `sonarr`.
 	Category string `json:"category"`
+}
 
-	// SavePath is the category's directory, in qBittorrent's namespace as above.
-	SavePath string `json:"save_path"`
+// neutral is the translation out of qBittorrent's world and into curator's:
+// the hash changes case, the state changes vocabulary, and nothing else moves.
+func (i info) neutral() torrent.Torrent {
+	return torrent.Torrent{
+		Hash:        torrent.NormalizeHash(i.Hash),
+		Name:        i.Name,
+		State:       mapState(i.State),
+		Progress:    i.Progress,
+		ContentPath: i.ContentPath,
+		Category:    i.Category,
+	}
 }
 
 // Client talks to one qBittorrent. It is safe for concurrent use; the zero value
@@ -235,18 +256,23 @@ func (c *Client) AddMagnet(ctx context.Context, magnet, category string) error {
 // Callers that mean ours pass "curator".
 //
 // No torrents is (nil, nil): an empty category is a normal answer, not a failure.
-func (c *Client) Torrents(ctx context.Context, category string) ([]Torrent, error) {
+func (c *Client) Torrents(ctx context.Context, category string) ([]torrent.Torrent, error) {
 	query := url.Values{}
 	if category = strings.TrimSpace(category); category != "" {
 		query.Set("category", category)
 	}
 
-	torrents, err := c.torrents(ctx, query)
+	found, err := c.torrents(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	if len(torrents) == 0 {
+	if len(found) == 0 {
 		return nil, nil
+	}
+
+	torrents := make([]torrent.Torrent, 0, len(found))
+	for _, i := range found {
+		torrents = append(torrents, i.neutral())
 	}
 	return torrents, nil
 }
@@ -262,37 +288,29 @@ func (c *Client) Torrents(ctx context.Context, category string) ([]Torrent, erro
 // The lookup is not scoped to a category: the hash is the identity, and a release
 // the *arr stack downloaded first will be found by it, carrying Category "radarr".
 // Callers that need ownership as well as existence must check Torrent.Category.
-func (c *Client) TorrentByHash(ctx context.Context, hash string) (*Torrent, error) {
-	hash = NormalizeHash(hash)
-	if hash == "" {
+func (c *Client) TorrentByHash(ctx context.Context, hash string) (*torrent.Torrent, error) {
+	wire := wireHash(hash)
+	if wire == "" {
 		return nil, errors.New("qbit torrents/info: look up a torrent by an empty hash")
 	}
 
 	// hashes= is qBittorrent's own filter, so the usual answer is a list of one.
-	torrents, err := c.torrents(ctx, url.Values{"hashes": {hash}})
+	found, err := c.torrents(ctx, url.Values{"hashes": {wire}})
 	if err != nil {
 		return nil, err
 	}
-	for i := range torrents {
+	for i := range found {
 		// Checked again on our side rather than trusting the filter: if a future
 		// qBittorrent ignored an unknown parameter instead of applying it, the
 		// reply would be every torrent on the instance and the first of them is
 		// emphatically not ours.
-		if strings.EqualFold(torrents[i].Hash, hash) {
-			found := torrents[i]
-			return &found, nil
+		if strings.EqualFold(found[i].Hash, wire) {
+			neutral := found[i].neutral()
+			return &neutral, nil
 		}
 	}
 	return nil, nil
 }
-
-// ErrWrongCategory reports that a torrent exists but does not belong to the
-// category the caller required, so it was NOT deleted.
-//
-// It is a named error because the alternative — deleting it anyway — is how
-// curator would remove one of radarr's torrents, and the *arr stack shares this
-// qBittorrent until phase 6.
-var ErrWrongCategory = errors.New("the torrent is not in the required category")
 
 // DeleteTorrent removes a torrent, and its downloaded files when deleteFiles is
 // true. See docs/decisions.md D19.
@@ -306,25 +324,25 @@ var ErrWrongCategory = errors.New("the torrent is not in the required category")
 // operation that gets retried after a partial failure, and a retry that fails
 // because the work was already done is a retry nobody can complete.
 func (c *Client) DeleteTorrent(ctx context.Context, hash, requireCategory string, deleteFiles bool) error {
-	hash = NormalizeHash(hash)
-	if hash == "" {
+	wire := wireHash(hash)
+	if wire == "" {
 		return errors.New("qbit torrents/delete: delete a torrent by an empty hash")
 	}
 
-	torrent, err := c.TorrentByHash(ctx, hash)
+	existing, err := c.TorrentByHash(ctx, wire)
 	if err != nil {
 		return err
 	}
-	if torrent == nil {
+	if existing == nil {
 		return nil // already gone; nothing to do and nothing to report
 	}
-	if requireCategory != "" && !strings.EqualFold(torrent.Category, requireCategory) {
+	if requireCategory != "" && !strings.EqualFold(existing.Category, requireCategory) {
 		return fmt.Errorf("qbit torrents/delete: %s is in category %q, not %q: %w",
-			hash, torrent.Category, requireCategory, ErrWrongCategory)
+			wire, existing.Category, requireCategory, torrent.ErrWrongCategory)
 	}
 
 	form := url.Values{}
-	form.Set("hashes", hash)
+	form.Set("hashes", wire)
 	form.Set("deleteFiles", strconv.FormatBool(deleteFiles))
 
 	if _, err := c.do(ctx, http.MethodPost, pathTorrentsDelete, nil, form); err != nil {
@@ -333,31 +351,33 @@ func (c *Client) DeleteTorrent(ctx context.Context, hash, requireCategory string
 	return nil
 }
 
-// NormalizeHash puts an info hash in the case this package uses: lower, which is
-// what qBittorrent reports.
+// wireHash puts an info hash in the case qBittorrent's API uses: lower, which is
+// what it reports and what its `hashes=` filter matches on.
 //
-// The rest of curator uses the other one — indexer.InfoHash upper-cases what it
-// reads out of a magnet, so the downloads table is keyed on upper-case hex while
-// every Torrent here carries lower-case. Both sides go through this function (or
-// strings.EqualFold); a raw == between them matches nothing, and a lookup that
-// matches nothing looks exactly like a torrent qBittorrent never accepted.
-func NormalizeHash(hash string) string {
+// It is unexported because it is a fact about this wire protocol and about
+// nothing else. Curator's own form is upper-case — indexer.InfoHash produces it
+// and the downloads table is keyed on it — and torrent.NormalizeHash is the one
+// exported normaliser. Two exported functions with the same name doing opposite
+// things is a trap this package no longer sets.
+func wireHash(hash string) string {
 	return strings.ToLower(strings.TrimSpace(hash))
 }
 
-// torrents performs one torrents/info call and decodes it.
-func (c *Client) torrents(ctx context.Context, query url.Values) ([]Torrent, error) {
+// torrents performs one torrents/info call and decodes it. It returns the wire
+// shape; the callers translate, because TorrentByHash still has to compare
+// against qBittorrent's own lower-case hash first.
+func (c *Client) torrents(ctx context.Context, query url.Values) ([]info, error) {
 	body, err := c.do(ctx, http.MethodGet, pathTorrentsInfo, query, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	var torrents []Torrent
+	var torrents []info
 	if err := json.Unmarshal(body, &torrents); err != nil {
 		return nil, fmt.Errorf("qbit torrents/info: qBittorrent's reply is not the JSON array we expect (%s): %w", snippet(body), err)
 	}
 	for i := range torrents {
-		torrents[i].Hash = NormalizeHash(torrents[i].Hash)
+		torrents[i].Hash = wireHash(torrents[i].Hash)
 	}
 	return torrents, nil
 }

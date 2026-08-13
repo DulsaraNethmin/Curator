@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 // The endpoints are spelled out rather than built from the package's own
@@ -448,24 +450,41 @@ func TestTorrentsFiltersByCategoryAndDecodesTheFields(t *testing.T) {
 		t.Errorf("category filter = %q, want %q — an unfiltered poll would see the *arr stack's torrents", got, testCategory)
 	}
 
+	// What comes out is the neutral type, not the wire one: the hash has changed
+	// case, `stalledUP` has become curator's `completed`, and the two fields
+	// nothing reads — size and save_path — are decoded by nobody.
 	got := torrents[0]
-	want := Torrent{
-		Hash:        infoHashLower,
+	want := torrent.Torrent{
+		Hash:        infoHashUpper,
 		Name:        "Interstellar (2014) [1080p] [BluRay] [x264]",
-		State:       "stalledUP",
+		State:       torrent.StateCompleted,
 		Progress:    1,
-		Size:        2147483648,
 		ContentPath: "/downloads/complete/curator/Interstellar (2014) [1080p] [BluRay] [x264]",
 		Category:    testCategory,
-		SavePath:    "/downloads/complete/curator/",
 	}
 	if got != want {
 		t.Errorf("torrent =\n%+v\nwant\n%+v", got, want)
 	}
-	// The state is kept verbatim and translated only where it is used, so a
-	// qBittorrent vocabulary change stays visible in logs.
-	if state := MapState(got.State); state != StateCompleted {
-		t.Errorf("MapState(%q) = %q, want %q", got.State, state, StateCompleted)
+}
+
+// TestTorrentsDecodesTheWireShapeVerbatim is the other half: qBittorrent's own
+// state survives inside this package, so a vocabulary change stays visible in a
+// log line rather than being flattened at the JSON boundary.
+func TestTorrentsDecodesTheWireShapeVerbatim(t *testing.T) {
+	stub := newStub(t, serveJSON(infoBody))
+
+	wire, err := stub.client.torrents(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("torrents: %v", err)
+	}
+	if len(wire) != 1 {
+		t.Fatalf("torrents = %d, want 1", len(wire))
+	}
+	if wire[0].State != "stalledUP" {
+		t.Errorf("State = %q, want qBittorrent's own %q", wire[0].State, "stalledUP")
+	}
+	if wire[0].Hash != infoHashLower {
+		t.Errorf("Hash = %q, want the wire's lower-case %q", wire[0].Hash, infoHashLower)
 	}
 }
 
@@ -503,18 +522,21 @@ func TestTorrentsWithoutACategoryOmitsTheParameter(t *testing.T) {
 // TestTorrentByHashAcceptsAnUpperCaseInfoHash is the case trap: the hash comes
 // from indexer.InfoHash in upper-case, qBittorrent knows it in lower-case, and a
 // raw comparison would report every torrent we just added as missing.
+//
+// Both directions are asserted here, because this is the seam: lower-case goes
+// out on the wire, upper-case comes back to curator.
 func TestTorrentByHashAcceptsAnUpperCaseInfoHash(t *testing.T) {
 	stub := newStub(t, serveJSON(infoBody))
 
-	torrent, err := stub.client.TorrentByHash(context.Background(), infoHashUpper)
+	found, err := stub.client.TorrentByHash(context.Background(), infoHashUpper)
 	if err != nil {
 		t.Fatalf("TorrentByHash: %v", err)
 	}
-	if torrent == nil {
+	if found == nil {
 		t.Fatal("TorrentByHash found nothing for the hash qBittorrent is reporting")
 	}
-	if torrent.Hash != infoHashLower {
-		t.Errorf("Hash = %q, want it normalised to %q", torrent.Hash, infoHashLower)
+	if found.Hash != infoHashUpper {
+		t.Errorf("Hash = %q, want curator's upper-case %q", found.Hash, infoHashUpper)
 	}
 	if got := stub.requestsFor(infoPath)[0].query.Get("hashes"); got != infoHashLower {
 		t.Errorf("hashes filter = %q, want lower-case %q", got, infoHashLower)
@@ -534,12 +556,12 @@ func TestTorrentByHashAbsentIsNilAndNil(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			stub := newStub(t, serveJSON(body))
 
-			torrent, err := stub.client.TorrentByHash(context.Background(), infoHashUpper)
+			found, err := stub.client.TorrentByHash(context.Background(), infoHashUpper)
 			if err != nil {
 				t.Fatalf("TorrentByHash: %v", err)
 			}
-			if torrent != nil {
-				t.Errorf("TorrentByHash = %+v, want nil: absence is a normal answer, and this one is not ours", torrent)
+			if found != nil {
+				t.Errorf("TorrentByHash = %+v, want nil: absence is a normal answer, and this one is not ours", found)
 			}
 		})
 	}
@@ -688,12 +710,12 @@ func TestLiveListCuratorCategory(t *testing.T) {
 		t.Skipf("live qBittorrent at %s unreachable: %v", base, err)
 	}
 
-	for _, torrent := range torrents {
-		if torrent.Category != testCategory {
-			t.Errorf("torrent %q has category %q; the filter is what keeps us off the *arr stack's torrents", torrent.Name, torrent.Category)
+	for _, got := range torrents {
+		if got.Category != testCategory {
+			t.Errorf("torrent %q has category %q; the filter is what keeps us off the *arr stack's torrents", got.Name, got.Category)
 		}
-		if torrent.Hash != NormalizeHash(torrent.Hash) {
-			t.Errorf("hash %q was not normalised", torrent.Hash)
+		if got.Hash != torrent.NormalizeHash(got.Hash) {
+			t.Errorf("hash %q is not in curator's case", got.Hash)
 		}
 	}
 	t.Logf("live: %d torrent(s) in category %q at %s", len(torrents), testCategory, base)
@@ -720,7 +742,7 @@ func TestDeleteTorrentRefusesAnotherCategory(t *testing.T) {
 	defer srv.Close()
 
 	err := New(srv.URL, "u", "p", srv.Client()).DeleteTorrent(context.Background(), "AAAA", "curator", true)
-	if !errors.Is(err, ErrWrongCategory) {
+	if !errors.Is(err, torrent.ErrWrongCategory) {
 		t.Fatalf("err = %v, want ErrWrongCategory", err)
 	}
 	if deleteCalled {
