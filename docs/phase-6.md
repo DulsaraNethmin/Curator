@@ -33,11 +33,11 @@ mean touching them twice.
 |---|---|---|---|
 | **T32** spike: the engine | throwaway, deleted | — | **done**, gate passed |
 | **T33** spike: the tunnel | throwaway, deleted | — | **done**, gate passed |
-| [T34](tasks/T34-torrent-type.md) backend-neutral torrent | `internal/torrent/` | — | |
-| [T35](tasks/T35-embedded-engine.md) the embedded engine | `internal/engine/` | T32, T34 | |
-| [T36](tasks/T36-resume-stall.md) resume and stall detection | `internal/engine/`, `download/poller.go` | T35 | |
-| [T37](tasks/T37-tunnel.md) the tunnel | `internal/vpn/` | T33 | |
-| [T38](tasks/T38-wiring-subtraction.md) wiring and subtraction | `cmd/curator`, `internal/config`, deletions | T35, T37 | |
+| [T34](tasks/T34-torrent-type.md) backend-neutral torrent | `internal/torrent/` | — | **done** `ccca4c9` |
+| [T35](tasks/T35-embedded-engine.md) the embedded engine | `internal/engine/` | T32, T34 | **done** `209b218` |
+| [T36](tasks/T36-resume-stall.md) resume and stall detection | `internal/engine/`, `download/` | T35 | **done** `175aa52` |
+| [T37](tasks/T37-tunnel.md) the tunnel | `internal/vpn/` | T33 | **done** `d74a5a5` |
+| [T38](tasks/T38-wiring-subtraction.md) wiring and subtraction | `cmd/curator`, `internal/config`, deletions | T35, T37 | **done** `26dc937`, less the `Add` collapse |
 
 T32 and T33 have no task file. They were throwaway `cmd/spike` code on a branch that has been
 deleted, which is what a spike is in this repo: **the measurements survive, the code does not.** The
@@ -267,6 +267,25 @@ Pi**:
   category gave, now structural because the engine only ever holds torrents curator added
 - peak RSS on a full download, against the cap T35 sets
 - `TORRENT_BACKEND=qbittorrent` still dispatches, polls and imports exactly as phase 4 shipped it
+
+---
+
+## What it actually did, on 2026-08-14
+
+Driven on the laptop, against a payload seeded over loopback and the local qBittorrent 5.1.2
+container. The full table, and what is still unproven, is in
+[`progress.md`](progress.md#what-phase-6-verified-and-how).
+
+- dispatch → complete → **hardlink**, with the **inode shared and link count 2** — phase 4's proof,
+  re-run against a backend phase 4 never saw, through the real store, poller and importer
+- the library copy is **`0444`**, which is this phase's own measurement carried through a hardlink
+- restart with **no peers and no network**: complete in 55 ms, **0 bytes re-downloaded**
+- a file placed in the data directory by hand: in no row, in no library folder
+- `TORRENT_BACKEND=qbittorrent` **refuses to dispatch with 503**, because that container's exit
+  address is this host's — the honest floor, doing its job on the first thing it was pointed at
+
+**The tunnel is the gap.** Its device code has never brought up a real peer. That is the one part of
+this phase whose "done when" is unmet, and `internal/vpn/live_test.go` is what closes it.
 
 ---
 
