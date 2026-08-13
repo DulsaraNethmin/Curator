@@ -521,3 +521,123 @@ which is the class of surprise `web.go` already refuses a catch-all for.
 
 `useSearchParams()` requires a `<Suspense>` boundary; without one the **build fails**, so this is
 enforced by the toolchain rather than by remembering.
+
+---
+
+## D22 — The torrent engine moves inside the binary, and qBittorrent becomes the second backend
+
+**Status:** decided, measured (T32) · **Supersedes:** [D13](#d13--downloads-are-scoped-by-a-qbittorrent-category-with-its-own-save-path)'s
+category guard, which becomes structural · **Adds a rationale to:** [D4](#d4--pure-go-sqlite)
+
+curator downloads through `anacrolix/torrent`, in its own process, as the default backend.
+`internal/qbit` stays as a selectable second one.
+
+The reason is not elegance, it is [D27](#d27--the-vpn-is-mandatory-and-curator-owns-the-socket): a
+VPN curator can *guarantee* has to be a VPN curator controls, and that means the socket the peer
+bytes leave through has to belong to this process. Everything else here is a consequence or a bonus.
+
+**What it costs, measured rather than guessed** — the spike ran on darwin/arm64 against a 755 MB
+payload and was thrown away, which is what a spike is here:
+
+| | Before | After |
+|---|---|---|
+| arm64 binary, unstripped | 16.17 MB | **25.22 MB** (+9.05, against a +15 estimate) |
+| arm64 binary, `-s -w` | 11.31 MB | **17.62 MB** |
+| `go.mod` requires | 14 | **85** (estimate was 60–80) |
+| `go list -m all` | 36 | **256** |
+| peak RSS, 755 MB download | — | **822 MB**, ~1:1 with the payload |
+
+The dependency jump is the real cost and it is paid once, with open eyes, in a repo that had three
+direct dependencies. The RSS figure is the one that could still lose the Pi, and capping it is a
+task with a number attached rather than a hope.
+
+**What it buys, beyond the VPN.** Path translation between two namespaces stops existing, because
+there is one namespace. qBittorrent's ~110-line cookie session, its `200 Ok.`-means-nothing add, and
+the confirm-by-hash dance that phase 3 needed all stop applying. And D13's guarantee — *the importer
+can never touch a torrent somebody added by hand* — stops depending on a category string: the engine
+only ever holds torrents curator added, so ownership is exclusive rather than filtered. The category
+parameter survives because the interface is shared with a backend where it is still a real filter.
+
+**Pure Go is what makes it possible, and it is now load-bearing twice.** D4 chose
+`modernc.org/sqlite` so `GOARCH=arm64 go build` needs no cross-compiler; the same property is what
+lets phase 9 ship `FROM scratch` multi-arch. anacrolix/torrent is pure Go **when cgo is off** —
+with `CGO_ENABLED=1` it pulls `go-libutp`, `go-llsqlite/crawshaw` and `crawshaw/c`, which is a C uTP
+*and a second SQLite*. Go disables cgo by itself when cross-compiling, so the repo's usual command
+never sees this; the Dockerfile has to set it explicitly, and that is written down in
+[phase-6.md](phase-6.md) because it is invisible until it is expensive.
+
+**The alternatives, and why they lost.** Bundling `qbittorrent-nox` (~90 MB image) keeps every
+verified line of phase 3 and 4 and was the fallback if the spike failed — it costs two processes, a
+lifecycle to supervise and first-run config to generate, and it weakens the VPN story to "verify,
+not guarantee" because the socket is still somebody else's. Transmission is smaller with a simpler
+RPC but pays a full client rewrite *without* being the single-process end state, so the migration
+gets paid twice. External-only qBittorrent — what curator does today — cannot promise the tunnel at
+all.
+
+**Keeping the second backend is deliberate, and so is the criterion for dropping it.** It is the
+migration path for anyone already running the \*arr stack, and the fallback if the engine
+disappoints on hardware nobody has tested it on. **Sunset:** if the embedded engine runs the Pi for
+one full phase with no fallback needed, `internal/qbit` goes, and its session layer, its
+`DOWNLOADS_PATH`/`QBIT_DOWNLOADS_PATH` translation and its state map go with it. Written down here
+because a deletion with a trigger survives contact with a bad week, and a deletion done early gets
+reverted under pressure.
+
+---
+
+## D27 — The VPN is mandatory, and curator owns the socket
+
+**Status:** decided, measured (T33) · **Forces:** [D22](#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)
+
+A userspace WireGuard tunnel lives inside the binary, on a gVisor netstack device, and **only the
+torrent engine's dialer is bound to it**. No `NET_ADMIN`, no privileged container, no sidecar, and
+the credentials live in the app where the person configuring it can reach them.
+
+**The kill switch is structural.** Built with `DisableTCP`, `DisableUTP` and `NoDHT`, the engine
+opened **zero OS sockets** in the spike — it has no way to make one. Every byte has to go through a
+dialer the tunnel handed it, so a dead tunnel is a failed dial. That is a stronger promise than any
+checkbox, and it is destroyed by exactly one line of code falling back to `net.Dial` for trackers,
+which is why the fallback is banned rather than discouraged.
+
+**UDP was the risk and it carried.** uTP and DHT are UDP, and netstack is not a real interface:
+
+| | Measured |
+|---|---|
+| DHT bootstrap over netstack | 51 nodes, 51 good, in 60 s |
+| DHT announce of a real infohash | 518 peers in 10 s |
+| a 755 MB torrent, entirely over netstack uTP | completed, 2.88 MB/s |
+| throughput, tunnelled ÷ **like-for-like** direct | **0.69** (gate was ≥0.50) |
+| point-to-point ceiling through userspace WireGuard | ~22 MB/s / 176 Mbps |
+
+The like-for-like comparison is the honest one: against the *unconstrained* direct run the ratio
+looks like 0.41, but that run also had TCP peers and a working HTTP tracker, neither of which the
+tunnelled run could use. The 22 MB/s ceiling is above what a home connection delivers, so the
+userspace stack is not the bottleneck on a Pi — the ISP is.
+
+**What it does not cover, said plainly.** The web UI stays on the host's stack, deliberately: a bad
+tunnel config must not be able to lock you out of the screen that fixes it. So do TMDB, the
+indexers, minter and Jellyfin — **a 1337x search still leaves from the host address.** This phase
+protects peer traffic, which is the traffic that is observed. Every one of those clients takes an
+`*http.Client`, so routing them later is wiring rather than a rewrite; claiming today that they are
+covered would be the more expensive mistake.
+
+**Mandatory means the default refuses.** With the embedded backend and no tunnel configured,
+dispatch reports itself unconfigured and names `VPN_CONFIG` — the same posture an unset `QBIT_USER`
+has had since phase 3. `VPN_REQUIRED=false` is a deliberate, documented escape for a laptop. A
+mandatory VPN that defaults to off is a slogan.
+
+**What the external-qBittorrent path can and cannot promise.** That traffic is not curator's to
+route, so the guarantee becomes a check — but a real one, not a shrug.
+`GET /api/v2/sync/maindata` carries `server_state.last_external_address_v4`, the address libtorrent
+last learned about itself from the swarm. Measured against the local qBittorrent 5.1.2 container:
+`187.14.240.8`, **identical to curator's own exit IP**, and that container has no VPN. Equal
+addresses therefore refuse a dispatch and say why; different ones pass; an empty one passes with a
+warning, because a client that has never talked to a swarm has nothing to report and refusing there
+would deadlock the first download behind a fact that only exists after it.
+
+**The alternatives.** gluetun is what the Pi runs today and stays the escape hatch for anyone whose
+provider is OpenVPN-only — it costs credentials living in a sidecar's environment rather than in the
+app, and it puts curator's own UI behind the tunnel, so the port has to be published by gluetun and
+the answer becomes a compose file rather than a `docker run`. A SOCKS5 proxy fits the same
+per-dialer shape in a handful of lines but is weaker in a way that matters: the peer traffic is
+proxied, not encrypted end to end, and DNS needs separate care. Both remain available; neither is
+the default.

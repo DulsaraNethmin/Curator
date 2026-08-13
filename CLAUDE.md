@@ -1,7 +1,10 @@
 # Working in this repo
 
 `curator` replaces the seven-container *arr layer on a Raspberry Pi with one Go binary and an
-embedded Next.js UI. Read [`docs/architecture.md`](docs/architecture.md) for the system,
+embedded Next.js UI — and **since phase 6 it is being rebuilt into a product anyone runs with one
+`docker run`**, which changes the goal rather than the code written so far. Where a document still
+describes "13 containers become 6", it is stale: [`docs/phase-6.md`](docs/phase-6.md) is the target,
+and T51 clears the rest. Read [`docs/architecture.md`](docs/architecture.md) for the system,
 [`docs/progress.md`](docs/progress.md) for where we are right now,
 [`docs/roadmap.md`](docs/roadmap.md) for where we are going, and
 [`docs/decisions.md`](docs/decisions.md) before overturning anything — several decisions here
@@ -12,7 +15,10 @@ dispatch has now run against a real qBittorrent 5.1.2 — a local container, not
 is built and verified locally**, including one real download hardlinked into the library; it has
 never run against the Pi, on purpose. **Phase 5 is built** — seven screens embedded in the binary,
 including the TMDB-first redesign of T27–T31, where the film comes from TMDB and releases hang off
-it ([D20](docs/decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it)). Tasks live
+it ([D20](docs/decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it)). **Phase 6
+is in progress**: the torrent engine and a WireGuard tunnel move inside the binary
+([D22](docs/decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend),
+[D27](docs/decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)). Tasks live
 in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 
 ### Phase 4 writes to disk, and only ever locally
@@ -83,8 +89,9 @@ concluding the parser broke.
 
 ### Do not touch the Pi's running stack
 
-The *arr containers on `npi` keep serving until phase 6 cutover. Read from the Pi freely; change
-nothing. `ssh pi` reaches it. The library is `/media/storage/media/movies`.
+The *arr containers on `npi` keep serving until the cutover, which is **phase 10** — phase 6 builds
+the replacement on a laptop and changes nothing on the Pi. Read from the Pi freely; change nothing.
+`ssh pi` reaches it. The library is `/media/storage/media/movies`.
 
 ---
 
