@@ -5,6 +5,11 @@
 *.db-shm
 *.db-wal
 .env
+# Any backup of it too: .env carries TMDB_API_KEY and QBIT_PASS, and a
+# `.env.bak-...` left by an editor or a script is not covered by the line above.
+# One got as far as `git status` before this was noticed.
+.env.*
+!.env.example
 .DS_Store
 /web/node_modules/
 /web/out/
