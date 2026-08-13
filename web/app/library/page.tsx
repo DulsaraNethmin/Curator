@@ -122,7 +122,11 @@ function Card({ movie }: { movie: Movie }) {
         <div className="noposter">{movie.title}</div>
       )}
 
-      <div className="title">{movie.title}</div>
+      {/* title attribute because the CSS clamps to two lines: a longer name is
+          ellipsised on screen but still readable on hover. */}
+      <div className="title" title={movie.title}>
+        {movie.title}
+      </div>
       <div className="meta">
         <span>{movie.year || '—'}</span>
         <span>·</span>

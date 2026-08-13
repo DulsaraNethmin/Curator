@@ -79,11 +79,13 @@ export default function Settings() {
                     <td>
                       {/* Absent, not false, when unconfigured: "never set up"
                           and "set up but broken" are different facts and this
-                          page says different things about them. */}
+                          page says different things about them.
+
+                          A dash rather than "not checked" — the latter reads as
+                          "we forgot to look", when the truth is that there is
+                          nothing to look at. The Notes column already says why. */}
                       {integration.reachable === undefined ? (
-                        <span className="muted small">
-                          {settings.probed ? 'not checked' : '—'}
-                        </span>
+                        <span className="muted small">—</span>
                       ) : integration.reachable ? (
                         <span className="badge ok">reachable</span>
                       ) : (
