@@ -189,6 +189,26 @@ func TestExternalGuard(t *testing.T) {
 		if !strings.Contains(err.Error(), "203.0.113.9") {
 			t.Errorf("err = %q, want it to name the address", err)
 		}
+		// The claim has to stay inside what equality actually proves. A machine
+		// that is itself behind a VPN produces this reading while being
+		// tunnelled, so "it has no VPN" is a sentence this must not contain.
+		if strings.Contains(err.Error(), "not behind a VPN") {
+			t.Errorf("err = %q, which claims more than equal addresses prove", err)
+		}
+		if !strings.Contains(err.Error(), "VPN_REQUIRED=false") {
+			t.Errorf("err = %q, want it to name the way out", err)
+		}
+	})
+
+	// VPN_REQUIRED=false has to mean the same thing here as it does for the
+	// embedded engine, and for the same person: somebody whose whole machine is
+	// behind a tunnel has made the one arrangement this check cannot tell apart
+	// from having none.
+	t.Run("advisory downgrades a refusal to a warning", func(t *testing.T) {
+		refused := External(says("203.0.113.9"), srv.URL, srv.Client(), quiet())
+		if err := Advisory(refused, quiet())(context.Background()); err != nil {
+			t.Errorf("Advisory still refused: %v", err)
+		}
 	})
 
 	t.Run("different address passes", func(t *testing.T) {

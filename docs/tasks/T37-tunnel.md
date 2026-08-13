@@ -63,9 +63,13 @@ one code path falls back to `net.Dial` "just for trackers".
 
    | `last_external_address_v4` | Meaning | curator does |
    |---|---|---|
-   | equals curator's exit IP | the client is on the same exit — no tunnel | **refuse to dispatch**, saying so |
+   | equals curator's exit address | the client leaves by the same route curator does, so curator can vouch for nothing | **refuse to dispatch**, saying so — unless `VPN_REQUIRED=false`, which makes it a warning |
    | differs | it is going out somewhere else | dispatch |
    | empty | libtorrent has not talked to the swarm yet | dispatch, with a warning that says it is unproven |
+
+   Equality is **not** proof that the client has no VPN, and the message must not say it is: a
+   machine that is itself behind a tunnel produces exactly this reading while being perfectly
+   protected — by something curator did not choose and cannot watch fail.
 
    Empty is not a refusal. A fresh qBittorrent with no torrents has never learned its address, and
    blocking the first dispatch for ever on a fact that only arrives *after* a dispatch is a deadlock

@@ -112,9 +112,30 @@ func External(clientAddress func(context.Context) (string, error), checkURL stri
 			return fmt.Errorf("could not establish curator's own exit address to compare: %w", err)
 		}
 		if theirs == ours {
-			return fmt.Errorf("the torrent client's traffic leaves from the same address curator does (%s), "+
-				"so it is not behind a VPN — put it behind one, or run curator's own engine "+
-				"with TORRENT_BACKEND=embedded, which curator can guarantee", ours)
+			return fmt.Errorf("the torrent client leaves from the same address curator does (%s), "+
+				"so curator cannot tell its traffic apart from this machine's own and can promise "+
+				"nothing about it — put that client behind its own VPN, run curator's engine with "+
+				"TORRENT_BACKEND=embedded, which curator routes itself, or accept it with "+
+				"VPN_REQUIRED=false", ours)
+		}
+		return nil
+	}
+}
+
+// Advisory turns a refusal into a warning, once per dispatch.
+//
+// It is what VPN_REQUIRED=false means for a check curator cannot enforce: the
+// operator has been told what cannot be verified and has said to proceed. It
+// keeps saying it rather than falling silent, because the whole difference
+// between an accepted risk and a forgotten one is whether anything still
+// mentions it.
+func Advisory(g Guard, log *slog.Logger) Guard {
+	if log == nil {
+		log = slog.Default()
+	}
+	return func(ctx context.Context) error {
+		if err := g(ctx); err != nil {
+			log.Warn("dispatching anyway because VPN_REQUIRED=false", "unverified", err)
 		}
 		return nil
 	}

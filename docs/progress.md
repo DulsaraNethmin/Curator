@@ -588,7 +588,7 @@ qBittorrent 5.1.2 container. Never against the Pi.
 | restart with **no peers and no network** | complete in **55 ms, 0 bytes re-downloaded**, from the persisted metainfo |
 | a file placed in the data directory by hand | in no row and in no library folder — structural, because the engine only holds what curator added |
 | `TORRENT_BACKEND=embedded` start-up | engine up, no tunnel, warned about it, `/api/settings` says "curator downloads it itself, in this process" |
-| `TORRENT_BACKEND=qbittorrent` dispatch | **refused, 503**: "the torrent client's traffic leaves from the same address curator does (187.14.240.8), so it is not behind a VPN" — true, that container has no VPN |
+| `TORRENT_BACKEND=qbittorrent` dispatch | **refused, 503**, naming the shared exit address `187.14.240.8`. The wording was corrected afterwards: equality proves the client leaves by curator's own route, not that it has no VPN — this laptop is itself on NordVPN, so that container *was* tunnelled, just not by anything curator chose ([D27](decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)) |
 | an unknown `TORRENT_BACKEND` | start-up error naming both valid values |
 | peak RSS / peak Go heap on a real 755 MB download | **817.6 MB / 33.4 MB**, heap flat throughout ([D22](decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)) |
 | every commit alone | builds, vets, tests with `-race`, and cross-compiles to `linux/arm64` |

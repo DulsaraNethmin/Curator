@@ -639,10 +639,24 @@ mandatory VPN that defaults to off is a slogan.
 route, so the guarantee becomes a check — but a real one, not a shrug.
 `GET /api/v2/sync/maindata` carries `server_state.last_external_address_v4`, the address libtorrent
 last learned about itself from the swarm. Measured against the local qBittorrent 5.1.2 container:
-`187.14.240.8`, **identical to curator's own exit IP**, and that container has no VPN. Equal
-addresses therefore refuse a dispatch and say why; different ones pass; an empty one passes with a
-warning, because a client that has never talked to a swarm has nothing to report and refusing there
-would deadlock the first download behind a fact that only exists after it.
+`187.14.240.8`, **identical to curator's own exit address**. Equal addresses refuse a dispatch and
+say why; different ones pass; an empty one passes with a warning, because a client that has never
+talked to a swarm has nothing to report and refusing there would deadlock the first download behind
+a fact that only exists after it.
+
+**Be exact about what equality proves, because the obvious reading is wrong.** It does not prove the
+client has no VPN. It proves the client's traffic leaves **by the same route curator's does**, and
+therefore that curator adds nothing and can vouch for nothing: whatever protects this machine
+protects that client by accident rather than by design, and whatever does not, does not. The case
+that makes the distinction concrete is the one on the desk — this laptop is itself connected to
+NordVPN, so the container the check refused *is* behind a VPN, and the refusal is still correct,
+because it is not behind one curator chose, configured or can see fail.
+
+That is also why **`VPN_REQUIRED=false` silences it into a warning**. Somebody whose whole machine
+is behind a tunnel has made exactly the arrangement this check cannot distinguish from having none,
+and the escape hatch that already exists for the embedded engine has to mean the same thing here:
+you have told curator you accept an arrangement it cannot verify. It still says so, once, every time
+it dispatches.
 
 **The alternatives.** gluetun is what the Pi runs today and stays the escape hatch for anyone whose
 provider is OpenVPN-only — it costs credentials living in a sidecar's environment rather than in the

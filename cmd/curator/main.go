@@ -144,9 +144,15 @@ func run() error {
 			WithPaths(qbit.Paths{Curator: cfg.DownloadsPath, QBit: cfg.QBitDownloadsPath})
 		torrents = client
 		// curator does not route this client's traffic, so the guarantee
-		// becomes a check: refuse when its exit address is curator's own
-		// (docs/decisions.md D27).
-		guard = download.Guard(vpn.External(client.ExternalAddress, cfg.VPNIPCheckURL, indexerHTTP, log))
+		// becomes a check: refuse when it leaves by the same route curator does
+		// (docs/decisions.md D27). VPN_REQUIRED=false means the same thing here
+		// as it does for the embedded engine — proceed, and keep saying what
+		// could not be verified.
+		check := vpn.External(client.ExternalAddress, cfg.VPNIPCheckURL, indexerHTTP, log)
+		if !cfg.VPNRequired {
+			check = vpn.Advisory(check, log)
+		}
+		guard = download.Guard(check)
 		log.Info("using an external qBittorrent; curator cannot route its traffic, only check it",
 			"url", cfg.QBitURL)
 

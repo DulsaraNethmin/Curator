@@ -462,8 +462,9 @@ func (c *Client) DeleteTorrent(ctx context.Context, hash, requireCategory string
 // It is how curator checks a torrent client it does not route. An external
 // qBittorrent's peer traffic is not curator's to tunnel, so the guarantee
 // becomes a check: if this address equals curator's own exit address, that
-// client is not behind a VPN and a dispatch would leave from the address the
-// VPN was installed to hide (docs/decisions.md D27).
+// client leaves by the same route curator does, and curator can vouch for
+// nothing about it (docs/decisions.md D27 — which is careful about why that is
+// not the same claim as "it has no VPN").
 //
 // An empty string is a normal answer, not an error: a client that has never
 // talked to a swarm has nothing to report. Measured against qBittorrent 5.1.2
