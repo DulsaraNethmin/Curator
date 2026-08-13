@@ -115,6 +115,18 @@ func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (S
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
+	// The indexers are asked for a normalised title; everything the caller sees
+	// keeps the canonical one (docs/decisions.md D20). A colon costs 1337x every
+	// result it would have returned, silently.
+	//
+	// Here rather than inside x1337.searchQuery, which is the narrower place:
+	// indexer.Cache wraps 1337x and keys on the title it is HANDED, so
+	// normalising below the cache leaves "avengers: endgame" and "avengers
+	// endgame" as two entries for one identical minter fetch, and each path pays
+	// its own ~9 s browser launch. Above the cache, the key is the string that
+	// was actually queried.
+	query := NormaliseQuery(title)
+
 	// Results land in per-indexer slots rather than an append-shared slice so that
 	// a straggler still running after the deadline has somewhere defined to write.
 	type slot struct {
@@ -133,7 +145,7 @@ func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (S
 	var g errgroup.Group
 	for i, ix := range a.indexers {
 		g.Go(func() error {
-			releases, err := ix.SearchMovie(ctx, title, year)
+			releases, err := ix.SearchMovie(ctx, query, year)
 			mu.Lock()
 			defer mu.Unlock()
 			slots[i] = slot{reported: true, releases: releases, err: err}
