@@ -32,7 +32,7 @@ export default function SearchPage() {
 
 type Mode = 'films' | 'releases';
 
-export function Search() {
+function Search() {
   const params = useSearchParams();
   const initial = (params.get('q') ?? '').trim();
 

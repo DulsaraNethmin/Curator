@@ -293,7 +293,10 @@ a.movie:hover .title { color: var(--accent); }
   background: var(--panel);
   border: 1px solid var(--border);
 }
-.movie .noposter {
+/* Not scoped to .movie: the hero uses the same fallback, and left-aligned text
+   in the top corner of an empty box reads as a broken image rather than a
+   deliberate absence. */
+.noposter {
   display: grid;
   place-items: center;
   text-align: center;
