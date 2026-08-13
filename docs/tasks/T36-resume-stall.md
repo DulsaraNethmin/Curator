@@ -39,19 +39,22 @@ nothing anywhere says why.
    hardlinking a corrupt file into the library and telling somebody it is a movie. Corruption is
    really caught — 1 MB damaged came back as 3016 of 3020 pieces, exactly the four affected.
 5. **A fifth state: `stalled`.** Add it to `internal/torrent`, to `store`'s documented values and to
-   `schema.sql`'s comment — a TEXT column with a comment, so again no migration. The engine reports
-   it when a torrent has made **no progress and has no peers** for `TORRENT_STALL_AFTER` (default
-   5 minutes; metadata took 3.2 s in the spike, so five minutes is not a tight rope).
+   `schema.sql`'s comment — a TEXT column with a comment, so again no migration. The trigger is
+   **byte progress, not peer count**: "no peers" and "fifty peers, none of whom will send" are the
+   same experience, which is a progress bar that does not move. The peer count goes in the reason
+   instead, which is the part somebody can act on. `TORRENT_STALL_AFTER` defaults to 5 minutes;
+   metadata took 3.2 s in the spike, so five minutes is not a tight rope.
 6. **qBittorrent gets the same word for the same thing.** `stalledDL` means precisely "no peers, no
    progress" and currently maps to `queued`, which is where the metaDL confusion comes from on that
    backend too. It becomes `stalled`. **`stalledUP` stays `completed`** — a finished torrent with no
    leechers is not a problem, it is a Tuesday.
-7. **The reason is a log line, once per torrent.** The poller logs the transition into `stalled` with
-   what is actually wrong — no peers for the magnet, or peers but no bytes — using the
-   suppress-repeats discipline `importer.logFailure` already has, because a five-second poll must
-   not produce a five-second warning. Carrying the reason into `GET /api/downloads` needs a column;
-   that is phase 7's, where the store is being touched anyway. Activity shows the state, Logs shows
-   the sentence.
+7. **The reason is a log line, once per torrent — from the backend, not the poller.** The neutral
+   torrent carries six fields and none of them is "why", and the backend is the only party that
+   knows whether there are no peers, peers with no metadata, or peers that will not send. It says so
+   once, on the transition, with the suppress-repeats discipline `importer.logFailure` already has,
+   because a ten-second poll must not produce a ten-second warning. Carrying the reason into
+   `GET /api/downloads` needs a column; that is phase 7's, where the store is being touched anyway.
+   Activity shows the state, Logs shows the sentence.
 8. **One line of UI**, because `stalled` needs a badge like the other four. Nothing else in `web/`
    changes.
 

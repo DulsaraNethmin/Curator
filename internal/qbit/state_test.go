@@ -21,13 +21,16 @@ func TestMapState(t *testing.T) {
 	}{
 		// queued
 		{"queuedDL", torrent.StateQueued},
-		{"stalledDL", torrent.StateQueued},
 		{"metaDL", torrent.StateQueued},
 		{"allocating", torrent.StateQueued},
 		{"checkingDL", torrent.StateQueued},
 		{"checkingResumeData", torrent.StateQueued},
 		{"pausedDL", torrent.StateQueued},
 		{"stoppedDL", torrent.StateQueued}, // what 5.1.2 sends instead of pausedDL
+
+		// downloading
+		// stalled
+		{"stalledDL", torrent.StateStalled},
 
 		// downloading
 		{"downloading", torrent.StateDownloading},

@@ -1,5 +1,5 @@
 // Package torrent is the torrent as curator sees it: the six facts every
-// backend can answer, and the four states the downloads table carries.
+// backend can answer, and the states the downloads table carries.
 //
 // It exists so that internal/download, internal/importer and internal/api are
 // written once and work against either backend — internal/qbit, which asks a
@@ -24,14 +24,22 @@ import (
 // The states a torrent can be in, as untyped string constants so they assign
 // straight into store.Download without a conversion.
 //
-// These are the same four strings store.Download* carries, and they are the
-// whole vocabulary: `imported` is the importer's to set and no backend can ever
-// produce it, because no torrent client knows what a library is.
+// These are the same strings store.Download* carries, and they are the whole
+// vocabulary a backend may produce: `imported` is the importer's to set and no
+// backend can ever produce it, because no torrent client knows what a library
+// is.
 const (
 	StateQueued      = "queued"
 	StateDownloading = "downloading"
 	StateCompleted   = "completed"
 	StateFailed      = "failed"
+
+	// StateStalled is a torrent that is added, wanted, and getting nowhere:
+	// nobody is seeding it, or the peers that are will not send. It is a
+	// description rather than a failure — the torrent stays added and a peer
+	// appearing puts it straight back to downloading — and it exists because
+	// "queued" and "a magnet nobody has" looked identical for two phases.
+	StateStalled = "stalled"
 )
 
 // ErrWrongCategory reports that a torrent exists but does not belong to the
@@ -57,7 +65,7 @@ type Torrent struct {
 	// backends, because it is a property of magnets.
 	Name string
 
-	// State is one of the four above: curator's vocabulary, never a backend's.
+	// State is one of those above: curator's vocabulary, never a backend's.
 	// A backend that has states of its own maps them before this is filled in.
 	State string
 

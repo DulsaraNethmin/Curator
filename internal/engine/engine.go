@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	anacrolix "github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
@@ -61,6 +62,12 @@ type Network interface {
 // defaults of 50 conns and 64 MiB.
 const (
 	DefaultMaxConns = 24
+
+	// DefaultStallAfter is how long a torrent may sit at the same byte count
+	// before it stops calling itself queued. Metadata arrived in 3.2 s in the
+	// spike and a healthy download moves every second, so five minutes is not a
+	// tight rope — it is long enough that saying "stalled" means it.
+	DefaultStallAfter = 5 * time.Minute
 
 	unverifiedBytes = 32 << 20
 
@@ -89,6 +96,31 @@ type Engine struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// stallAfter is how long a torrent may make no progress before it says so.
+	stallAfter time.Duration
+	// now is a seam for the stall tests, which must not sleep for minutes.
+	now func() time.Time
+
+	// mu guards the two maps below. Both are read on every poll tick, which is
+	// the only reason they are maps rather than fields on a wrapper type.
+	mu sync.Mutex
+	// unchecked holds torrents whose completeness curator has not established
+	// in this process: newly added, or being re-hashed right now. They report
+	// `queued`, which is what keeps the importer away from a payload that has
+	// not been vouched for.
+	unchecked map[string]bool
+	// progress remembers when each torrent last gained a byte, which is the
+	// whole of stall detection.
+	progress map[string]mark
+}
+
+// mark is one torrent's last observed progress, and whether the stall it is in
+// has already been said out loud.
+type mark struct {
+	bytes    int64
+	since    time.Time
+	reported bool
 }
 
 // Config is what New needs. Only DataDir is required.
@@ -98,6 +130,10 @@ type Config struct {
 	MaxConns int
 	Network  Network
 	Log      *slog.Logger
+
+	// StallAfter is how long a torrent may make no progress at all before it
+	// reports itself stalled instead of queued. Zero takes DefaultStallAfter.
+	StallAfter time.Duration
 
 	// ListenPort is where incoming peer connections are accepted. Zero means
 	// an ephemeral port, which is the default and is right for almost
@@ -133,6 +169,9 @@ func New(cfg Config) (*Engine, error) {
 	if cfg.MaxConns <= 0 {
 		cfg.MaxConns = DefaultMaxConns
 	}
+	if cfg.StallAfter <= 0 {
+		cfg.StallAfter = DefaultStallAfter
+	}
 
 	cc := anacrolix.NewDefaultClientConfig()
 	cc.DataDir = dataDir
@@ -148,11 +187,15 @@ func New(cfg Config) (*Engine, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
-		dataDir:  dataDir,
-		category: cfg.Category,
-		log:      cfg.Log,
-		ctx:      ctx,
-		cancel:   cancel,
+		dataDir:    dataDir,
+		category:   cfg.Category,
+		log:        cfg.Log,
+		ctx:        ctx,
+		cancel:     cancel,
+		stallAfter: cfg.StallAfter,
+		now:        time.Now,
+		unchecked:  map[string]bool{},
+		progress:   map[string]mark{},
 	}
 
 	// The socket has to exist before the client, and the client before the
@@ -207,15 +250,41 @@ func (e *Engine) AddMagnet(_ context.Context, magnet, category string) error {
 
 	// Parsed here, before the client sees it. A magnet with no `xt=urn:btih:`
 	// parses cleanly and then PANICS inside AddTorrentOpt on the zero info hash
-	// — measured, not feared. Dispatch rejects those already, but T36's boot
-	// resume re-adds magnets straight out of the database, and a library panic
-	// is not something a caller can recover from three layers up.
+	// — measured, not feared. Dispatch rejects those already, but boot resume
+	// re-adds magnets straight out of the database, and a library panic is not
+	// something a caller can recover from three layers up.
 	parsed, err := metainfo.ParseMagnetUri(magnet)
 	if err != nil {
 		return fmt.Errorf("engine: %q is not a magnet: %w", clip(magnet), err)
 	}
 	if parsed.InfoHash.IsZero() {
 		return fmt.Errorf("engine: %q carries no info hash", clip(magnet))
+	}
+
+	// Already held: adding again is a no-op rather than a reset. Boot resume
+	// re-adds every unfinished row, and a second dispatch of the same release
+	// converges here exactly as phase 3 promised.
+	if _, ok := e.client.Torrent(parsed.InfoHash); ok {
+		return nil
+	}
+
+	// The metainfo first, when there is one. anacrolix persists the payload and
+	// a piece-completion database but never the info dict, so an add by magnet
+	// needs a metadata round trip from the swarm — 3.2 s when there are peers,
+	// and forever when there are not. With the file, a restart resumes with the
+	// network down, which is the entire reason it is written.
+	if mi, err := metainfo.LoadFromFile(e.metainfoPath(parsed.InfoHash)); err == nil {
+		t, err := e.client.AddTorrent(mi)
+		if err == nil {
+			e.log.Info("resumed from the saved metainfo, without asking the swarm",
+				"hash", hashOf(t), "name", t.Name())
+			e.start(t)
+			return nil
+		}
+		// Fall through to the magnet: a metainfo that will not load is a reason
+		// to ask the swarm, not a reason to fail an add.
+		e.log.Warn("the saved metainfo could not be used; falling back to the magnet",
+			"hash", torrent.NormalizeHash(parsed.InfoHash.HexString()), "err", err)
 	}
 
 	t, err := e.client.AddMagnet(magnet)
@@ -244,9 +313,15 @@ func clip(magnet string) string {
 // Close, rather than being a goroutine with a life of its own — the rule the
 // poller and the search cache already follow.
 func (e *Engine) start(t *anacrolix.Torrent) {
+	// Marked before this function returns, not inside the goroutine below:
+	// AddMagnet's caller can poll the moment it returns, and the completion
+	// database will already be answering `complete` for a resumed torrent.
+	e.setUnchecked(hashOf(t), true)
+
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
+		defer e.setUnchecked(hashOf(t), false)
 		select {
 		case <-t.GotInfo():
 		case <-t.Closed():
@@ -261,8 +336,51 @@ func (e *Engine) start(t *anacrolix.Torrent) {
 			e.log.Warn("could not persist the metainfo; this torrent will need the swarm to resume",
 				"hash", hashOf(t), "err", err)
 		}
+
+		// A payload that is already on disk was not written by this process —
+		// this is the first add of this torrent, and the client has just
+		// started. Nothing has hashed those bytes: resume is optimistic and
+		// reports pieces complete straight out of the completion database
+		// without reading one. That is what makes it free, and it means
+		// "complete" is a claim about a database until something checks it.
+		// Checking costs 15.7–17.8 s for 755 MB, once, against hardlinking a
+		// corrupt file into the library and calling it a film.
+		//
+		// The trigger is the file on disk rather than BytesCompleted, which is
+		// read from the completion database asynchronously and is still 0 the
+		// instant the info arrives — measured, by a corrupted payload sailing
+		// through as complete.
+		if path := e.contentPath(t); path != "" {
+			if _, err := os.Stat(path); err == nil {
+				e.verify(t)
+			}
+		}
 		t.DownloadAll()
 	}()
+}
+
+// verify re-hashes what is on disk, reporting the torrent as queued while it
+// runs — the same word qBittorrent uses for checkingResumeData, and the reason
+// the importer leaves it alone until the answer is in.
+func (e *Engine) verify(t *anacrolix.Torrent) {
+	hash := hashOf(t)
+
+	started := time.Now()
+	e.log.Info("verifying data already on disk before trusting it",
+		"hash", hash, "name", t.Name(), "bytes", t.BytesCompleted())
+
+	err := t.VerifyDataContext(e.ctx)
+
+	switch {
+	case errors.Is(err, context.Canceled):
+		return // shutting down; nothing to report
+	case err != nil:
+		e.log.Warn("verification failed; the torrent will re-fetch whatever it cannot account for",
+			"hash", hash, "err", err)
+	default:
+		e.log.Info("verified", "hash", hash, "took", time.Since(started).Round(time.Millisecond),
+			"missing_bytes", t.BytesMissing())
+	}
 }
 
 // Torrents lists what this engine holds.
@@ -333,6 +451,14 @@ func (e *Engine) DeleteTorrent(ctx context.Context, hash, requireCategory string
 	content := e.contentPath(t)
 	t.Drop()
 
+	// Both maps are keyed by hash and would otherwise hold an entry for a
+	// torrent that no longer exists, for the lifetime of the process.
+	dropped := torrent.NormalizeHash(ih.HexString())
+	e.mu.Lock()
+	delete(e.progress, dropped)
+	delete(e.unchecked, dropped)
+	e.mu.Unlock()
+
 	if !deleteFiles {
 		return nil
 	}
@@ -352,10 +478,17 @@ func (e *Engine) DeleteTorrent(ctx context.Context, hash, requireCategory string
 
 // Close stops the client and waits for the goroutines it started. Seeding ends
 // with the process, which is the whole seeding policy this phase has.
+//
+// The order is load-bearing and was arrived at by deadlocking: cancel, then
+// wait, then close. Closing the client first parks any goroutine that is inside
+// DownloadAll or VerifyData on the client's own mutex, which it never gets, so
+// the Wait below never returns. Cancelling first releases everything that is
+// waiting on metadata; waiting second lets whatever is mid-call finish against
+// a client that is still alive.
 func (e *Engine) Close() error {
 	e.cancel()
-	errs := e.client.Close()
 	e.wg.Wait()
+	errs := e.client.Close()
 	if e.socket != nil {
 		// Closed after the client, which is still writing through it until it
 		// is not.
@@ -385,6 +518,14 @@ func (e *Engine) describe(t *anacrolix.Torrent) torrent.Torrent {
 		// so nothing about the payload is known — not its size, not its name on
 		// disk, not how much of it we have.
 		out.State = torrent.StateQueued
+	case e.isUnchecked(out.Hash):
+		// Added moments ago, or being re-hashed right now. Queued rather than
+		// completed, because the completion database answers `complete` the
+		// instant a torrent is added over existing data — and between the add
+		// and the verify there is a window in which the poller would otherwise
+		// see `completed` and hardlink a file nothing has vouched for. Measured
+		// by a corrupted payload sailing straight through it.
+		out.State = torrent.StateQueued
 	case t.Complete().Bool():
 		out.State = torrent.StateCompleted
 		out.Progress = 1
@@ -399,8 +540,87 @@ func (e *Engine) describe(t *anacrolix.Torrent) torrent.Torrent {
 	// qBittorrent's `error` or `missingFiles`: a torrent it cannot make
 	// progress on is not failed, it is stalled — nobody is seeding it — and
 	// saying `failed` would tell somebody their download died when what
-	// happened is that they picked an unpopular release. T36 owns that word.
+	// happened is that they picked an unpopular release.
+	if out.State == torrent.StateQueued || out.State == torrent.StateDownloading {
+		if e.stalled(t, out) {
+			out.State = torrent.StateStalled
+		}
+	}
 	return out
+}
+
+func (e *Engine) isUnchecked(hash string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.unchecked[hash]
+}
+
+func (e *Engine) setUnchecked(hash string, yes bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if yes {
+		e.unchecked[hash] = true
+		return
+	}
+	delete(e.unchecked, hash)
+}
+
+// stalled reports whether this torrent has gained nothing for long enough to
+// say so out loud, and says it once when it first does.
+//
+// The trigger is byte progress, not peer count, because "no peers" and "fifty
+// peers, none of whom will send" are the same experience — a progress bar that
+// does not move. The peer count goes in the reason, which is the part a human
+// can act on: nobody is seeding this release, so pick another one.
+//
+// A verifying torrent is exempt: it is busy, just not with the network. So is a
+// completed one, which by definition never gains another byte.
+func (e *Engine) stalled(t *anacrolix.Torrent, out torrent.Torrent) bool {
+	bytes := t.BytesCompleted()
+	now := e.now()
+
+	e.mu.Lock()
+	previous, seen := e.progress[out.Hash]
+	if !seen || previous.bytes != bytes {
+		e.progress[out.Hash] = mark{bytes: bytes, since: now}
+		e.mu.Unlock()
+		return false
+	}
+	stalled := now.Sub(previous.since) >= e.stallAfter
+	firstTime := stalled && !previous.reported
+	if firstTime {
+		previous.reported = true
+		e.progress[out.Hash] = previous
+	}
+	e.mu.Unlock()
+
+	if firstTime {
+		// Said by the backend rather than by the poller, because the reason is
+		// a fact only the backend has: the neutral torrent type carries six
+		// fields and none of them is "why". Once per torrent, not once per
+		// tick — a five-second poll must not produce a five-second warning.
+		stats := t.Stats()
+		e.log.Warn("torrent is stalled: nothing has arrived for a while",
+			"hash", out.Hash, "name", out.Name, "for", now.Sub(previous.since).Round(time.Second),
+			"progress", fmt.Sprintf("%.1f%%", out.Progress*100),
+			"peers", stats.ActivePeers, "seeders", stats.ConnectedSeeders,
+			"reason", stallReason(stats.ActivePeers, t.Info() == nil))
+	}
+	return stalled
+}
+
+// stallReason is the sentence somebody reads in the Logs screen and can act on.
+func stallReason(peers int, noMetadata bool) string {
+	switch {
+	case peers == 0 && noMetadata:
+		return "no peers have answered, so not even the metadata has arrived — nobody appears to be seeding this release"
+	case peers == 0:
+		return "no peers are connected — nobody appears to be seeding this release"
+	case noMetadata:
+		return "peers are connected but none of them has sent the metadata"
+	default:
+		return "peers are connected but none of them is sending data"
+	}
 }
 
 // contentPath is where the payload is, in curator's own filesystem, because

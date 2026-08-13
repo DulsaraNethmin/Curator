@@ -369,6 +369,72 @@ func (s *Service) DeleteMovie(ctx context.Context, id int64) (Deletion, error) {
 	return report, nil
 }
 
+// Resume re-adds every download that has not been imported, once, at boot.
+//
+// It needs no new column, no new query and no migration: `downloads` has
+// carried the hash **and** the magnet since phase 3, which is everything a
+// re-add needs. It works on either backend for the same reason dispatch does —
+// AddMagnet is the interface, and what happens behind it is the backend's
+// business. On the embedded engine that means reading the info dict off disk
+// and carrying on with the network down; on qBittorrent it means nothing at
+// all, because that process kept running.
+//
+// Rows that read `imported` are deliberately left alone, and the consequence is
+// stated rather than hidden: **curator stops seeding a film once it has filed
+// it and been restarted.** Re-adopting every film ever imported is the one
+// behaviour here with an unbounded cost — peers, sockets and resident memory on
+// a Pi — and a seeding policy is a feature nobody has asked for yet.
+//
+// One failure does not stop the rest. A magnet that will not add is one film,
+// and the loop is the only chance every other row gets.
+func (s *Service) Resume(ctx context.Context) error {
+	if s.client == nil {
+		return nil
+	}
+
+	rows, err := s.store.ListDownloads(ctx)
+	if err != nil {
+		return fmt.Errorf("resume: %w", err)
+	}
+
+	var resumed, held, failed int
+	for _, row := range rows {
+		if row.State == store.DownloadImported {
+			continue
+		}
+		if strings.TrimSpace(row.Magnet) == "" {
+			// Nothing to re-add from. Worth saying once: this row will never
+			// move again on its own, and nobody would otherwise know why.
+			s.log.Warn("download row has no magnet, so it cannot be resumed",
+				"hash", row.TorrentHash, "release", row.ReleaseName)
+			failed++
+			continue
+		}
+
+		// Asked first, so that a client which still holds the torrent is not
+		// sent a duplicate add. qBittorrent answers "Fails." to a magnet it
+		// already has, which would make every boot log an error for a torrent
+		// that is perfectly healthy.
+		if existing, err := s.client.TorrentByHash(ctx, row.TorrentHash); err == nil && existing != nil {
+			held++
+			continue
+		}
+
+		if err := s.client.AddMagnet(ctx, row.Magnet, s.category); err != nil {
+			s.log.Warn("could not resume a download", "hash", row.TorrentHash,
+				"release", row.ReleaseName, "err", err)
+			failed++
+			continue
+		}
+		resumed++
+	}
+
+	if resumed+held+failed > 0 {
+		s.log.Info("resumed downloads", "re_added", resumed, "already_running", held, "failed", failed)
+	}
+	return nil
+}
+
 // Downloads lists every recorded download, newest first.
 //
 // It reads through to the store rather than qBittorrent: the table is the record

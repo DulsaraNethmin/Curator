@@ -34,8 +34,8 @@
 // the upper-case one on everything that leaves.
 //
 // What leaves is a torrent.Torrent — the six fields curator reads, with the
-// state already translated into curator's four. This package is one of two
-// backends behind download.TorrentClient (docs/decisions.md D22), and none of
+// state already translated into curator's own vocabulary. This package is one
+// of two backends behind download.TorrentClient (docs/decisions.md D22), and none of
 // qBittorrent's vocabulary crosses that boundary.
 package qbit
 
@@ -112,7 +112,7 @@ type info struct {
 
 	// State is qBittorrent's own vocabulary ("stalledUP", "metaDL", …), kept
 	// verbatim so a vocabulary change stays visible in a log line. mapState
-	// turns it into curator's four on the way out.
+	// turns it into curator's on the way out.
 	State string `json:"state"`
 
 	// Progress is 0..1, not a percentage.

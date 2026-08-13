@@ -165,6 +165,16 @@ func run() error {
 			"before `go build ./...`; the API is complete and working")
 	}
 
+	// Resume before the poller starts, so the first tick already sees whatever
+	// was in flight when curator last stopped. It is not fatal: a torrent client
+	// that is down at boot means downloads resume when it comes back, and the
+	// library, search and the whole UI have nothing to do with it.
+	if torrents != nil {
+		if err := downloads.Resume(ctx); err != nil {
+			log.Warn("could not resume downloads; the poller will still reconcile what the client has", "err", err)
+		}
+	}
+
 	// The poller takes the same context that shuts the server down, so it stops on
 	// SIGTERM with everything else and nothing outlives main. It is not started at
 	// all when downloads are unconfigured: a loop logging an authentication

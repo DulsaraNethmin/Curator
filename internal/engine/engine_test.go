@@ -378,3 +378,188 @@ func TestNewRequiresADataDirectory(t *testing.T) {
 		t.Fatal("New accepted an empty DataDir")
 	}
 }
+
+// --- resume and stall (T36) --------------------------------------------------
+
+// TestResumeUsesTheSavedMetainfo is the offline restart. The engine is closed
+// and rebuilt over the same data directory with nothing to talk to: no seeder,
+// no DHT, no tracker. Without the persisted info dict this would sit at `queued`
+// for ever waiting for a stranger to send the metadata.
+func TestResumeUsesTheSavedMetainfo(t *testing.T) {
+	seeder, mi, ih := seed(t)
+	hash := torrent.NormalizeHash(ih.HexString())
+	magnet := magnetFor(t, mi, ih)
+	dataDir := t.TempDir()
+
+	first, err := New(Config{DataDir: dataDir, Category: "curator", Log: quiet()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := first.AddMagnet(context.Background(), magnet, "curator"); err != nil {
+		t.Fatalf("AddMagnet: %v", err)
+	}
+	lt, _ := first.client.Torrent(ih)
+	lt.AddClientPeer(seeder.client)
+	before := await(t, first, hash, torrent.StateCompleted)
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Second boot, same directory, and the seeder is never introduced.
+	second := start(t, Config{DataDir: dataDir, Category: "curator"})
+	if err := second.AddMagnet(context.Background(), magnet, "curator"); err != nil {
+		t.Fatalf("AddMagnet on resume: %v", err)
+	}
+
+	after := await(t, second, hash, torrent.StateCompleted)
+	if after.ContentPath != before.ContentPath {
+		t.Errorf("ContentPath moved across a restart: %q then %q", before.ContentPath, after.ContentPath)
+	}
+	st, _ := second.client.Torrent(ih)
+	stats := st.Stats()
+	if got := stats.BytesReadData.Int64(); got != 0 {
+		t.Errorf("%d bytes were read from peers on resume, want 0", got)
+	}
+}
+
+// TestResumeVerifiesWhatWasAlreadyOnDisk: pieces this process did not write are
+// unverified, however confident the completion database is. A payload corrupted
+// while curator was not running must come back INCOMPLETE rather than being
+// hardlinked into the library and called a film.
+func TestResumeVerifiesWhatWasAlreadyOnDisk(t *testing.T) {
+	seeder, mi, ih := seed(t)
+	hash := torrent.NormalizeHash(ih.HexString())
+	magnet := magnetFor(t, mi, ih)
+	dataDir := t.TempDir()
+
+	first, err := New(Config{DataDir: dataDir, Category: "curator", Log: quiet()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := first.AddMagnet(context.Background(), magnet, "curator"); err != nil {
+		t.Fatalf("AddMagnet: %v", err)
+	}
+	lt, _ := first.client.Torrent(ih)
+	lt.AddClientPeer(seeder.client)
+	done := await(t, first, hash, torrent.StateCompleted)
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Damage the payload behind the engine's back, exactly as a bad disk would.
+	//
+	// The chmod is not incidental: the engine finishes a file as 0444, which is
+	// what retires docs/phase-4.md's "qBittorrent writes 0644, so the importer
+	// needs no chmod". A hardlink carries the source's bits, so the library copy
+	// is 0444 too — readable, which is all Jellyfin needs. This line is the
+	// hermetic proof of that measurement; without it the write below fails with
+	// permission denied.
+	payload := filepath.Join(done.ContentPath, payloadFile)
+	if info, err := os.Stat(payload); err != nil {
+		t.Fatalf("stat: %v", err)
+	} else if info.Mode().Perm() != 0o444 {
+		t.Errorf("finished file is %v, want 0444 — phase-4.md's permissions note depends on this", info.Mode().Perm())
+	}
+	if err := os.Chmod(payload, 0o644); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	f, err := os.OpenFile(payload, os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("opening the payload: %v", err)
+	}
+	if _, err := f.WriteAt(bytes.Repeat([]byte{0}, 64<<10), 0); err != nil {
+		t.Fatalf("corrupting the payload: %v", err)
+	}
+	f.Close()
+
+	second := start(t, Config{DataDir: dataDir, Category: "curator"})
+	if err := second.AddMagnet(context.Background(), magnet, "curator"); err != nil {
+		t.Fatalf("AddMagnet on resume: %v", err)
+	}
+
+	// It must not claim to be complete. With no peer to repair from it stays
+	// incomplete, which is the honest answer.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		found, err := second.TorrentByHash(context.Background(), hash)
+		if err != nil {
+			t.Fatalf("TorrentByHash: %v", err)
+		}
+		if found != nil && found.State == torrent.StateCompleted {
+			t.Fatal("a corrupted payload was reported complete; the verify did not happen")
+		}
+		if st, ok := second.client.Torrent(ih); ok && st.Info() != nil && st.BytesMissing() > 0 {
+			return // the damage was found, which is the whole point
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("the corrupted pieces were never noticed")
+}
+
+// TestStalledAfterNoProgress uses the engine's clock seam rather than waiting
+// five real minutes. What it asserts is the transition in both directions: a
+// torrent that gains nothing says so, and one that gains a byte stops saying it.
+func TestStalledAfterNoProgress(t *testing.T) {
+	_, mi, ih := seed(t)
+	e := start(t, Config{DataDir: t.TempDir(), Category: "curator", StallAfter: time.Minute})
+
+	// Added, with nobody introduced: no metadata, no peers, no progress. That
+	// is the live bug this exists for — a magnet nobody is seeding looked
+	// exactly like one that had not started yet.
+	if err := e.AddMagnet(context.Background(), magnetFor(t, mi, ih), "curator"); err != nil {
+		t.Fatalf("AddMagnet: %v", err)
+	}
+
+	at := time.Now()
+	e.now = func() time.Time { return at }
+
+	first, err := e.Torrents(context.Background(), "curator")
+	if err != nil {
+		t.Fatalf("Torrents: %v", err)
+	}
+	if first[0].State != torrent.StateQueued {
+		t.Fatalf("State = %q on the first look, want queued — nothing has had time to stall", first[0].State)
+	}
+
+	at = at.Add(90 * time.Second)
+	stalled, _ := e.Torrents(context.Background(), "curator")
+	if stalled[0].State != torrent.StateStalled {
+		t.Errorf("State = %q after 90s with no progress, want stalled", stalled[0].State)
+	}
+
+	// A byte arriving clears it. Stalled is a description, not a verdict.
+	e.mu.Lock()
+	e.progress[stalled[0].Hash] = mark{bytes: -1, since: at}
+	e.mu.Unlock()
+
+	recovered, _ := e.Torrents(context.Background(), "curator")
+	if recovered[0].State == torrent.StateStalled {
+		t.Error("still stalled after progress moved; the state has to be able to recover")
+	}
+}
+
+// A completed torrent gains no more bytes for ever, which must not be mistaken
+// for a stall.
+func TestCompletedIsNeverStalled(t *testing.T) {
+	seeder, mi, ih := seed(t)
+	hash := torrent.NormalizeHash(ih.HexString())
+	e := start(t, Config{DataDir: t.TempDir(), Category: "curator", StallAfter: time.Minute})
+
+	if err := e.AddMagnet(context.Background(), magnetFor(t, mi, ih), "curator"); err != nil {
+		t.Fatalf("AddMagnet: %v", err)
+	}
+	lt, _ := e.client.Torrent(ih)
+	lt.AddClientPeer(seeder.client)
+	await(t, e, hash, torrent.StateCompleted)
+
+	at := time.Now().Add(time.Hour)
+	e.now = func() time.Time { return at }
+
+	found, err := e.TorrentByHash(context.Background(), hash)
+	if err != nil {
+		t.Fatalf("TorrentByHash: %v", err)
+	}
+	if found.State != torrent.StateCompleted {
+		t.Errorf("State = %q an hour after completing, want completed", found.State)
+	}
+}

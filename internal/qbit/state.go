@@ -9,8 +9,8 @@ import (
 // qbitStates is the mapping in docs/phase-3.md, spelled exactly as qBittorrent's
 // `state` field arrives. The right-hand side is curator's vocabulary, which
 // lives in internal/torrent because two backends now answer in it — these
-// constants used to be declared here, and a second copy of four strings is how
-// four strings drift.
+// constants used to be declared here, and a second copy of a vocabulary is how
+// a vocabulary drifts.
 //
 // Two entries are not in that table. qBittorrent 5.0 renamed pause/resume to
 // stop/start and its Web API states followed — `pausedDL` became `stoppedDL` and
@@ -22,7 +22,6 @@ import (
 var qbitStates = map[string]string{
 	// Not started yet, or working on something that is not the payload.
 	"queuedDL":           torrent.StateQueued,
-	"stalledDL":          torrent.StateQueued,
 	"metaDL":             torrent.StateQueued,
 	"allocating":         torrent.StateQueued,
 	"checkingDL":         torrent.StateQueued,
@@ -32,6 +31,13 @@ var qbitStates = map[string]string{
 	// is not there, so it is queued rather than failed.
 	"pausedDL":  torrent.StateQueued,
 	"stoppedDL": torrent.StateQueued,
+
+	// stalledDL is qBittorrent's word for exactly what StateStalled describes:
+	// wanted, added, and nobody is sending. It used to map to queued, which is
+	// where the "sitting at 0% for ever with no explanation" confusion came
+	// from on this backend too. stalledUP stays completed — a finished torrent
+	// with no leechers is not a problem, it is a Tuesday.
+	"stalledDL": torrent.StateStalled,
 
 	"downloading": torrent.StateDownloading,
 	"forcedDL":    torrent.StateDownloading,

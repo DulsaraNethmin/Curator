@@ -7,7 +7,7 @@ import (
 )
 
 // TestStatesMatchTheColumn is the whole reason these constants were moved
-// rather than copied. There are two sets of the same four strings — one facing
+// rather than copied. There are two sets of the same strings — one facing
 // the backends, one facing the downloads.state column — and they are only safe
 // while they are identical. A third set would have been how they drift.
 func TestStatesMatchTheColumn(t *testing.T) {
@@ -16,6 +16,7 @@ func TestStatesMatchTheColumn(t *testing.T) {
 		{StateDownloading, store.DownloadDownloading},
 		{StateCompleted, store.DownloadCompleted},
 		{StateFailed, store.DownloadFailed},
+		{StateStalled, store.DownloadStalled},
 	} {
 		if c.here != c.column {
 			t.Errorf("state %q does not match the column's %q", c.here, c.column)
