@@ -1,0 +1,252 @@
+/* Five screens of tables. No utility framework: it would be one more build step
+   and one more thing that has to still install in two years for the binary to be
+   rebuildable. */
+
+:root {
+  --bg: #fbfbfa;
+  --panel: #ffffff;
+  --border: #e4e4e2;
+  --text: #1a1a19;
+  --muted: #6b6b68;
+  --accent: #2f6f4e;
+  --accent-soft: #e8f2ec;
+  --warn: #8a5a12;
+  --warn-soft: #fdf3e0;
+  --error: #a33232;
+  --error-soft: #fbeceb;
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131314;
+    --panel: #1a1a1c;
+    --border: #2c2c2f;
+    --text: #e8e8e6;
+    --muted: #97979a;
+    --accent: #6cc394;
+    --accent-soft: #1c2a23;
+    --warn: #d9a441;
+    --warn-soft: #2a2318;
+    --error: #e0736c;
+    --error-soft: #2b1c1c;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+
+a { color: inherit; }
+
+.shell { max-width: 74rem; margin: 0 auto; padding: 0 1.25rem 4rem; }
+
+/* --- nav ---------------------------------------------------------------- */
+
+.topbar {
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.topbar-inner {
+  max-width: 74rem;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  min-height: 3.4rem;
+  flex-wrap: wrap;
+}
+.brand {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  margin-right: .25rem;
+}
+.brand span { color: var(--muted); font-weight: 400; font-size: .82rem; margin-left: .45rem; }
+nav { display: flex; gap: .35rem; flex-wrap: wrap; }
+nav a {
+  text-decoration: none;
+  color: var(--muted);
+  padding: .35rem .7rem;
+  border-radius: 6px;
+  font-size: .92rem;
+}
+nav a:hover { background: var(--bg); color: var(--text); }
+nav a[data-active="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 550; }
+
+/* --- headings ----------------------------------------------------------- */
+
+h1 { font-size: 1.45rem; letter-spacing: -0.015em; margin: 1.9rem 0 .2rem; }
+h2 { font-size: 1.02rem; margin: 2rem 0 .6rem; }
+.lede { color: var(--muted); margin: 0 0 1.5rem; font-size: .94rem; max-width: 52rem; }
+
+/* --- panels and tables --------------------------------------------------- */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.panel + .panel { margin-top: 1rem; }
+
+table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+th {
+  text-align: left;
+  font-weight: 550;
+  font-size: .78rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: .6rem .85rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+td { padding: .6rem .85rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--bg); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.tight { white-space: nowrap; }
+
+/* --- controls ------------------------------------------------------------ */
+
+button, .button {
+  font: inherit;
+  font-size: .9rem;
+  padding: .45rem .9rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--muted); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+input, select {
+  font: inherit;
+  font-size: .92rem;
+  padding: .45rem .6rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  min-width: 0;
+}
+input:focus, select:focus, button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+form.row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: 1.1rem; }
+form.row input[name="title"] { flex: 1 1 20rem; }
+
+/* --- status --------------------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  font-size: .74rem;
+  font-weight: 550;
+  letter-spacing: .02em;
+  padding: .15rem .5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.badge.ok { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.badge.bad { background: var(--error-soft); color: var(--error); border-color: transparent; }
+
+.banner {
+  border-radius: var(--radius);
+  padding: .75rem 1rem;
+  margin: 0 0 1rem;
+  font-size: .92rem;
+  border: 1px solid transparent;
+}
+.banner.error { background: var(--error-soft); color: var(--error); }
+.banner.warn { background: var(--warn-soft); color: var(--warn); }
+.banner.info { background: var(--accent-soft); color: var(--accent); }
+.banner strong { display: block; margin-bottom: .15rem; }
+.banner button { margin-top: .55rem; }
+
+.muted { color: var(--muted); }
+.small { font-size: .85rem; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+
+.empty { padding: 2.5rem 1rem; text-align: center; color: var(--muted); }
+
+/* --- progress ------------------------------------------------------------- */
+
+.bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; min-width: 5rem; }
+.bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+
+/* --- cards ---------------------------------------------------------------- */
+
+.cards { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+.card {
+  display: block;
+  text-decoration: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+}
+.card:hover { border-color: var(--muted); }
+.card b { display: block; font-size: 1.6rem; font-weight: 600; letter-spacing: -0.02em; }
+.card span { color: var(--muted); font-size: .88rem; }
+
+/* --- library grid --------------------------------------------------------- */
+
+.grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
+}
+.movie img, .movie .noposter {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  border-radius: 6px;
+  object-fit: cover;
+  display: block;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.movie .noposter {
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: var(--muted);
+  font-size: .74rem;
+  padding: .5rem;
+  line-height: 1.35;
+}
+/* Two lines, always. A one-line title beside a two-line one would push its
+   metadata row out of alignment with the rest of the grid — "Tom Clancy's Jack
+   Ryan - Ghost War" is the fixture's proof that this happens with real data.
+   Reserving the space costs nothing and keeps every row's meta on one line. */
+.movie .title {
+  font-size: .87rem;
+  margin-top: .45rem;
+  font-weight: 500;
+  line-height: 1.3;
+  min-height: 2.6em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.movie .meta { font-size: .78rem; color: var(--muted); display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }

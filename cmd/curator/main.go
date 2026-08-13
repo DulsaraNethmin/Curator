@@ -22,6 +22,7 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
+	"github.com/DulsaraNethmin/curator/internal/web"
 )
 
 // shutdownTimeout bounds the wait for in-flight requests. A scan holds the
@@ -122,10 +123,23 @@ func run() error {
 	mux.HandleFunc("GET /healthz", healthz)
 	apiSrv := api.New(db, api.ScannerFunc(library.Scan), matcher, cfg.LibraryMovies, log).
 		WithSearch(aggregator).
-		WithDownloads(downloads)
+		WithDownloads(downloads).
+		WithSettings(settingsView(cfg, matcher, torrents, indexerHTTP))
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
 	apiSrv.RegisterDownloads(mux)
+	apiSrv.RegisterSettings(mux)
+
+	// The UI is mounted last and at "/", so it can never shadow an API pattern.
+	// Go 1.22 routing prefers the more specific pattern anyway, but the order is
+	// worth being deliberate about rather than lucky.
+	mux.Handle("/", web.Handler())
+	if web.IsPlaceholder() {
+		// Said once, loudly. Silence here is how somebody ships a binary that
+		// serves a "run npm" page to the household (docs/decisions.md D16).
+		log.Warn("the UI has not been built into this binary: run `npm --prefix web run build` " +
+			"before `go build ./...`; the API is complete and working")
+	}
 
 	// The poller takes the same context that shuts the server down, so it stops on
 	// SIGTERM with everything else and nothing outlives main. It is not started at
@@ -173,4 +187,105 @@ func run() error {
 func healthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("content-type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "version": Version})
+}
+
+// settingsView describes the integrations to the settings screen.
+//
+// No credential is passed in, only whether one is present: there is no
+// authentication in front of GET /api/settings and there is not going to be, so
+// the only safe design is one where the secret is never in the payload to leak
+// (docs/decisions.md D17).
+//
+// Every probe here is READ-ONLY. That is the constraint that decides which of
+// them exist at all.
+func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.TorrentClient, httpClient *http.Client) api.Settings {
+	integrations := []api.Integration{{
+		Name:       "tmdb",
+		Env:        "TMDB_API_KEY",
+		Configured: cfg.TMDBAPIKey != "",
+		Detail:     detailIf(cfg.TMDBAPIKey == "", "the library scans but nothing is matched"),
+	}, {
+		Name:       "qbittorrent",
+		Env:        "QBIT_USER",
+		Configured: cfg.DownloadsConfigured(),
+		Detail:     detailIf(!cfg.DownloadsConfigured(), "downloads are disabled: set QBIT_USER and QBIT_PASS"),
+	}, {
+		Name:       "minter",
+		Env:        "MINTER_URL",
+		Configured: cfg.MinterURL != "",
+		Detail:     "1337x only; YTS and TPB need no browser",
+	}, {
+		Name:       "jellyfin",
+		Env:        "JELLYFIN_API_KEY",
+		Configured: cfg.JellyfinConfigured(),
+		// Deliberately no Probe. The only call internal/jellyfin makes is
+		// POST /Library/Refresh, which MUTATES — rendering a settings page must
+		// not queue a scan of every library on a media server the household is
+		// watching. A read-only probe needs an endpoint that package does not
+		// have, and adding one to satisfy a status page is the wrong trade.
+		Detail: jellyfinDetail(cfg.JellyfinConfigured()),
+	}}
+
+	if matcher != nil {
+		// A real search, which is the only read-only call the TMDB client has.
+		// It costs one request against a free quota, and only when asked for.
+		integrations[0].Probe = func(ctx context.Context) error {
+			_, err := matcher.SearchMovie(ctx, "Interstellar", 2014)
+			return err
+		}
+	}
+	if torrents != nil {
+		// Lists our own category and nothing else — the same call the poller
+		// makes every tick, and it cannot disturb the *arr stack's torrents.
+		integrations[1].Probe = func(ctx context.Context) error {
+			_, err := torrents.Torrents(ctx, cfg.QBitCategory)
+			return err
+		}
+	}
+	if cfg.MinterURL != "" {
+		integrations[2].Probe = func(ctx context.Context) error {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.MinterURL, nil)
+			if err != nil {
+				return err
+			}
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			// Any answer proves the process is listening. minter's root is not a
+			// documented health endpoint, so its status is not worth asserting.
+			return nil
+		}
+	}
+
+	return api.Settings{
+		Version:      Version,
+		Integrations: integrations,
+		Paths: map[string]string{
+			"library_movies":      cfg.LibraryMovies,
+			"downloads_path":      cfg.DownloadsPath,
+			"qbit_downloads_path": cfg.QBitDownloadsPath,
+			"database":            cfg.DBPath,
+		},
+		Intervals: map[string]string{
+			"download_poll":    cfg.DownloadPollInterval.String(),
+			"search_timeout":   cfg.SearchTimeout.String(),
+			"search_cache_ttl": cfg.SearchCacheTTL.String(),
+		},
+	}
+}
+
+func detailIf(cond bool, detail string) string {
+	if cond {
+		return detail
+	}
+	return ""
+}
+
+func jellyfinDetail(configured bool) string {
+	if !configured {
+		return "the library refresh is disabled: set JELLYFIN_API_KEY"
+	}
+	return "not probed: the only call available is a refresh, which would queue a library scan"
 }

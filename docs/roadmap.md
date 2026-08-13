@@ -9,8 +9,8 @@ until the last one.
 | **2** | Indexers — YTS, TPB, then 1337x through minter | **done** |
 | **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** |
 | **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** |
-| 5 | Interface — Next.js screens, static export embedded via `embed.FS` | **next** |
-| 6 | Cutover — run alongside, confirm parity, remove seven containers | |
+| 5 | Interface — Next.js screens, static export embedded via `embed.FS` | **specified** |
+| 6 | Cutover — run alongside, confirm parity, remove seven containers | **next** — back up the *arr configs first |
 
 ---
 
@@ -83,9 +83,20 @@ and the Jellyfin refresh is best-effort with an optional key
 ## Phase 5 — Interface
 
 Next.js with `output: 'export'`, built to static files and embedded via `embed.FS`. One artifact, one
-container, one process. Screens: Search, Releases, Library, Activity, Settings.
+container, one process. Screens: Search, Releases, Library, Activity, Settings. Spec in
+[`phase-5.md`](phase-5.md); tasks T22–T26 in [`tasks/`](tasks/).
 
 **Done when** the whole flow is drivable from a browser with no hand-written API calls.
+
+Two decisions were settled while specifying: the embed needs `all:` because Next.js hides every asset
+under `_next/`, a committed placeholder keeps `go build` working on a fresh clone, and the build
+output stays out of git ([D16](decisions.md#d16--the-ui-is-embedded-with-all-and-a-committed-placeholder-keeps-go-build-honest));
+and Settings is read-only, so no secret ever reaches an unauthenticated LAN page
+([D17](decisions.md#d17--settings-is-read-only-and-the-settings-table-stays-unused)).
+
+> **Shipping becomes two commands.** `npm --prefix web run build` must run before
+> `GOOS=linux GOARCH=arm64 go build ./...`, or the binary carries the placeholder. That is a real
+> regression against phase 1's single command, accepted in one place and documented in D16.
 
 ## Phase 6 — Cutover
 

@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>curator — UI not built</title>
+<style>
+  body { font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+         max-width: 46rem; margin: 12vh auto; padding: 0 1.5rem; color: #1a1a1a; }
+  h1 { font-size: 1.3rem; margin-bottom: .25rem; }
+  p { color: #555; }
+  pre { background: #f4f4f5; padding: .9rem 1rem; border-radius: 6px; overflow-x: auto; }
+  code { background: #f4f4f5; padding: .1rem .3rem; border-radius: 3px; }
+  ul { color: #555; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #111; color: #eee; }
+    p, ul { color: #aaa; }
+    pre, code { background: #1e1e1e; }
+  }
+</style>
+<h1>curator is running, but the UI has not been built.</h1>
+<p>The binary was compiled without a Next.js export embedded in it. Build it:</p>
+<pre>npm --prefix web install     # once
+npm --prefix web run build
+go build ./...</pre>
+<p>
+  This is the expected state on a fresh clone. <code>go build ./...</code> deliberately succeeds
+  without the UI so that every commit builds on its own — the API below is complete and working.
+</p>
+<ul>
+  <li><code>GET  /healthz</code></li>
+  <li><code>GET  /api/movies</code> · <code>GET /api/movies/{id}</code> · <code>POST /api/scan</code></li>
+  <li><code>GET  /api/search?title=&amp;year=</code></li>
+  <li><code>GET  /api/downloads</code> · <code>POST /api/downloads</code></li>
+  <li><code>POST /api/downloads/{hash}/import</code></li>
+  <li><code>GET  /api/settings</code></li>
+</ul>

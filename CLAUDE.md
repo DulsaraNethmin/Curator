@@ -9,7 +9,8 @@ reversed an earlier plan for reasons that were expensive to establish.
 
 **Phases 1 and 2 are done** (both verified 2026-08-12). **Phase 3 is built**, with one verification
 outstanding — a dispatch against the real qBittorrent, which needs its Web UI password. **Phase 4 is
-built and verified locally**; it has never run against the Pi, on purpose. Tasks live in
+built and verified locally**; it has never run against the Pi, on purpose. **Phase 5 is built** —
+five screens, embedded in the binary. Tasks live in
 [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 
 ### Phase 4 writes to disk, and only ever locally
@@ -132,8 +133,9 @@ internal/qbit/       qBittorrent Web API v2 — adds and reads, never deletes
 internal/download/   dispatch a picked release, poll its progress into the database
 internal/importer/   hardlink a completed download into the library; the only package that knows deployment paths
 internal/jellyfin/   ask the media server to rescan, and nothing else
+internal/web/        the embedded UI — //go:embed all:dist, and the all: is load-bearing
 testdata/library/    29 fixture dirs mirroring the real library
-web/                 Next.js UI (phase 5)
+web/                 Next.js UI — static export, embedded from internal/web/dist
 ```
 
 ## Commands
@@ -142,6 +144,16 @@ web/                 Next.js UI (phase 5)
 go build ./... && go test ./...
 GOOS=linux GOARCH=arm64 go build ./...      # must always pass — it is how this ships
 go run ./cmd/curator                         # http://localhost:8090
+
+# The UI is a static export embedded with //go:embed. Shipping is TWO commands
+# since phase 5, and the order matters — see decisions.md D16.
+npm --prefix web install                     # once
+npm --prefix web run build                   # writes internal/web/dist/
+GOOS=linux GOARCH=arm64 go build ./...       # embeds it
+
+# Working on the UI: the two halves run separately, because output:'export'
+# disables rewrites and there is no dev proxy to configure.
+NEXT_PUBLIC_API_BASE=http://localhost:8090 npm --prefix web run dev   # :3000
 
 LIBRARY_MOVIES=./testdata/library/movies go run ./cmd/curator   # scan the fixture
 ```

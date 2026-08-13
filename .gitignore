@@ -8,5 +8,13 @@
 .DS_Store
 /web/node_modules/
 /web/out/
+/web/.next/
+
+# The Next.js export is generated, not committed: minified bundles make every UI
+# change an unreviewable diff (D16). The directory itself must exist, though —
+# //go:embed is a compile-time directive and a missing dist/ is a build failure,
+# on a fresh clone and under every `git bisect` step alike.
+/internal/web/dist/*
+!/internal/web/dist/.gitkeep
 .idea/
 .vscode/
