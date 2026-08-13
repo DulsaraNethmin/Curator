@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/library"
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 // featureSize clears library.DefaultMinFeatureBytes. The files are sparse, so
@@ -36,7 +36,7 @@ func TestImportHardlinksTheFeatureIntoTheLibrary(t *testing.T) {
 
 	before := h.snapshotDownloads()
 
-	got, err := h.importer.Import(context.Background(), torrent(content), h.dl)
+	got, err := h.importer.Import(context.Background(), completed(content), h.dl)
 	if err != nil {
 		t.Fatalf("Import: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestImportAcceptsASingleFileContentPath(t *testing.T) {
 	file := filepath.Join(h.downloads, "complete", "curator", "Interstellar.2014.mkv")
 	sparseFile(t, file, featureSize)
 
-	if _, err := h.importer.Import(context.Background(), torrent(file), h.dl); err != nil {
+	if _, err := h.importer.Import(context.Background(), completed(file), h.dl); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 
@@ -112,7 +112,7 @@ func TestImportPrefersTheLargestAndReportsTheOthers(t *testing.T) {
 	sparseFile(t, filepath.Join(content, "part2.mkv"), featureSize*2)
 	sparseFile(t, filepath.Join(content, "sample.mkv"), 4<<20) // under the floor
 
-	if _, err := h.importer.Import(context.Background(), torrent(content), h.dl); err != nil {
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestImportRejectsATitleThatIsNotAName(t *testing.T) {
 		h.store.movies[1] = store.Movie{ID: 1, Title: title, Year: 2014}
 		content := h.download("release", "feature.mkv")
 
-		if _, err := h.importer.Import(context.Background(), torrent(content), h.dl); err == nil {
+		if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err == nil {
 			t.Errorf("title %q was accepted", title)
 		}
 
@@ -172,77 +172,6 @@ func TestAssertInsideLibraryRefusesAnEscape(t *testing.T) {
 	}
 }
 
-// --- path translation -------------------------------------------------------
-
-func TestTranslate(t *testing.T) {
-	cases := []struct {
-		name    string
-		paths   Paths
-		in      string
-		want    string
-		wantErr bool
-	}{{
-		// The laptop case, and the case where curator shares the mount. No
-		// configuration at all, and the path is used exactly as reported.
-		name:  "unset passes through verbatim",
-		paths: Paths{},
-		in:    "/downloads/complete/curator/Movie.2014",
-		want:  "/downloads/complete/curator/Movie.2014",
-	}, {
-		name:  "configured rewrites the prefix",
-		paths: Paths{Curator: "/media/storage/media/downloads", QBit: "/downloads"},
-		in:    "/downloads/complete/curator/Movie.2014",
-		want:  "/media/storage/media/downloads/complete/curator/Movie.2014",
-	}, {
-		name:  "the root itself",
-		paths: Paths{Curator: "/media/downloads", QBit: "/downloads"},
-		in:    "/downloads",
-		want:  "/media/downloads",
-	}, {
-		name:  "a trailing slash on the configured root",
-		paths: Paths{Curator: "/media/downloads", QBit: "/downloads/"},
-		in:    "/downloads/complete/x",
-		want:  "/media/downloads/complete/x",
-	}, {
-		// Set but not matching is an error, not a pass-through: someone
-		// configured a translation and it did not apply.
-		name:    "a path outside the configured root",
-		paths:   Paths{Curator: "/media/downloads", QBit: "/downloads"},
-		in:      "/var/lib/torrents/Movie.2014",
-		wantErr: true,
-	}, {
-		// The boundary check. A prefix comparison without it maps /downloads2
-		// into the middle of the library.
-		name:    "a sibling directory sharing the prefix",
-		paths:   Paths{Curator: "/media/downloads", QBit: "/downloads"},
-		in:      "/downloads2/complete/x",
-		wantErr: true,
-	}, {
-		name:    "an empty content path",
-		paths:   Paths{},
-		in:      "   ",
-		wantErr: true,
-	}, {
-		name:    "an empty content path with translation configured",
-		paths:   Paths{Curator: "/media/downloads", QBit: "/downloads"},
-		in:      "",
-		wantErr: true,
-	}}
-
-	for _, c := range cases {
-		im := New(nil, "/library", c.paths, nil, discardLogger())
-		got, err := im.translate(c.in)
-		switch {
-		case c.wantErr && err == nil:
-			t.Errorf("%s: translate(%q) = %q, want an error", c.name, c.in, got)
-		case !c.wantErr && err != nil:
-			t.Errorf("%s: translate(%q): %v", c.name, c.in, err)
-		case !c.wantErr && got != filepath.FromSlash(c.want):
-			t.Errorf("%s: translate(%q) = %q, want %q", c.name, c.in, got, c.want)
-		}
-	}
-}
-
 // --- nothing to import ------------------------------------------------------
 
 // ErrNoVideo is not a failed download: the torrent fetched what it advertised.
@@ -254,7 +183,7 @@ func TestImportWithNoVideoIsErrNoVideoAndWritesNothing(t *testing.T) {
 	sparseFile(t, filepath.Join(content, "readme.nfo"), 1024)
 	sparseFile(t, filepath.Join(content, "sample.mkv"), 4<<20) // under the 50 MiB floor
 
-	_, err := h.importer.Import(context.Background(), torrent(content), h.dl)
+	_, err := h.importer.Import(context.Background(), completed(content), h.dl)
 	if !errors.Is(err, library.ErrNoVideo) {
 		t.Fatalf("err = %v, want library.ErrNoVideo", err)
 	}
@@ -274,7 +203,7 @@ func TestImportLeavesNoEmptyFolderWhenThereIsNothingToLink(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	if _, err := h.importer.Import(context.Background(), torrent(content), h.dl); err == nil {
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err == nil {
 		t.Fatal("an empty content path imported successfully")
 	}
 
@@ -296,10 +225,10 @@ func TestImportOnItsOwnExistingLinkSucceedsAndStillRecords(t *testing.T) {
 	content := h.download("release", "feature.mkv")
 	ctx := context.Background()
 
-	if _, err := h.importer.Import(ctx, torrent(content), h.dl); err != nil {
+	if _, err := h.importer.Import(ctx, completed(content), h.dl); err != nil {
 		t.Fatalf("first Import: %v", err)
 	}
-	if _, err := h.importer.Import(ctx, torrent(content), h.dl); err != nil {
+	if _, err := h.importer.Import(ctx, completed(content), h.dl); err != nil {
 		t.Fatalf("second Import: %v — this is the crashed-run retry path", err)
 	}
 
@@ -322,7 +251,7 @@ func TestImportKeepsTheLinkWhenTheStoreFails(t *testing.T) {
 
 	before := h.snapshotDownloads()
 
-	if _, err := h.importer.Import(context.Background(), torrent(content), h.dl); err == nil {
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err == nil {
 		t.Fatal("Import succeeded with a failing store")
 	}
 
@@ -338,7 +267,7 @@ func TestImportReportsAMissingMovieRow(t *testing.T) {
 	h.store.getErr = store.ErrNotFound
 	content := h.download("release", "feature.mkv")
 
-	if _, err := h.importer.Import(context.Background(), torrent(content), h.dl); !errors.Is(err, store.ErrNotFound) {
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("err = %v, want store.ErrNotFound", err)
 	}
 	if entries, _ := os.ReadDir(h.library); len(entries) != 0 {
@@ -359,9 +288,9 @@ func TestTryImportSuppressesARepeatedIdenticalFailure(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	h.importer.TryImport(ctx, torrent(content), h.dl)
-	h.importer.TryImport(ctx, torrent(content), h.dl)
-	h.importer.TryImport(ctx, torrent(content), h.dl)
+	h.importer.TryImport(ctx, completed(content), h.dl)
+	h.importer.TryImport(ctx, completed(content), h.dl)
+	h.importer.TryImport(ctx, completed(content), h.dl)
 
 	if n := strings.Count(h.logs.String(), "import failed"); n != 1 {
 		t.Errorf("logged %d failures for three identical ticks, want 1:\n%s", n, h.logs.String())
@@ -369,7 +298,7 @@ func TestTryImportSuppressesARepeatedIdenticalFailure(t *testing.T) {
 
 	// A different failure for the same torrent is news and is logged.
 	h.store.getErr = errors.New("database is locked")
-	h.importer.TryImport(ctx, torrent(content), h.dl)
+	h.importer.TryImport(ctx, completed(content), h.dl)
 	if n := strings.Count(h.logs.String(), "import failed"); n != 2 {
 		t.Errorf("a different error logged %d times in total, want 2:\n%s", n, h.logs.String())
 	}
@@ -377,13 +306,13 @@ func TestTryImportSuppressesARepeatedIdenticalFailure(t *testing.T) {
 	// A success clears the suppression, so a later relapse is reported again.
 	h.store.getErr = nil
 	sparseFile(t, filepath.Join(content, "feature.mkv"), featureSize)
-	h.importer.TryImport(ctx, torrent(content), h.dl)
+	h.importer.TryImport(ctx, completed(content), h.dl)
 	if !strings.Contains(h.logs.String(), "\"imported\"") && !strings.Contains(h.logs.String(), "msg=imported") {
 		t.Errorf("the success was not logged:\n%s", h.logs.String())
 	}
 
 	h.store.getErr = errors.New("database is locked")
-	h.importer.TryImport(ctx, torrent(content), h.dl)
+	h.importer.TryImport(ctx, completed(content), h.dl)
 	if n := strings.Count(h.logs.String(), "import failed"); n != 3 {
 		t.Errorf("after a success the relapse logged %d in total, want 3:\n%s", n, h.logs.String())
 	}
@@ -395,8 +324,8 @@ func TestTryImportNeverPanics(t *testing.T) {
 	h := newHarness(t)
 	h.store.getErr = errors.New("boom")
 
-	h.importer.TryImport(context.Background(), qbit.Torrent{}, h.dl)
-	h.importer.TryImport(context.Background(), torrent("/does/not/exist"), store.Download{})
+	h.importer.TryImport(context.Background(), torrent.Torrent{}, h.dl)
+	h.importer.TryImport(context.Background(), completed("/does/not/exist"), store.Download{})
 }
 
 // --- Refresh ----------------------------------------------------------------
@@ -417,7 +346,7 @@ func TestRefreshIsOncePerCallAndOnlyAfterAnImport(t *testing.T) {
 	for i, name := range []string{"a", "b", "c"} {
 		h.store.movies[int64(i+1)] = store.Movie{ID: int64(i + 1), Title: "Film " + name, Year: 2014}
 		content := h.download("release-"+name, "feature.mkv")
-		if _, err := h.importer.Import(ctx, torrent(content), store.Download{MovieID: int64(i + 1), TorrentHash: testHash}); err != nil {
+		if _, err := h.importer.Import(ctx, completed(content), store.Download{MovieID: int64(i + 1), TorrentHash: testHash}); err != nil {
 			t.Fatalf("Import %s: %v", name, err)
 		}
 	}
@@ -438,7 +367,7 @@ func TestRefreshWithNoRefresherIsANoOp(t *testing.T) {
 	content := h.download("release", "feature.mkv")
 	ctx := context.Background()
 
-	if _, err := h.importer.Import(ctx, torrent(content), h.dl); err != nil {
+	if _, err := h.importer.Import(ctx, completed(content), h.dl); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 	h.importer.Refresh(ctx) // must not panic
@@ -453,7 +382,7 @@ func TestRefreshFailureChangesNothing(t *testing.T) {
 	ctx := context.Background()
 
 	content := h.download("release", "feature.mkv")
-	if _, err := h.importer.Import(ctx, torrent(content), h.dl); err != nil {
+	if _, err := h.importer.Import(ctx, completed(content), h.dl); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 
@@ -504,7 +433,7 @@ func newHarness(t *testing.T) *harness {
 
 	// Paths.Curator is empty: the fixtures are real paths on this machine, which
 	// is the verbatim case. Translation has its own table test.
-	im := New(st, lib, Paths{}, nil, log)
+	im := New(st, lib, nil, log)
 	im.now = func() time.Time { return importAt }
 
 	return &harness{
@@ -573,11 +502,13 @@ func (h *harness) assertDownloadsIntact(before map[string]string) {
 	}
 }
 
-func torrent(contentPath string) qbit.Torrent {
-	return qbit.Torrent{
-		Hash:        strings.ToLower(testHash),
+// completed is a finished torrent as a backend hands one over: curator's own
+// state vocabulary and its upper-case hash, whichever client produced it.
+func completed(contentPath string) torrent.Torrent {
+	return torrent.Torrent{
+		Hash:        testHash,
 		Name:        filepath.Base(contentPath),
-		State:       "stalledUP",
+		State:       torrent.StateCompleted,
 		Progress:    1,
 		ContentPath: contentPath,
 		Category:    "curator",

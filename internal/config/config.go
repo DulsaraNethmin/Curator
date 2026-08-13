@@ -42,7 +42,35 @@ type Config struct {
 	QBitDownloadsPath string
 	JellyfinURL       string
 	JellyfinAPIKey    string
+
+	// Phase 6: curator's own engine, and the tunnel under it.
+	//
+	// TorrentBackend chooses which client downloads. `embedded` is the default
+	// and is the only one curator can promise a VPN for, because it is the only
+	// one whose socket curator owns (docs/decisions.md D22, D27).
+	TorrentBackend    string
+	DownloadsDir      string
+	TorrentMaxConns   int
+	TorrentPort       int
+	TorrentStallAfter time.Duration
+
+	VPNConfig     string
+	VPNRequired   bool
+	VPNIPCheckURL string
 }
+
+// The two torrent backends. An unknown value is a startup error naming both,
+// not a silent fallback to either.
+const (
+	BackendEmbedded    = "embedded"
+	BackendQBittorrent = "qbittorrent"
+)
+
+// Embedded reports whether curator downloads in this process.
+func (c *Config) Embedded() bool { return c.TorrentBackend == BackendEmbedded }
+
+// VPNConfigured reports whether there is a tunnel to bring up.
+func (c *Config) VPNConfigured() bool { return strings.TrimSpace(c.VPNConfig) != "" }
 
 // JellyfinConfigured reports whether the library refresh has somewhere to go.
 //
@@ -56,7 +84,12 @@ func (c *Config) JellyfinConfigured() bool {
 	return c.JellyfinURL != "" && c.JellyfinAPIKey != ""
 }
 
-// DownloadsConfigured reports whether qBittorrent has credentials to work with.
+// DownloadsConfigured reports whether there is something to download with.
+//
+// The embedded engine always has: it is in this binary. qBittorrent needs
+// credentials, and an unset QBIT_USER is a supported state rather than a broken
+// one — the library still scans, search still works, and only dispatch reports
+// itself unconfigured.
 //
 // An unset QBIT_USER is a supported state, not a broken one — the same posture as
 // an unset TMDB_API_KEY. The library still scans and search still works; only
@@ -64,6 +97,9 @@ func (c *Config) JellyfinConfigured() bool {
 // that refuses to boot because one of five integrations is unconfigured is worse
 // at being partially useful.
 func (c *Config) DownloadsConfigured() bool {
+	if c.Embedded() {
+		return true
+	}
 	return c.QBitURL != "" && c.QBitUser != ""
 }
 
@@ -127,6 +163,17 @@ const (
 	// Jellyfin is 10.10.7 at 192.168.1.26:8096, and http://jellyfin:8096 inside
 	// Docker.
 	defaultJellyfinURL = "http://127.0.0.1:8096"
+
+	// defaultDownloadsDir is where the embedded engine writes payloads. It is
+	// relative for the same reason defaultDBPath is: `go run ./cmd/curator` on
+	// a fresh clone should do something rather than ask for configuration.
+	defaultDownloadsDir = "./downloads"
+
+	// defaultTorrentStallAfter is how long a torrent may gain nothing before it
+	// says so. Metadata arrived in 3.2 s in phase 6's spike and a healthy
+	// download moves every second, so five minutes is long enough that
+	// "stalled" means it.
+	defaultTorrentStallAfter = 5 * time.Minute
 )
 
 // Load reads the configuration from the environment, applying defaults for
@@ -156,6 +203,53 @@ func Load() (*Config, error) {
 		QBitDownloadsPath: env("QBIT_DOWNLOADS_PATH", defaultQBitDownloadsPath),
 		JellyfinURL:       env("JELLYFIN_URL", defaultJellyfinURL),
 		JellyfinAPIKey:    os.Getenv("JELLYFIN_API_KEY"),
+
+		TorrentBackend: strings.ToLower(strings.TrimSpace(env("TORRENT_BACKEND", BackendEmbedded))),
+		DownloadsDir:   env("DOWNLOADS_DIR", defaultDownloadsDir),
+		VPNIPCheckURL:  os.Getenv("VPN_IP_CHECK_URL"),
+
+		// Mandatory by default, and it has to be typed to turn off. A VPN that
+		// defaults to optional is a slogan (docs/decisions.md D27).
+		VPNRequired: true,
+	}
+
+	switch cfg.TorrentBackend {
+	case BackendEmbedded, BackendQBittorrent:
+	default:
+		return nil, fmt.Errorf("TORRENT_BACKEND %q: want %q or %q", cfg.TorrentBackend, BackendEmbedded, BackendQBittorrent)
+	}
+
+	vpn, err := vpnConfig()
+	if err != nil {
+		return nil, err
+	}
+	cfg.VPNConfig = vpn
+	if raw := os.Getenv("VPN_REQUIRED"); raw != "" {
+		required, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			return nil, fmt.Errorf("VPN_REQUIRED %q: want true or false", raw)
+		}
+		cfg.VPNRequired = required
+	}
+
+	for _, n := range []struct {
+		key   string
+		field *int
+		min   int
+		max   int
+	}{
+		{"TORRENT_MAX_CONNS", &cfg.TorrentMaxConns, 1, 500},
+		{"TORRENT_PORT", &cfg.TorrentPort, 0, 65535},
+	} {
+		raw := os.Getenv(n.key)
+		if raw == "" {
+			continue
+		}
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < n.min || value > n.max {
+			return nil, fmt.Errorf("%s %q: want a number between %d and %d", n.key, raw, n.min, n.max)
+		}
+		*n.field = value
 	}
 
 	if raw := os.Getenv("PORT"); raw != "" {
@@ -195,8 +289,35 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.TorrentStallAfter, err = duration("TORRENT_STALL_AFTER", defaultTorrentStallAfter)
+	if err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
+}
+
+// vpnConfig reads the tunnel's wg-quick file, from VPN_CONFIG directly or from
+// the path in VPN_CONFIG_FILE.
+//
+// Both exist because both are how it arrives: a provider hands out a file, and
+// a container is configured with an environment variable. A path that cannot be
+// read is an error rather than a silent "no VPN" — a mandatory tunnel that
+// disappears because of a typo in a path is the failure this whole design is
+// trying not to have.
+func vpnConfig() (string, error) {
+	if inline := strings.TrimSpace(os.Getenv("VPN_CONFIG")); inline != "" {
+		return inline, nil
+	}
+	path := strings.TrimSpace(os.Getenv("VPN_CONFIG_FILE"))
+	if path == "" {
+		return "", nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("VPN_CONFIG_FILE %s: %w", path, err)
+	}
+	return string(body), nil
 }
 
 // Addr is the listen address for the HTTP server.

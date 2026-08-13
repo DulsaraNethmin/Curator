@@ -173,6 +173,11 @@ function State({ state }: { state: string }) {
       // The file is on disk but not yet in the library — the one state with
       // something a human can usefully do about it.
       return <span className="badge warn">completed</span>;
+    case 'stalled':
+      // Added, wanted, and getting nowhere: nobody is seeding it. Warn rather
+      // than bad, because the fix is to pick another release rather than to
+      // repair anything — and Logs carries the sentence saying which it is.
+      return <span className="badge warn">stalled</span>;
     case 'failed':
       return <span className="badge bad">failed</span>;
     default:

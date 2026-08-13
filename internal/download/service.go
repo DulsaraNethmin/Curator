@@ -16,20 +16,25 @@ import (
 	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
-// TorrentClient is the part of qBittorrent this package uses.
+// TorrentClient is the part of a torrent client this package uses.
 //
-// It is add-and-read on purpose. There is no delete, pause or resume here
-// because there is none in the client either: the *arr stack shares that
-// qBittorrent until phase 6, and the narrowest possible interface is the cheapest
-// guarantee that nothing here can disturb it.
+// It says nothing about which one. internal/qbit asks a qBittorrent over HTTP
+// and the embedded engine downloads it in this process; both answer in
+// torrent.Torrent, and every test in this package runs on a fake, so a new
+// backend is validated by tests that already exist (docs/decisions.md D22).
+//
+// It is add-and-read plus one delete. There is no pause or resume because there
+// is none in either client either: the *arr stack shares that qBittorrent until
+// the cutover, and the narrowest possible interface is the cheapest guarantee
+// that nothing here can disturb it.
 type TorrentClient interface {
 	AddMagnet(ctx context.Context, magnet, category string) error
-	TorrentByHash(ctx context.Context, hash string) (*qbit.Torrent, error)
-	Torrents(ctx context.Context, category string) ([]qbit.Torrent, error)
+	TorrentByHash(ctx context.Context, hash string) (*torrent.Torrent, error)
+	Torrents(ctx context.Context, category string) ([]torrent.Torrent, error)
 
 	// DeleteTorrent is the one destructive call, added for D19. It takes the
 	// category it requires and refuses a torrent that is not in it, so curator
@@ -64,15 +69,27 @@ type Resolver interface {
 // and the API layer answers it with a 503 naming the variable rather than a 500.
 var ErrUnconfigured = errors.New("downloads are not configured: set QBIT_USER and QBIT_PASS")
 
-// ErrClient reports that qBittorrent could not be reached, refused us, or took a
-// magnet without producing a torrent.
+// ErrClient reports that the torrent client could not be reached, refused us, or
+// took a magnet without producing a torrent.
 //
 // It exists so the API layer can answer 502 — the request was fine and a
 // dependency was not — and keep 500 for curator's own failures, such as the
 // database. Without the distinction every downstream problem would be reported as
 // ours, which is the same dishonesty as a 200 carrying a failure, pointed the
 // other way.
-var ErrClient = errors.New("qbittorrent")
+//
+// It stopped being called "qbittorrent" in phase 6: which client this is became
+// configuration rather than a constant, and an error naming the wrong one is
+// worse than an error naming none.
+var ErrClient = errors.New("the torrent client")
+
+// ErrUnprotected reports that a dispatch was refused because the download would
+// not have gone through a VPN.
+//
+// It is separated so the API can answer 503 and name the cause: the request is
+// well-formed, curator is working, and the refusal is deliberate. A mandatory
+// VPN that fails open is not one (docs/decisions.md D27).
+var ErrUnprotected = errors.New("refusing to dispatch: the download would not be protected")
 
 // ErrNotCompleted reports that an import was asked for a torrent that is still
 // downloading. It is separated so the API can answer 409 — the request is
@@ -86,7 +103,7 @@ var ErrNotCompleted = errors.New("the torrent has not finished downloading")
 // asked for an import over HTTP and is waiting for the answer deserves the
 // reason it did not work. The same *importer.Importer satisfies both.
 type ManualImporter interface {
-	Import(ctx context.Context, t qbit.Torrent, d store.Download) (store.Movie, error)
+	Import(ctx context.Context, t torrent.Torrent, d store.Download) (store.Movie, error)
 
 	// RemoveFromLibrary deletes a movie's folder. It is the importer's because
 	// the importer created it and holds LIBRARY_MOVIES, which is what makes its
@@ -120,6 +137,29 @@ type Service struct {
 	// as the poller's, and for the same reason: phase 3's constructor and its
 	// tests keep their shape.
 	importer ManualImporter
+
+	// guard is phase 6's, and nil means there is nothing to check. See
+	// WithGuard.
+	guard Guard
+}
+
+// Guard is a check that runs before a magnet is handed to the torrent client,
+// and refuses the dispatch when it returns an error.
+//
+// It is a func rather than an interface because there is exactly one question —
+// "is this download going to be protected?" — and the two answers to it look
+// nothing alike. With the embedded engine the tunnel either carries the traffic
+// or the dial fails, so the check is about configuration; with an external
+// qBittorrent curator cannot route the traffic at all and the check compares
+// exit addresses. internal/vpn owns both, because it owns what can be promised.
+type Guard func(ctx context.Context) error
+
+// WithGuard attaches the dispatch check and returns the service. A builder for
+// the same reason WithImporter is one: every existing constructor call keeps
+// its shape.
+func (s *Service) WithGuard(g Guard) *Service {
+	s.guard = g
+	return s
 }
 
 // WithImporter attaches the importer and returns the service.
@@ -155,6 +195,21 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	}
 	if strings.TrimSpace(req.Title) == "" {
 		return store.Download{}, fmt.Errorf("dispatch %s: title is required", req.ReleaseID)
+	}
+
+	// Before anything is resolved, added or written. A refusal here must cost
+	// nothing and leave nothing behind — the same discipline as the release
+	// lookup below, which fails an expired search before qBittorrent or the
+	// database has been touched.
+	if s.guard != nil {
+		if err := s.guard(ctx); err != nil {
+			// Wrapped in ErrUnprotected here rather than by the guard itself,
+			// so that internal/vpn owns the reason and this package owns the
+			// class. It also means a guard that cannot ANSWER is refused too:
+			// "I could not establish that this is protected" and "this is not
+			// protected" have the same consequence for a mandatory tunnel.
+			return store.Download{}, fmt.Errorf("dispatch %s: %w: %w", req.ReleaseID, ErrUnprotected, err)
+		}
 	}
 
 	// The release is read before anything else: an expired search fails here,
@@ -200,11 +255,12 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	// and what this makes true.
 	addErr := s.client.AddMagnet(ctx, magnet, s.category)
 
-	torrent, err := s.client.TorrentByHash(ctx, hash)
+	// Named t, not `torrent`: that is the package holding the type now.
+	t, err := s.client.TorrentByHash(ctx, hash)
 	if err != nil {
 		return store.Download{}, fmt.Errorf("dispatch %s: confirming the add: %w: %w", req.ReleaseID, ErrClient, err)
 	}
-	if torrent == nil {
+	if t == nil {
 		// Nothing there, so the add really did fail — now the error matters, and
 		// it is the more specific of the two.
 		if addErr != nil {
@@ -232,8 +288,8 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 		Indexer:     strings.Join(release.Indexers, ","),
 		ReleaseName: release.Title,
 		Magnet:      magnet,
-		State:       qbit.MapState(torrent.State),
-		Progress:    torrent.Progress,
+		State:       t.State,
+		Progress:    t.Progress,
 	})
 	if err != nil {
 		return store.Download{}, fmt.Errorf("dispatch %s: %w", req.ReleaseID, err)
@@ -266,11 +322,11 @@ func (s *Service) Import(ctx context.Context, hash string) (store.Movie, error) 
 		return store.Movie{}, fmt.Errorf("import %s: %w", hash, err)
 	}
 
-	torrent, err := s.client.TorrentByHash(ctx, row.TorrentHash)
+	t, err := s.client.TorrentByHash(ctx, row.TorrentHash)
 	if err != nil {
 		return store.Movie{}, fmt.Errorf("import %s: %w: %w", hash, ErrClient, err)
 	}
-	if torrent == nil {
+	if t == nil {
 		// The row is ours and the torrent is not there: somebody removed it from
 		// qBittorrent. That is qBittorrent's business (D8), and there is nothing
 		// here to import from.
@@ -278,12 +334,16 @@ func (s *Service) Import(ctx context.Context, hash string) (store.Movie, error) 
 			"import %s: %w has no torrent with that hash, so there is nothing to import from", hash, ErrClient)
 	}
 
-	if state := qbit.MapState(torrent.State); state != store.DownloadCompleted {
+	// The backend's own word for this state does not cross the interface any
+	// more, so the message reports curator's. One diagnostic string is what the
+	// neutral type cost, and a seventh field to carry it back would be paying
+	// for it in the wrong currency.
+	if t.State != store.DownloadCompleted {
 		return store.Movie{}, fmt.Errorf(
-			"import %s: %w — qBittorrent reports %q, which is %q", hash, ErrNotCompleted, torrent.State, state)
+			"import %s: %w — the torrent client reports it as %q", hash, ErrNotCompleted, t.State)
 	}
 
-	return s.importer.Import(ctx, *torrent, row)
+	return s.importer.Import(ctx, *t, row)
 }
 
 // Deletion is what DeleteMovie removed, so the caller can say so precisely.
@@ -357,6 +417,72 @@ func (s *Service) DeleteMovie(ctx context.Context, id int64) (Deletion, error) {
 	s.log.Info("deleted", "movie_id", id, "title", movie.Title, "year", movie.Year,
 		"torrents_removed", report.TorrentsRemoved, "bytes_freed", report.BytesFreed)
 	return report, nil
+}
+
+// Resume re-adds every download that has not been imported, once, at boot.
+//
+// It needs no new column, no new query and no migration: `downloads` has
+// carried the hash **and** the magnet since phase 3, which is everything a
+// re-add needs. It works on either backend for the same reason dispatch does —
+// AddMagnet is the interface, and what happens behind it is the backend's
+// business. On the embedded engine that means reading the info dict off disk
+// and carrying on with the network down; on qBittorrent it means nothing at
+// all, because that process kept running.
+//
+// Rows that read `imported` are deliberately left alone, and the consequence is
+// stated rather than hidden: **curator stops seeding a film once it has filed
+// it and been restarted.** Re-adopting every film ever imported is the one
+// behaviour here with an unbounded cost — peers, sockets and resident memory on
+// a Pi — and a seeding policy is a feature nobody has asked for yet.
+//
+// One failure does not stop the rest. A magnet that will not add is one film,
+// and the loop is the only chance every other row gets.
+func (s *Service) Resume(ctx context.Context) error {
+	if s.client == nil {
+		return nil
+	}
+
+	rows, err := s.store.ListDownloads(ctx)
+	if err != nil {
+		return fmt.Errorf("resume: %w", err)
+	}
+
+	var resumed, held, failed int
+	for _, row := range rows {
+		if row.State == store.DownloadImported {
+			continue
+		}
+		if strings.TrimSpace(row.Magnet) == "" {
+			// Nothing to re-add from. Worth saying once: this row will never
+			// move again on its own, and nobody would otherwise know why.
+			s.log.Warn("download row has no magnet, so it cannot be resumed",
+				"hash", row.TorrentHash, "release", row.ReleaseName)
+			failed++
+			continue
+		}
+
+		// Asked first, so that a client which still holds the torrent is not
+		// sent a duplicate add. qBittorrent answers "Fails." to a magnet it
+		// already has, which would make every boot log an error for a torrent
+		// that is perfectly healthy.
+		if existing, err := s.client.TorrentByHash(ctx, row.TorrentHash); err == nil && existing != nil {
+			held++
+			continue
+		}
+
+		if err := s.client.AddMagnet(ctx, row.Magnet, s.category); err != nil {
+			s.log.Warn("could not resume a download", "hash", row.TorrentHash,
+				"release", row.ReleaseName, "err", err)
+			failed++
+			continue
+		}
+		resumed++
+	}
+
+	if resumed+held+failed > 0 {
+		s.log.Info("resumed downloads", "re_added", resumed, "already_running", held, "failed", failed)
+	}
+	return nil
 }
 
 // Downloads lists every recorded download, newest first.

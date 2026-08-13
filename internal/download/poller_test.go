@@ -3,12 +3,11 @@ package download
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 func newPoller(c TorrentClient, st Store) *Poller {
@@ -18,9 +17,9 @@ func newPoller(c TorrentClient, st Store) *Poller {
 	return p
 }
 
-func TestTickMapsStateAndProgress(t *testing.T) {
-	client := &fakeClient{torrents: []qbit.Torrent{
-		{Hash: strings.ToLower(testHash), Name: "Interstellar", State: "downloading", Progress: 0.42},
+func TestTickWritesStateAndProgress(t *testing.T) {
+	client := &fakeClient{torrents: []torrent.Torrent{
+		{Hash: testHash, Name: "Interstellar", State: torrent.StateDownloading, Progress: 0.42},
 	}}
 	st := newFakeStore()
 	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadQueued, Progress: 0}
@@ -43,36 +42,34 @@ func TestTickMapsStateAndProgress(t *testing.T) {
 	}
 }
 
-// qBittorrent 5.x says stoppedUP where 4.x said pausedUP. Both must complete, or
-// a finished download never reaches phase 4.
-func TestTickTreatsStoppedAndPausedUploadAsCompleted(t *testing.T) {
-	for _, state := range []string{"stoppedUP", "pausedUP", "uploading", "stalledUP"} {
-		t.Run(state, func(t *testing.T) {
-			client := &fakeClient{torrents: []qbit.Torrent{
-				{Hash: strings.ToLower(testHash), State: state, Progress: 1},
-			}}
-			st := newFakeStore()
-			st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadDownloading, Progress: 0.9}
+// The moment a download finishes is stamped once, here. Which of qBittorrent's
+// spellings mean "finished" — stoppedUP, pausedUP, uploading, stalledUP — is
+// asserted in internal/qbit's state test now that the mapping happens in the
+// backend rather than in this loop.
+func TestTickStampsCompletedAtOnTheTransition(t *testing.T) {
+	client := &fakeClient{torrents: []torrent.Torrent{
+		{Hash: testHash, State: torrent.StateCompleted, Progress: 1},
+	}}
+	st := newFakeStore()
+	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadDownloading, Progress: 0.9}
 
-			if err := newPoller(client, st).Tick(context.Background()); err != nil {
-				t.Fatalf("Tick: %v", err)
-			}
-			if len(st.updates) != 1 {
-				t.Fatalf("updates = %d, want 1", len(st.updates))
-			}
-			if st.updates[0].state != store.DownloadCompleted {
-				t.Errorf("%s mapped to %q, want completed", state, st.updates[0].state)
-			}
-			if st.updates[0].completedAt == nil {
-				t.Error("completed_at not stamped on the transition into completed")
-			}
-		})
+	if err := newPoller(client, st).Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(st.updates) != 1 {
+		t.Fatalf("updates = %d, want 1", len(st.updates))
+	}
+	if st.updates[0].state != store.DownloadCompleted {
+		t.Errorf("state = %q, want completed", st.updates[0].state)
+	}
+	if st.updates[0].completedAt == nil {
+		t.Error("completed_at not stamped on the transition into completed")
 	}
 }
 
 func TestTickStampsCompletedAtOnceAndNeverClearsIt(t *testing.T) {
-	client := &fakeClient{torrents: []qbit.Torrent{
-		{Hash: strings.ToLower(testHash), State: "stoppedUP", Progress: 1},
+	client := &fakeClient{torrents: []torrent.Torrent{
+		{Hash: testHash, State: torrent.StateCompleted, Progress: 1},
 	}}
 	st := newFakeStore()
 	earlier := time.Date(2026, 8, 12, 11, 0, 0, 0, time.UTC)
@@ -92,8 +89,8 @@ func TestTickStampsCompletedAtOnceAndNeverClearsIt(t *testing.T) {
 // A completed torrent that phase 4 has imported must not be dragged back to
 // "completed" on the next tick.
 func TestTickDoesNotOverwriteImported(t *testing.T) {
-	client := &fakeClient{torrents: []qbit.Torrent{
-		{Hash: strings.ToLower(testHash), State: "uploading", Progress: 1},
+	client := &fakeClient{torrents: []torrent.Torrent{
+		{Hash: testHash, State: torrent.StateCompleted, Progress: 1},
 	}}
 	st := newFakeStore()
 	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadImported, Progress: 1}
@@ -107,9 +104,9 @@ func TestTickDoesNotOverwriteImported(t *testing.T) {
 }
 
 func TestTickSkipsATorrentWithNoRow(t *testing.T) {
-	client := &fakeClient{torrents: []qbit.Torrent{
-		{Hash: strings.ToLower(testHash), Name: "someone else's", State: "downloading"},
-		{Hash: "aaaa000000000000000000000000000000000000", Name: "ours", State: "downloading", Progress: 0.5},
+	client := &fakeClient{torrents: []torrent.Torrent{
+		{Hash: testHash, Name: "someone else's", State: torrent.StateDownloading},
+		{Hash: "AAAA000000000000000000000000000000000000", Name: "ours", State: torrent.StateDownloading, Progress: 0.5},
 	}}
 	st := newFakeStore()
 	st.byHash["AAAA000000000000000000000000000000000000"] = store.Download{

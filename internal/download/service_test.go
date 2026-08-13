@@ -5,13 +5,14 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 const testHash = "89599BF4DC369A3A8ECA26411C5CCF922D78B486"
@@ -26,9 +27,9 @@ type fakeClient struct {
 	calls []string
 
 	addErr     error
-	byHash     *qbit.Torrent
+	byHash     *torrent.Torrent
 	byHashErr  error
-	torrents   []qbit.Torrent
+	torrents   []torrent.Torrent
 	listErr    error
 	addedMagn  string
 	addedCateg string
@@ -56,12 +57,12 @@ func (f *fakeClient) AddMagnet(_ context.Context, magnet, category string) error
 	return f.addErr
 }
 
-func (f *fakeClient) TorrentByHash(_ context.Context, hash string) (*qbit.Torrent, error) {
+func (f *fakeClient) TorrentByHash(_ context.Context, hash string) (*torrent.Torrent, error) {
 	f.calls = append(f.calls, "confirm")
 	return f.byHash, f.byHashErr
 }
 
-func (f *fakeClient) Torrents(_ context.Context, category string) ([]qbit.Torrent, error) {
+func (f *fakeClient) Torrents(_ context.Context, category string) ([]torrent.Torrent, error) {
 	f.calls = append(f.calls, "list")
 	return f.torrents, f.listErr
 }
@@ -210,8 +211,8 @@ func req() Request {
 }
 
 func TestDispatchHappyPathInOrder(t *testing.T) {
-	client := &fakeClient{byHash: &qbit.Torrent{
-		Hash: strings.ToLower(testHash), Name: "Interstellar", State: "downloading", Progress: 0.1,
+	client := &fakeClient{byHash: &torrent.Torrent{
+		Hash: testHash, Name: "Interstellar", State: torrent.StateDownloading, Progress: 0.1,
 	}}
 	st := newFakeStore()
 	res := newResolver(testMagnet(testHash))
@@ -354,5 +355,161 @@ func TestDispatchUnconfigured(t *testing.T) {
 		Dispatch(context.Background(), req())
 	if !errors.Is(err, ErrUnconfigured) {
 		t.Errorf("err = %v, want ErrUnconfigured", err)
+	}
+}
+
+// --- resume -----------------------------------------------------------------
+
+// resumeClient answers TorrentByHash per hash, so a test can say which torrents
+// the client still holds and which it has forgotten.
+type resumeClient struct {
+	fakeClient
+	held  map[string]bool
+	added []string
+}
+
+func (r *resumeClient) TorrentByHash(_ context.Context, hash string) (*torrent.Torrent, error) {
+	if r.byHashErr != nil {
+		return nil, r.byHashErr
+	}
+	if !r.held[strings.ToUpper(hash)] {
+		return nil, nil
+	}
+	return &torrent.Torrent{Hash: strings.ToUpper(hash), State: torrent.StateDownloading}, nil
+}
+
+func (r *resumeClient) AddMagnet(_ context.Context, magnet, _ string) error {
+	if r.addErr != nil {
+		return r.addErr
+	}
+	r.added = append(r.added, magnet)
+	return nil
+}
+
+func resumeStore(rows ...store.Download) *fakeStore {
+	st := newFakeStore()
+	for _, row := range rows {
+		st.byHash[row.TorrentHash] = row
+	}
+	return st
+}
+
+func row(hash, state, magnet string) store.Download {
+	return store.Download{TorrentHash: hash, State: state, Magnet: magnet, ReleaseName: "Interstellar." + state}
+}
+
+// TestResumeReAddsWhatIsNotImported is the whole of boot resume: every row that
+// has not become a film goes back to the client, and the ones that have do not.
+func TestResumeReAddsWhatIsNotImported(t *testing.T) {
+	st := resumeStore(
+		row("AAAA000000000000000000000000000000000000", store.DownloadDownloading, "magnet:?xt=urn:btih:aaaa"),
+		row("BBBB000000000000000000000000000000000000", store.DownloadStalled, "magnet:?xt=urn:btih:bbbb"),
+		row("CCCC000000000000000000000000000000000000", store.DownloadCompleted, "magnet:?xt=urn:btih:cccc"),
+		row("DDDD000000000000000000000000000000000000", store.DownloadImported, "magnet:?xt=urn:btih:dddd"),
+	)
+	client := &resumeClient{held: map[string]bool{}}
+
+	if err := newService(client, st, newResolver("")).Resume(context.Background()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+
+	sort.Strings(client.added)
+	want := []string{"magnet:?xt=urn:btih:aaaa", "magnet:?xt=urn:btih:bbbb", "magnet:?xt=urn:btih:cccc"}
+	if strings.Join(client.added, ",") != strings.Join(want, ",") {
+		t.Errorf("re-added %v, want %v — imported rows are films, not downloads", client.added, want)
+	}
+}
+
+// A client that still holds the torrent is not sent a duplicate: qBittorrent
+// answers "Fails." to a magnet it already has, and every boot would log an
+// error for a torrent that is perfectly healthy.
+func TestResumeSkipsWhatTheClientStillHolds(t *testing.T) {
+	st := resumeStore(
+		row("AAAA000000000000000000000000000000000000", store.DownloadDownloading, "magnet:?xt=urn:btih:aaaa"),
+	)
+	client := &resumeClient{held: map[string]bool{"AAAA000000000000000000000000000000000000": true}}
+
+	if err := newService(client, st, newResolver("")).Resume(context.Background()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if len(client.added) != 0 {
+		t.Errorf("re-added %v, want nothing — the client already has it", client.added)
+	}
+}
+
+// One bad row must not cost the others. This is a boot path: whatever it skips,
+// nothing else will pick up until the next restart.
+func TestResumeCarriesOnPastAFailure(t *testing.T) {
+	st := resumeStore(
+		row("AAAA000000000000000000000000000000000000", store.DownloadDownloading, ""),
+		row("BBBB000000000000000000000000000000000000", store.DownloadDownloading, "magnet:?xt=urn:btih:bbbb"),
+	)
+	client := &resumeClient{held: map[string]bool{}}
+
+	if err := newService(client, st, newResolver("")).Resume(context.Background()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if len(client.added) != 1 || client.added[0] != "magnet:?xt=urn:btih:bbbb" {
+		t.Errorf("re-added %v, want only the row that has a magnet", client.added)
+	}
+}
+
+// With no client configured there is nothing to resume into, and that is a
+// supported state rather than an error — the same posture an unset QBIT_USER
+// has had since phase 3.
+func TestResumeWithoutAClientIsNotAnError(t *testing.T) {
+	st := resumeStore(row("AAAA000000000000000000000000000000000000", store.DownloadDownloading, "magnet:?x"))
+	if err := NewService(nil, st, newResolver(""), "curator", quiet()).Resume(context.Background()); err != nil {
+		t.Fatalf("Resume with no client: %v", err)
+	}
+}
+
+// --- the dispatch guard (T37) ------------------------------------------------
+
+// TestDispatchRefusedByTheGuard: a refused dispatch must cost nothing and leave
+// nothing behind — no resolve, no add, no row. The same discipline the expired
+// release check already has.
+func TestDispatchRefusedByTheGuard(t *testing.T) {
+	client := &fakeClient{}
+	st := newFakeStore()
+	res := newResolver(testMagnet(testHash))
+
+	// A plain error, as internal/vpn returns: the class is this package's to
+	// add, so that a guard which cannot answer is refused the same way as one
+	// that answers no.
+	svc := newService(client, st, res).WithGuard(func(context.Context) error {
+		return errors.New("the tunnel is down")
+	})
+
+	_, err := svc.Dispatch(context.Background(), req())
+	if !errors.Is(err, ErrUnprotected) {
+		t.Fatalf("err = %v, want it to wrap ErrUnprotected so the API answers 503", err)
+	}
+	if !strings.Contains(err.Error(), "the tunnel is down") {
+		t.Errorf("err = %q, want the guard's own reason to survive", err)
+	}
+	if len(client.calls) != 0 {
+		t.Errorf("the torrent client was called %v for a refused dispatch", client.calls)
+	}
+	if st.writeCount != 0 {
+		t.Errorf("%d writes for a refused dispatch, want none", st.writeCount)
+	}
+}
+
+// A guard that passes is invisible: the dispatch behaves exactly as it did
+// before there was one.
+func TestDispatchProceedsWhenTheGuardPasses(t *testing.T) {
+	client := &fakeClient{byHash: &torrent.Torrent{
+		Hash: testHash, Name: "Interstellar", State: torrent.StateDownloading, Progress: 0.1,
+	}}
+	var asked int
+	svc := newService(client, newFakeStore(), newResolver(testMagnet(testHash))).
+		WithGuard(func(context.Context) error { asked++; return nil })
+
+	if _, err := svc.Dispatch(context.Background(), req()); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if asked != 1 {
+		t.Errorf("the guard was asked %d times, want exactly 1", asked)
 	}
 }

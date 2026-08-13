@@ -20,6 +20,11 @@ const (
 	DownloadCompleted   = "completed"
 	DownloadImported    = "imported"
 	DownloadFailed      = "failed"
+
+	// DownloadStalled is phase 6's, and needs no migration: state is TEXT and
+	// its values are a comment in schema.sql rather than a constraint. It is
+	// not terminal — the next poll can move it back to downloading.
+	DownloadStalled = "stalled"
 )
 
 // Download is one row of the downloads table.

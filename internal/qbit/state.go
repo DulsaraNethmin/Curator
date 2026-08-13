@@ -1,20 +1,16 @@
 package qbit
 
-import "strings"
+import (
+	"strings"
 
-// The states the downloads table carries, as untyped string constants so they
-// assign straight into store.Download without a conversion. `imported` is phase
-// 4's and is deliberately absent here: qBittorrent knows nothing about importing,
-// so nothing in this package can ever produce it.
-const (
-	StateQueued      = "queued"
-	StateDownloading = "downloading"
-	StateCompleted   = "completed"
-	StateFailed      = "failed"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 // qbitStates is the mapping in docs/phase-3.md, spelled exactly as qBittorrent's
-// `state` field arrives.
+// `state` field arrives. The right-hand side is curator's vocabulary, which
+// lives in internal/torrent because two backends now answer in it — these
+// constants used to be declared here, and a second copy of a vocabulary is how
+// a vocabulary drifts.
 //
 // Two entries are not in that table. qBittorrent 5.0 renamed pause/resume to
 // stop/start and its Web API states followed — `pausedDL` became `stoppedDL` and
@@ -25,38 +21,47 @@ const (
 // them and a 4.x instance still sends them; both cost one map entry.
 var qbitStates = map[string]string{
 	// Not started yet, or working on something that is not the payload.
-	"queuedDL":           StateQueued,
-	"stalledDL":          StateQueued,
-	"metaDL":             StateQueued,
-	"allocating":         StateQueued,
-	"checkingDL":         StateQueued,
-	"checkingResumeData": StateQueued,
+	"queuedDL":           torrent.StateQueued,
+	"metaDL":             torrent.StateQueued,
+	"allocating":         torrent.StateQueued,
+	"checkingDL":         torrent.StateQueued,
+	"checkingResumeData": torrent.StateQueued,
 
 	// A partial download that has been paused is still partial: the file we want
 	// is not there, so it is queued rather than failed.
-	"pausedDL":  StateQueued,
-	"stoppedDL": StateQueued,
+	"pausedDL":  torrent.StateQueued,
+	"stoppedDL": torrent.StateQueued,
 
-	"downloading": StateDownloading,
-	"forcedDL":    StateDownloading,
-	"moving":      StateDownloading,
+	// stalledDL is qBittorrent's word for exactly what StateStalled describes:
+	// wanted, added, and nobody is sending. It used to map to queued, which is
+	// where the "sitting at 0% for ever with no explanation" confusion came
+	// from on this backend too. stalledUP stays completed — a finished torrent
+	// with no leechers is not a problem, it is a Tuesday.
+	"stalledDL": torrent.StateStalled,
+
+	"downloading": torrent.StateDownloading,
+	"forcedDL":    torrent.StateDownloading,
+	"moving":      torrent.StateDownloading,
 
 	// Everything past 100%. `pausedUP` belongs here and not in some "paused"
 	// limbo: a torrent that finished downloading and was then paused has the file
 	// we wanted, which is the only question this state answers.
-	"uploading":  StateCompleted,
-	"stalledUP":  StateCompleted,
-	"queuedUP":   StateCompleted,
-	"forcedUP":   StateCompleted,
-	"checkingUP": StateCompleted,
-	"pausedUP":   StateCompleted,
-	"stoppedUP":  StateCompleted,
+	"uploading":  torrent.StateCompleted,
+	"stalledUP":  torrent.StateCompleted,
+	"queuedUP":   torrent.StateCompleted,
+	"forcedUP":   torrent.StateCompleted,
+	"checkingUP": torrent.StateCompleted,
+	"pausedUP":   torrent.StateCompleted,
+	"stoppedUP":  torrent.StateCompleted,
 
-	"error":        StateFailed,
-	"missingFiles": StateFailed,
+	"error":        torrent.StateFailed,
+	"missingFiles": torrent.StateFailed,
 }
 
-// MapState translates one qBittorrent state into the downloads table's.
+// mapState translates one qBittorrent state into curator's.
+//
+// It is unexported: it runs on the way out of this package, in info.neutral,
+// and nothing outside has any business knowing that `stalledUP` is a word.
 //
 // Anything unrecognised — including qBittorrent's own literal "unknown" and an
 // empty string — becomes StateDownloading, never StateFailed. A state we have not
@@ -64,9 +69,9 @@ var qbitStates = map[string]string{
 // the cost of the two mistakes is not symmetric: guessing `downloading` means one
 // more poll tick, while guessing `failed` tells a human their download died and
 // invites them to grab a second copy of a file that is fine.
-func MapState(qbitState string) string {
+func mapState(qbitState string) string {
 	if state, ok := qbitStates[strings.TrimSpace(qbitState)]; ok {
 		return state
 	}
-	return StateDownloading
+	return torrent.StateDownloading
 }

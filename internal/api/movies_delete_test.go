@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/DulsaraNethmin/curator/internal/download"
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 func deleteServer(t *testing.T, d Dispatcher) http.Handler {
@@ -64,7 +64,7 @@ func TestDeleteMovieStatusCodes(t *testing.T) {
 		{"no such movie", fmt.Errorf("delete movie 7: %w", store.ErrNotFound), http.StatusNotFound},
 		// The guard fired: the request was well-formed and the refusal is
 		// deliberate, because the *arr stack shares that qBittorrent.
-		{"the torrent belongs to radarr", fmt.Errorf("delete: %w", qbit.ErrWrongCategory), http.StatusConflict},
+		{"the torrent belongs to radarr", fmt.Errorf("delete: %w", torrent.ErrWrongCategory), http.StatusConflict},
 		{"downloads unconfigured", download.ErrUnconfigured, http.StatusServiceUnavailable},
 		{"qBittorrent unreachable", fmt.Errorf("delete: %w: refused", download.ErrClient), http.StatusBadGateway},
 		{"database is unwell", errors.New("database is locked"), http.StatusInternalServerError},

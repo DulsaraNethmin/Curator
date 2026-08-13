@@ -6,11 +6,12 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
-// Poller reconciles qBittorrent into the downloads table on an interval.
+// Poller reconciles the torrent client into the downloads table on an interval.
+// Which client is a wiring decision it never sees.
 //
 // It reads and writes rows that already exist and nothing else. It never adds a
 // torrent, never removes one, and never invents a database row — seeding and
@@ -38,7 +39,7 @@ type Poller struct {
 // not be able to fail an import (decisions.md D15). Putting it in the type
 // means there is nothing here for a future caller to mishandle.
 type Importer interface {
-	TryImport(ctx context.Context, t qbit.Torrent, d store.Download)
+	TryImport(ctx context.Context, t torrent.Torrent, d store.Download)
 	Refresh(ctx context.Context)
 }
 
@@ -107,7 +108,9 @@ func (p *Poller) Tick(ctx context.Context) error {
 	}
 
 	for _, t := range torrents {
-		hash := qbit.NormalizeHash(t.Hash)
+		// Already in the table's case: the backend normalises on the way out,
+		// which is where a wire format's quirks belong.
+		hash := t.Hash
 
 		row, err := p.store.GetDownloadByHash(ctx, hash)
 		if err != nil {
@@ -129,7 +132,7 @@ func (p *Poller) Tick(ctx context.Context) error {
 			continue
 		}
 
-		state := qbit.MapState(t.State)
+		state := t.State
 
 		// completed_at is stamped once, on the transition into completed, and never
 		// cleared: the store preserves it when passed nil, so every later tick

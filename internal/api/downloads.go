@@ -103,7 +103,10 @@ func (s *Server) failDispatch(w http.ResponseWriter, err error) {
 	case errors.Is(err, indexer.ErrReleaseExpired):
 		// The id was almost certainly real; the search that issued it has aged out.
 		s.fail(w, http.StatusGone, fmt.Errorf("%w — search again and pick from the new results", err))
-	case errors.Is(err, download.ErrUnconfigured):
+	case errors.Is(err, download.ErrUnconfigured), errors.Is(err, download.ErrUnprotected):
+		// Unprotected is 503 for the same reason unconfigured is: the request
+		// was fine, curator is fine, and something about the deployment means
+		// this cannot be served right now. The body carries the sentence.
 		s.fail(w, http.StatusServiceUnavailable, err)
 	case errors.Is(err, download.ErrClient):
 		s.fail(w, http.StatusBadGateway, err)

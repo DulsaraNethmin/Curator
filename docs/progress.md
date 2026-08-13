@@ -3,9 +3,10 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-13 · **Phases 1 and 2 complete** · phase 3 built, and its outstanding
+**Last updated:** 2026-08-14 · **Phases 1 and 2 complete** · phase 3 built, and its outstanding
 dispatch now run against a real qBittorrent locally · phase 4 built and verified locally ·
-**phase 5 built, including the TMDB-first redesign (T27–T31)**
+phase 5 built, including the TMDB-first redesign (T27–T31) · **phase 6 built and verified locally,
+except the tunnel, which has never met a real peer**
 
 ---
 
@@ -18,7 +19,11 @@ dispatch now run against a real qBittorrent locally · phase 4 built and verifie
 | **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** — T13–T16 done; dispatch verified 2026-08-13 against a local qBittorrent 5.1.2, never against the Pi's |
 | **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** — T17–T21 done, verified locally 2026-08-12 against a stub and 2026-08-13 against a real download; never run against the Pi |
 | **5** | Interface — Next.js screens embedded via `embed.FS` | **built** — T22–T26, then T27–T31's TMDB-first redesign, verified locally 2026-08-13 |
-| 6 | Cutover — run alongside, confirm parity, remove seven containers | back up the *arr configs first |
+| **6** | Own the download — the torrent engine and a WireGuard tunnel move inside the binary | **built** — T32–T38 done, verified locally 2026-08-14; the tunnel's device code has never brought up a real peer |
+| 7 | Settings that write — writable config, secrets at rest, optional password | T39–T42 |
+| 8 | Watch it here — direct play, remux, Open in Jellyfin | T43–T46, blocked by nothing |
+| 9 | One command — the image, the release pipeline, minter on demand | T47–T51 |
+| 10 | Cutover — run alongside, confirm parity, remove the containers | back up the *arr configs first (T52) |
 
 ---
 
@@ -549,6 +554,78 @@ not the Pi's — phases 3 and 4 stay "never run against the Pi" until cutover.
 - **The counters strip, the rails and the hero are one reviewer's taste.** Phase 5's "not verified:
   how it looks" is now half-answered — the new screens have been seen — and the rest still wants
   human eyes.
+
+## Phase 6 tasks
+
+Specified 2026-08-13, built 2026-08-13/14. Spec in [`phase-6.md`](phase-6.md). Phases 1–5 are merged
+to `main` and pushed; this is on `phase-6-own-the-download` and is not.
+
+| Task | Owns | Commit | Status |
+|---|---|---|---|
+| T32 spike: the engine | throwaway, deleted | — | done, gate passed |
+| T33 spike: the tunnel | throwaway, deleted | — | done, gate passed |
+| [T34](tasks/T34-torrent-type.md) backend-neutral torrent | `internal/torrent/` | `ccca4c9` | done |
+| [T35](tasks/T35-embedded-engine.md) the embedded engine | `internal/engine/` | `209b218` | done |
+| [T36](tasks/T36-resume-stall.md) resume and stall | `internal/engine/`, `internal/download/` | `175aa52` | done |
+| [T37](tasks/T37-tunnel.md) the tunnel | `internal/vpn/` | `d74a5a5` | done |
+| [T38](tasks/T38-wiring-subtraction.md) wiring and subtraction | `cmd/curator`, `internal/config` | `26dc937` | done, **less the `Add` collapse** |
+
+Two decisions were written while specifying:
+[D22](decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)
+(the engine moves in, qBittorrent stays as a second backend with a sunset criterion) and
+[D27](decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket) (the VPN is mandatory,
+curator owns the socket, and what the external path can and cannot promise).
+
+## What phase 6 verified, and how
+
+Driven on the laptop 2026-08-14, against a payload seeded over loopback and the local
+qBittorrent 5.1.2 container. Never against the Pi.
+
+| Check | Result |
+|---|---|
+| dispatch → complete → **hardlink** | both films imported; **inode shared with the download, link count 2** |
+| the library copy's mode | **`-r--r--r--`** — the engine finishes files `0444` and a hardlink carries the source's bits |
+| restart with **no peers and no network** | complete in **55 ms, 0 bytes re-downloaded**, from the persisted metainfo |
+| a file placed in the data directory by hand | in no row and in no library folder — structural, because the engine only holds what curator added |
+| `TORRENT_BACKEND=embedded` start-up | engine up, no tunnel, warned about it, `/api/settings` says "curator downloads it itself, in this process" |
+| `TORRENT_BACKEND=qbittorrent` dispatch | **refused, 503**: "the torrent client's traffic leaves from the same address curator does (187.14.240.8), so it is not behind a VPN" — true, that container has no VPN |
+| an unknown `TORRENT_BACKEND` | start-up error naming both valid values |
+| peak RSS / peak Go heap on a real 755 MB download | **817.6 MB / 33.4 MB**, heap flat throughout ([D22](decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)) |
+| every commit alone | builds, vets, tests with `-race`, and cross-compiles to `linux/arm64` |
+
+**The hardlink is the result worth keeping.** It is phase 4's proof — equal inode, link count 2 —
+re-run against a backend phase 4 never saw, through the real store, the real poller and the real
+importer. The `0444` in that table is the measurement that retires
+[`phase-4.md`](phase-4.md)'s "qBittorrent writes 0644, so the importer needs no chmod": the mode
+changed, the conclusion (no chmod needed) survives, because a readable file is all Jellyfin wants.
+
+**The first run of that check failed, and the failure was the right one.** The payloads were 1–2 MB,
+and `library.FindFeature` refused them: `DefaultMinFeatureBytes` is 50 MiB, the sample-file guard
+phase 4 built. It fired against the new backend exactly as designed. The check was re-run with
+60 MB and 55 MB payloads.
+
+### Still live going out
+
+- **The tunnel has never met a real peer.** `internal/vpn`'s parser, UAPI conversion, status parsing
+  and all four branches of the external-client check are tested hermetically, but `vpn.New` — the
+  device, the netstack, the handshake — has only ever been compiled. T33 proved the *approach* with
+  throwaway code; this implementation of it is unproven. `internal/vpn/live_test.go` runs the moment
+  a `VPN_CONFIG_FILE` exists, and **fails rather than skips** when a configured tunnel does not
+  handshake or does not change where traffic leaves from.
+- **"Kill the tunnel mid-download and confirm traffic stops"** is therefore unrun. The claim rests
+  on construction — `DisableTCP`, `DisableUTP` and `NoDHT` leave the client no socket of its own,
+  measured as zero in T33 — and on the loopback `Network` test, which proves the binding carries a
+  whole torrent. It is not the same as watching the bytes stop.
+- **Dispatch from the UI was not re-driven end to end.** The release-id path from search to
+  `POST /api/downloads` is phase 2 and 3 code, unchanged here, and driving it to completion would
+  mean downloading a real film. Everything downstream of the row — resume, engine, poller, importer,
+  hardlink — was driven with a seeded payload instead.
+- **The `Add` collapse is not done.** T38's fifth step, a pure refactor of dispatch's
+  add-then-confirm into one call, is written up in its task file as outstanding rather than dropped.
+- **`TORRENT_BACKEND` defaults to `embedded`, which changes an existing `.env`.** A deployment with
+  `QBIT_USER` set now starts the engine instead, and refuses to dispatch until `VPN_CONFIG` is set
+  or `VPN_REQUIRED=false` is typed. Intended, and worth knowing before the first Download press.
+- **Nothing has run on the Pi**, on purpose. Phase 10, after T52 backs up the *arr configs.
 
 ## Corrections made to the docs
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/api"
 	"github.com/DulsaraNethmin/curator/internal/config"
 	"github.com/DulsaraNethmin/curator/internal/download"
+	"github.com/DulsaraNethmin/curator/internal/engine"
 	"github.com/DulsaraNethmin/curator/internal/importer"
 	"github.com/DulsaraNethmin/curator/internal/indexer"
 	"github.com/DulsaraNethmin/curator/internal/jellyfin"
@@ -23,6 +25,7 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/qbit"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
+	"github.com/DulsaraNethmin/curator/internal/vpn"
 	"github.com/DulsaraNethmin/curator/internal/web"
 )
 
@@ -106,15 +109,49 @@ func run() error {
 		cfg.SearchCacheTTL,
 	)
 
-	// A nil torrent client is a supported state, exactly like a nil Matcher: with
-	// no credentials the library still scans and search still works, and only
-	// dispatch reports itself unconfigured. Declared as the interface so the nil
-	// stays a nil interface rather than one holding a nil pointer.
-	var torrents download.TorrentClient
-	if cfg.DownloadsConfigured() {
-		torrents = qbit.New(cfg.QBitURL, cfg.QBitUser, cfg.QBitPass, indexerHTTP)
-	} else {
-		log.Warn("QBIT_USER is unset: search works but nothing can be downloaded")
+	// The download backend, and the tunnel under it if there is one.
+	//
+	// A nil torrent client is a supported state, exactly like a nil Matcher: the
+	// library still scans and search still works, and only dispatch reports
+	// itself unconfigured. Declared as the interface so the nil stays a nil
+	// interface rather than one holding a nil pointer.
+	var (
+		torrents download.TorrentClient
+		guard    download.Guard
+		tunnel   *vpn.Tunnel
+		engine   *engine.Engine
+	)
+	if cfg.VPNConfigured() {
+		tunnel, err = startTunnel(cfg, log)
+		if err != nil {
+			// Fatal, and deliberately so: a tunnel that was configured and did
+			// not come up must not silently become no tunnel at all.
+			return err
+		}
+		defer tunnel.Close()
+	}
+
+	switch {
+	case cfg.Embedded():
+		if engine, guard, err = startEngine(cfg, tunnel, indexerHTTP, log); err != nil {
+			return err
+		}
+		defer engine.Close()
+		torrents = engine
+
+	case cfg.DownloadsConfigured():
+		client := qbit.New(cfg.QBitURL, cfg.QBitUser, cfg.QBitPass, indexerHTTP).
+			WithPaths(qbit.Paths{Curator: cfg.DownloadsPath, QBit: cfg.QBitDownloadsPath})
+		torrents = client
+		// curator does not route this client's traffic, so the guarantee
+		// becomes a check: refuse when its exit address is curator's own
+		// (docs/decisions.md D27).
+		guard = download.Guard(vpn.External(client.ExternalAddress, cfg.VPNIPCheckURL, indexerHTTP, log))
+		log.Info("using an external qBittorrent; curator cannot route its traffic, only check it",
+			"url", cfg.QBitURL)
+
+	default:
+		log.Warn("TORRENT_BACKEND=qbittorrent and QBIT_USER is unset: search works but nothing can be downloaded")
 	}
 
 	// A nil refresher is a supported state, the third of the same shape: with no
@@ -130,20 +167,18 @@ func run() error {
 
 	// The library root is the import destination as well as the scan source. An
 	// importer writing anywhere else would produce movies the scanner never sees.
-	imports := importer.New(db, cfg.LibraryMovies, importer.Paths{
-		Curator: cfg.DownloadsPath,
-		QBit:    cfg.QBitDownloadsPath,
-	}, refresher, log)
+	imports := importer.New(db, cfg.LibraryMovies, refresher, log)
 
 	downloads := download.NewService(torrents, db, aggregator, cfg.QBitCategory, log).
-		WithImporter(imports)
+		WithImporter(imports).
+		WithGuard(guard)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	apiSrv := api.New(db, api.ScannerFunc(library.Scan), matcher, cfg.LibraryMovies, log).
 		WithSearch(aggregator).
 		WithDownloads(downloads).
-		WithSettings(settingsView(cfg, matcher, torrents, indexerHTTP)).
+		WithSettings(settingsView(cfg, matcher, torrents, tunnel, indexerHTTP)).
 		WithLogs(logBuffer).
 		WithBrowser(browser)
 	apiSrv.Register(mux)
@@ -163,6 +198,16 @@ func run() error {
 		// serves a "run npm" page to the household (docs/decisions.md D16).
 		log.Warn("the UI has not been built into this binary: run `npm --prefix web run build` " +
 			"before `go build ./...`; the API is complete and working")
+	}
+
+	// Resume before the poller starts, so the first tick already sees whatever
+	// was in flight when curator last stopped. It is not fatal: a torrent client
+	// that is down at boot means downloads resume when it comes back, and the
+	// library, search and the whole UI have nothing to do with it.
+	if torrents != nil {
+		if err := downloads.Resume(ctx); err != nil {
+			log.Warn("could not resume downloads; the poller will still reconcile what the client has", "err", err)
+		}
 	}
 
 	// The poller takes the same context that shuts the server down, so it stops on
@@ -222,17 +267,29 @@ func healthz(w http.ResponseWriter, _ *http.Request) {
 //
 // Every probe here is READ-ONLY. That is the constraint that decides which of
 // them exist at all.
-func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.TorrentClient, httpClient *http.Client) api.Settings {
+func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.TorrentClient, tunnel *vpn.Tunnel, httpClient *http.Client) api.Settings {
 	integrations := []api.Integration{{
 		Name:       "tmdb",
 		Env:        "TMDB_API_KEY",
 		Configured: cfg.TMDBAPIKey != "",
 		Detail:     detailIf(cfg.TMDBAPIKey == "", "the library scans but nothing is matched"),
 	}, {
-		Name:       "qbittorrent",
-		Env:        "QBIT_USER",
+		// The backend, whichever it is. `embedded` needs no credentials — it is
+		// this binary — so what "configured" reports is whether anything can
+		// download at all.
+		Name:       "torrents",
+		Env:        "TORRENT_BACKEND",
 		Configured: cfg.DownloadsConfigured(),
-		Detail:     detailIf(!cfg.DownloadsConfigured(), "downloads are disabled: set QBIT_USER and QBIT_PASS"),
+		Detail:     backendDetail(cfg),
+	}, {
+		// The tunnel. No address is ever reported, only whether it is up: this
+		// endpoint has no authentication in front of it (docs/decisions.md D17
+		// and D18), and where traffic leaves from is the one fact the tunnel
+		// exists to keep.
+		Name:       "vpn",
+		Env:        "VPN_CONFIG",
+		Configured: cfg.VPNConfigured(),
+		Detail:     vpnDetail(cfg, tunnel),
 	}, {
 		Name:       "minter",
 		Env:        "MINTER_URL",
@@ -266,8 +323,21 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 			return err
 		}
 	}
+	if tunnel != nil {
+		// Read-only, and local: the device's own counters, not a round trip.
+		integrations[2].Probe = func(context.Context) error {
+			status, err := tunnel.Status()
+			if err != nil {
+				return err
+			}
+			if !status.Handshaken() {
+				return fmt.Errorf("no handshake with %s yet", status.Endpoint)
+			}
+			return nil
+		}
+	}
 	if cfg.MinterURL != "" {
-		integrations[2].Probe = func(ctx context.Context) error {
+		integrations[3].Probe = func(ctx context.Context) error {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.MinterURL, nil)
 			if err != nil {
 				return err
@@ -288,6 +358,7 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 		Integrations: integrations,
 		Paths: map[string]string{
 			"library_movies":      cfg.LibraryMovies,
+			"downloads_dir":       cfg.DownloadsDir,
 			"downloads_path":      cfg.DownloadsPath,
 			"qbit_downloads_path": cfg.QBitDownloadsPath,
 			"database":            cfg.DBPath,
@@ -297,6 +368,87 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 			"search_timeout":   cfg.SearchTimeout.String(),
 			"search_cache_ttl": cfg.SearchCacheTTL.String(),
 		},
+	}
+}
+
+// startTunnel brings up the WireGuard device the engine will be bound to.
+func startTunnel(cfg *config.Config, log *slog.Logger) (*vpn.Tunnel, error) {
+	parsed, err := vpn.ParseConfig(cfg.VPNConfig)
+	if err != nil {
+		return nil, err
+	}
+	return vpn.New(parsed, log)
+}
+
+// startEngine builds curator's own torrent client, and the check that runs
+// before anything is dispatched through it.
+//
+// With a tunnel, the engine is built so that it cannot open a socket of its
+// own; without one it is refused outright unless VPN_REQUIRED=false has been
+// typed. That is the whole of "mandatory": there is no configuration in which
+// the embedded engine quietly downloads unprotected (docs/decisions.md D27).
+func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client, log *slog.Logger) (*engine.Engine, download.Guard, error) {
+	var network engine.Network
+	var guard download.Guard
+
+	switch {
+	case tunnel != nil:
+		network = tunnel
+		guard = download.Guard(vpn.Tunnelled(tunnel, cfg.VPNIPCheckURL, httpClient, 0, log))
+	case cfg.VPNRequired:
+		// Not a startup failure: the library, search and the whole UI have
+		// nothing to do with the tunnel, and the screen that will configure one
+		// in phase 7 has to be reachable. Only dispatch is refused, and it says
+		// which variable would fix it.
+		guard = download.Guard(vpn.Required())
+		log.Warn("no VPN is configured and VPN_REQUIRED is true: downloads are refused until VPN_CONFIG is set, " +
+			"or VPN_REQUIRED=false")
+	default:
+		log.Warn("VPN_REQUIRED=false: the embedded engine will download over this machine's own connection")
+	}
+
+	built, err := engine.New(engine.Config{
+		DataDir:    cfg.DownloadsDir,
+		Category:   cfg.QBitCategory,
+		MaxConns:   cfg.TorrentMaxConns,
+		ListenPort: cfg.TorrentPort,
+		StallAfter: cfg.TorrentStallAfter,
+		Network:    network,
+		Log:        log,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return built, guard, nil
+}
+
+func backendDetail(cfg *config.Config) string {
+	switch {
+	case cfg.Embedded():
+		return "curator downloads it itself, in this process"
+	case !cfg.DownloadsConfigured():
+		return "downloads are disabled: set QBIT_USER and QBIT_PASS"
+	default:
+		return "an external qBittorrent: curator can check its exit address but cannot route it"
+	}
+}
+
+func vpnDetail(cfg *config.Config, tunnel *vpn.Tunnel) string {
+	// The external backend is a different promise, so it gets a different
+	// sentence: curator cannot route that traffic, and a tunnel configured here
+	// would not carry it. What protects it is the exit-address check, and
+	// saying so is the point (docs/decisions.md D27).
+	if !cfg.Embedded() {
+		return "not used by an external qBittorrent: curator cannot route that traffic, " +
+			"and refuses to dispatch when its exit address is curator's own"
+	}
+	switch {
+	case tunnel == nil && cfg.VPNRequired:
+		return "no tunnel: downloads are refused until VPN_CONFIG is set, or VPN_REQUIRED=false"
+	case tunnel == nil:
+		return "no tunnel, and VPN_REQUIRED=false: downloads leave from this machine's own address"
+	default:
+		return "every peer byte goes through the tunnel; a dead tunnel is a failed dial, not a leak"
 	}
 }
 
