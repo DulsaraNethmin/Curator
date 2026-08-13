@@ -172,77 +172,6 @@ func TestAssertInsideLibraryRefusesAnEscape(t *testing.T) {
 	}
 }
 
-// --- path translation -------------------------------------------------------
-
-func TestTranslate(t *testing.T) {
-	cases := []struct {
-		name    string
-		paths   Paths
-		in      string
-		want    string
-		wantErr bool
-	}{{
-		// The laptop case, and the case where curator shares the mount. No
-		// configuration at all, and the path is used exactly as reported.
-		name:  "unset passes through verbatim",
-		paths: Paths{},
-		in:    "/downloads/complete/curator/Movie.2014",
-		want:  "/downloads/complete/curator/Movie.2014",
-	}, {
-		name:  "configured rewrites the prefix",
-		paths: Paths{Curator: "/media/storage/media/downloads", QBit: "/downloads"},
-		in:    "/downloads/complete/curator/Movie.2014",
-		want:  "/media/storage/media/downloads/complete/curator/Movie.2014",
-	}, {
-		name:  "the root itself",
-		paths: Paths{Curator: "/media/downloads", QBit: "/downloads"},
-		in:    "/downloads",
-		want:  "/media/downloads",
-	}, {
-		name:  "a trailing slash on the configured root",
-		paths: Paths{Curator: "/media/downloads", QBit: "/downloads/"},
-		in:    "/downloads/complete/x",
-		want:  "/media/downloads/complete/x",
-	}, {
-		// Set but not matching is an error, not a pass-through: someone
-		// configured a translation and it did not apply.
-		name:    "a path outside the configured root",
-		paths:   Paths{Curator: "/media/downloads", QBit: "/downloads"},
-		in:      "/var/lib/torrents/Movie.2014",
-		wantErr: true,
-	}, {
-		// The boundary check. A prefix comparison without it maps /downloads2
-		// into the middle of the library.
-		name:    "a sibling directory sharing the prefix",
-		paths:   Paths{Curator: "/media/downloads", QBit: "/downloads"},
-		in:      "/downloads2/complete/x",
-		wantErr: true,
-	}, {
-		name:    "an empty content path",
-		paths:   Paths{},
-		in:      "   ",
-		wantErr: true,
-	}, {
-		name:    "an empty content path with translation configured",
-		paths:   Paths{Curator: "/media/downloads", QBit: "/downloads"},
-		in:      "",
-		wantErr: true,
-	}}
-
-	for _, c := range cases {
-		im := New(nil, "/library", c.paths, nil, discardLogger())
-		got, err := im.translate(c.in)
-		switch {
-		case c.wantErr && err == nil:
-			t.Errorf("%s: translate(%q) = %q, want an error", c.name, c.in, got)
-		case !c.wantErr && err != nil:
-			t.Errorf("%s: translate(%q): %v", c.name, c.in, err)
-		case !c.wantErr && got != filepath.FromSlash(c.want):
-			t.Errorf("%s: translate(%q) = %q, want %q", c.name, c.in, got, c.want)
-		}
-	}
-}
-
 // --- nothing to import ------------------------------------------------------
 
 // ErrNoVideo is not a failed download: the torrent fetched what it advertised.
@@ -504,7 +433,7 @@ func newHarness(t *testing.T) *harness {
 
 	// Paths.Curator is empty: the fixtures are real paths on this machine, which
 	// is the verbatim case. Translation has its own table test.
-	im := New(st, lib, Paths{}, nil, log)
+	im := New(st, lib, nil, log)
 	im.now = func() time.Time { return importAt }
 
 	return &harness{

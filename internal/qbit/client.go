@@ -48,6 +48,8 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -132,17 +134,101 @@ type info struct {
 	Category string `json:"category"`
 }
 
+// DefaultDownloadsPath is the downloads root inside qBittorrent's own
+// namespace. Its mount on the Pi is host /media/storage/media/downloads →
+// container /downloads, so every path it reports starts here.
+const DefaultDownloadsPath = "/downloads"
+
+// Paths is the translation pair between qBittorrent's filesystem and curator's.
+//
+// Curator empty means "use qBittorrent's path verbatim", which is the laptop
+// case and the case where curator shares qBittorrent's mount — neither should
+// need any configuration at all.
+//
+// This lived in internal/importer until phase 6, where D13 put it because there
+// was one backend and the importer was the only place that knew both sides.
+// With two backends that stopped being true: the embedded engine has one
+// namespace and nothing to translate, so the knowledge belongs to the backend
+// that has two. What crosses the interface is now, by contract, a path curator
+// can open.
+type Paths struct {
+	Curator string // DOWNLOADS_PATH: the downloads root as curator sees it
+	QBit    string // QBIT_DOWNLOADS_PATH: the same directory as qBittorrent sees it
+}
+
+// WithPaths teaches the client how to map qBittorrent's paths onto curator's.
+// It is a builder so that every existing call to New keeps its shape.
+func (c *Client) WithPaths(p Paths) *Client {
+	c.paths = p
+	return c
+}
+
 // neutral is the translation out of qBittorrent's world and into curator's:
-// the hash changes case, the state changes vocabulary, and nothing else moves.
-func (i info) neutral() torrent.Torrent {
+// the hash changes case, the state changes vocabulary, and the path changes
+// filesystem.
+func (c *Client) neutral(i info) (torrent.Torrent, error) {
+	content, err := c.translate(i.ContentPath)
+	if err != nil {
+		return torrent.Torrent{}, err
+	}
 	return torrent.Torrent{
 		Hash:        torrent.NormalizeHash(i.Hash),
 		Name:        i.Name,
 		State:       mapState(i.State),
 		Progress:    i.Progress,
-		ContentPath: i.ContentPath,
+		ContentPath: content,
 		Category:    i.Category,
+	}, nil
+}
+
+// translate maps a path in qBittorrent's namespace onto curator's.
+//
+// A set-but-not-matching path is an ERROR rather than a silent pass-through.
+// Somebody configured a translation and it did not apply; hardlinking from the
+// untranslated path would fail three layers away with a "no such file" that
+// says nothing about the actual mistake.
+//
+// An empty content path is not an error here: qBittorrent reports one for a
+// torrent whose metadata has not arrived, which is a normal state and not a
+// broken configuration. The importer refuses to import from an empty path,
+// which is the right place for that refusal.
+func (c *Client) translate(contentPath string) (string, error) {
+	contentPath = strings.TrimSpace(contentPath)
+	if contentPath == "" || strings.TrimSpace(c.paths.Curator) == "" {
+		return contentPath, nil
 	}
+
+	qbitRoot := strings.TrimSpace(c.paths.QBit)
+	if qbitRoot == "" {
+		qbitRoot = DefaultDownloadsPath
+	}
+
+	// qBittorrent reports POSIX paths whatever curator runs on, so the remote
+	// side is split with path and the local side joined with filepath.
+	rel, ok := relativeTo(qbitRoot, contentPath)
+	if !ok {
+		return "", fmt.Errorf(
+			"qbit: content path %q is not under QBIT_DOWNLOADS_PATH %q, so DOWNLOADS_PATH %q cannot be applied to it",
+			contentPath, qbitRoot, c.paths.Curator)
+	}
+	return filepath.Join(c.paths.Curator, filepath.FromSlash(rel)), nil
+}
+
+// relativeTo reports whether p is root or below it, POSIX-style, and returns the
+// remainder. The boundary check is what stops "/downloads2/x" from matching a
+// root of "/downloads".
+func relativeTo(root, p string) (string, bool) {
+	root, p = path.Clean(root), path.Clean(p)
+	if p == root {
+		return "", true
+	}
+	if !strings.HasSuffix(root, "/") {
+		root += "/"
+	}
+	if !strings.HasPrefix(p, root) {
+		return "", false
+	}
+	return strings.TrimPrefix(p, root), true
 }
 
 // Client talks to one qBittorrent. It is safe for concurrent use; the zero value
@@ -162,6 +248,11 @@ type Client struct {
 	// still e. Without it, two concurrent 403s would each log in, and the second
 	// login would invalidate the session the first had just started using.
 	epoch uint64
+
+	// paths maps qBittorrent's filesystem onto curator's. The zero value means
+	// they are the same one, which is true on a laptop and true whenever they
+	// share a mount.
+	paths Paths
 }
 
 // New returns a client for the qBittorrent at baseURL, empty meaning
@@ -273,7 +364,16 @@ func (c *Client) Torrents(ctx context.Context, category string) ([]torrent.Torre
 
 	torrents := make([]torrent.Torrent, 0, len(found))
 	for _, i := range found {
-		torrents = append(torrents, i.neutral())
+		// A translation failure fails the call rather than the torrent: it
+		// means DOWNLOADS_PATH and QBIT_DOWNLOADS_PATH disagree with what
+		// qBittorrent reports, which is a configuration fault affecting every
+		// torrent equally. Polling retries on the next tick, and the message
+		// says exactly which two settings do not line up.
+		neutral, err := c.neutral(i)
+		if err != nil {
+			return nil, err
+		}
+		torrents = append(torrents, neutral)
 	}
 	return torrents, nil
 }
@@ -306,7 +406,10 @@ func (c *Client) TorrentByHash(ctx context.Context, hash string) (*torrent.Torre
 		// reply would be every torrent on the instance and the first of them is
 		// emphatically not ours.
 		if strings.EqualFold(found[i].Hash, wire) {
-			neutral := found[i].neutral()
+			neutral, err := c.neutral(found[i])
+			if err != nil {
+				return nil, err
+			}
 			return &neutral, nil
 		}
 	}

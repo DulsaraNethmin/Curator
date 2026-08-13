@@ -1,9 +1,10 @@
 // Package importer turns a completed download into a movie the library can see.
 //
 // It is the one place that knows a torrent on disk and a library folder are the
-// same film, and the only package that knows anything about deployment paths:
-// internal/qbit translates nothing by contract (docs/decisions.md D13) and
-// internal/library is a pure package that must not learn about mounts.
+// same film. It knows nothing about deployment paths: a backend that reports
+// paths in a filesystem of its own translates them before they cross the
+// interface, and internal/library is a pure package that must not learn about
+// mounts.
 //
 // It is driven by the poller's existing torrent list rather than by a query of
 // its own, and it triggers on a state — "this torrent reads completed and its
@@ -17,7 +18,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -27,11 +27,6 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
-
-// DefaultQBitDownloads is the downloads root inside qBittorrent's own
-// namespace. Its mount on the Pi is host /media/storage/media/downloads →
-// container /downloads, so every path it reports starts here.
-const DefaultQBitDownloads = "/downloads"
 
 // destDirMode matches what qBittorrent and the *arr stack already create on the
 // Pi: directories 0755, files 0644 (measured 2026-08-12). The linked file needs
@@ -55,21 +50,10 @@ type LibraryRefresher interface {
 	RefreshLibrary(ctx context.Context) error
 }
 
-// Paths is the translation pair between the two namespaces.
-//
-// Curator empty means "use qBittorrent's path verbatim", which is the laptop
-// case and the case where curator shares qBittorrent's mount — neither should
-// need any configuration at all.
-type Paths struct {
-	Curator string // DOWNLOADS_PATH: the downloads root as curator sees it
-	QBit    string // QBIT_DOWNLOADS_PATH: the same directory as qBittorrent sees it
-}
-
 // Importer hardlinks completed downloads into the library.
 type Importer struct {
 	store      Store
 	moviesRoot string
-	paths      Paths
 	refresher  LibraryRefresher
 	log        *slog.Logger
 	now        func() time.Time
@@ -88,12 +72,12 @@ type Importer struct {
 
 // New builds an Importer. refresher may be nil; log may be nil, in which case
 // the default logger is used.
-func New(st Store, moviesRoot string, paths Paths, refresher LibraryRefresher, log *slog.Logger) *Importer {
+func New(st Store, moviesRoot string, refresher LibraryRefresher, log *slog.Logger) *Importer {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Importer{
-		store: st, moviesRoot: moviesRoot, paths: paths, refresher: refresher,
+		store: st, moviesRoot: moviesRoot, refresher: refresher,
 		log: log, now: time.Now, warned: map[string]string{},
 	}
 }
@@ -123,9 +107,13 @@ func (im *Importer) Import(ctx context.Context, t torrent.Torrent, d store.Downl
 		return fail(err)
 	}
 
-	src, err := im.translate(t.ContentPath)
-	if err != nil {
-		return fail(err)
+	// ContentPath is a path curator can open, by contract: the backend that has
+	// a filesystem of its own translates before it answers (docs/decisions.md
+	// D22). This package used to hold that translation, from a time when there
+	// was one backend and this was the only place that knew both sides.
+	src := strings.TrimSpace(t.ContentPath)
+	if src == "" {
+		return fail(errors.New("the torrent client reported no content path for this torrent"))
 	}
 
 	feature, err := library.FindFeature(src, library.FeatureOpts{})
@@ -242,55 +230,6 @@ func (im *Importer) logFailure(hash, name string, err error) {
 		return
 	}
 	im.log.Warn("import failed", "hash", hash, "name", name, "err", err)
-}
-
-// translate maps a path in qBittorrent's namespace onto curator's.
-//
-// A set-but-not-matching path is an ERROR rather than a silent pass-through.
-// Somebody configured a translation and it did not apply; hardlinking from the
-// untranslated path would fail three layers away with a "no such file" that
-// says nothing about the actual mistake.
-func (im *Importer) translate(contentPath string) (string, error) {
-	contentPath = strings.TrimSpace(contentPath)
-	if contentPath == "" {
-		return "", errors.New("qBittorrent reported no content path for this torrent")
-	}
-	if strings.TrimSpace(im.paths.Curator) == "" {
-		// The laptop case, and the case where curator shares qBittorrent's mount.
-		return contentPath, nil
-	}
-
-	qbitRoot := strings.TrimSpace(im.paths.QBit)
-	if qbitRoot == "" {
-		qbitRoot = DefaultQBitDownloads
-	}
-
-	// qBittorrent reports POSIX paths whatever curator runs on, so the remote
-	// side is split with path and the local side joined with filepath.
-	rel, ok := relativeTo(qbitRoot, contentPath)
-	if !ok {
-		return "", fmt.Errorf(
-			"content path %q is not under QBIT_DOWNLOADS_PATH %q, so DOWNLOADS_PATH %q cannot be applied to it",
-			contentPath, qbitRoot, im.paths.Curator)
-	}
-	return filepath.Join(im.paths.Curator, filepath.FromSlash(rel)), nil
-}
-
-// relativeTo reports whether p is root or below it, POSIX-style, and returns the
-// remainder. The boundary check is what stops "/downloads2/x" from matching a
-// root of "/downloads".
-func relativeTo(root, p string) (string, bool) {
-	root, p = path.Clean(root), path.Clean(p)
-	if p == root {
-		return "", true
-	}
-	if !strings.HasSuffix(root, "/") {
-		root += "/"
-	}
-	if !strings.HasPrefix(p, root) {
-		return "", false
-	}
-	return strings.TrimPrefix(p, root), true
 }
 
 // assertInsideLibrary refuses a destination that has escaped LIBRARY_MOVIES.

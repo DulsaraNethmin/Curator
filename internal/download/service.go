@@ -69,15 +69,19 @@ type Resolver interface {
 // and the API layer answers it with a 503 naming the variable rather than a 500.
 var ErrUnconfigured = errors.New("downloads are not configured: set QBIT_USER and QBIT_PASS")
 
-// ErrClient reports that qBittorrent could not be reached, refused us, or took a
-// magnet without producing a torrent.
+// ErrClient reports that the torrent client could not be reached, refused us, or
+// took a magnet without producing a torrent.
 //
 // It exists so the API layer can answer 502 — the request was fine and a
 // dependency was not — and keep 500 for curator's own failures, such as the
 // database. Without the distinction every downstream problem would be reported as
 // ours, which is the same dishonesty as a 200 carrying a failure, pointed the
 // other way.
-var ErrClient = errors.New("qbittorrent")
+//
+// It stopped being called "qbittorrent" in phase 6: which client this is became
+// configuration rather than a constant, and an error naming the wrong one is
+// worse than an error naming none.
+var ErrClient = errors.New("the torrent client")
 
 // ErrUnprotected reports that a dispatch was refused because the download would
 // not have gone through a VPN.
@@ -199,7 +203,12 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	// database has been touched.
 	if s.guard != nil {
 		if err := s.guard(ctx); err != nil {
-			return store.Download{}, fmt.Errorf("dispatch %s: %w", req.ReleaseID, err)
+			// Wrapped in ErrUnprotected here rather than by the guard itself,
+			// so that internal/vpn owns the reason and this package owns the
+			// class. It also means a guard that cannot ANSWER is refused too:
+			// "I could not establish that this is protected" and "this is not
+			// protected" have the same consequence for a mandatory tunnel.
+			return store.Download{}, fmt.Errorf("dispatch %s: %w: %w", req.ReleaseID, ErrUnprotected, err)
 		}
 	}
 

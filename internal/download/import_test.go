@@ -276,7 +276,7 @@ func TestServiceImportUnknownHash(t *testing.T) {
 	}
 }
 
-func TestServiceImportReportsQBittorrent(t *testing.T) {
+func TestServiceImportReportsTheClient(t *testing.T) {
 	st := newFakeStore()
 	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadCompleted}
 	im := &fakeImporter{}

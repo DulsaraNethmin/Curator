@@ -3,7 +3,6 @@ package download
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"sort"
@@ -475,13 +474,19 @@ func TestDispatchRefusedByTheGuard(t *testing.T) {
 	st := newFakeStore()
 	res := newResolver(testMagnet(testHash))
 
+	// A plain error, as internal/vpn returns: the class is this package's to
+	// add, so that a guard which cannot answer is refused the same way as one
+	// that answers no.
 	svc := newService(client, st, res).WithGuard(func(context.Context) error {
-		return fmt.Errorf("%w: the tunnel is down", ErrUnprotected)
+		return errors.New("the tunnel is down")
 	})
 
 	_, err := svc.Dispatch(context.Background(), req())
 	if !errors.Is(err, ErrUnprotected) {
-		t.Fatalf("err = %v, want ErrUnprotected", err)
+		t.Fatalf("err = %v, want it to wrap ErrUnprotected so the API answers 503", err)
+	}
+	if !strings.Contains(err.Error(), "the tunnel is down") {
+		t.Errorf("err = %q, want the guard's own reason to survive", err)
 	}
 	if len(client.calls) != 0 {
 		t.Errorf("the torrent client was called %v for a refused dispatch", client.calls)

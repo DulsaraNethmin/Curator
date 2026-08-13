@@ -2,13 +2,16 @@ package config
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	// Test-only, and one-way: internal/config imports nothing of curator's, so
 	// the shared "/downloads" default cannot drift between the two places that
 	// have to agree on it.
-	"github.com/DulsaraNethmin/curator/internal/importer"
+	"github.com/DulsaraNethmin/curator/internal/qbit"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -57,9 +60,96 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DownloadPollInterval != 10*time.Second {
 		t.Errorf("DownloadPollInterval = %v, want 10s", cfg.DownloadPollInterval)
 	}
-	// No credentials is a supported state, not a startup failure.
+	// Phase 6 changed what the default means: the embedded engine is in this
+	// binary, so downloads are configured out of the box. What is NOT
+	// configured by default is the VPN, and that is what stops a dispatch.
+	if cfg.TorrentBackend != BackendEmbedded {
+		t.Errorf("TorrentBackend = %q, want %q", cfg.TorrentBackend, BackendEmbedded)
+	}
+	if !cfg.DownloadsConfigured() {
+		t.Error("DownloadsConfigured() = false with the embedded engine, which needs no credentials")
+	}
+	if cfg.VPNConfigured() {
+		t.Error("VPNConfigured() = true with nothing set")
+	}
+	if !cfg.VPNRequired {
+		t.Error("VPNRequired = false by default; a mandatory VPN that defaults to off is a slogan")
+	}
+	if cfg.TorrentStallAfter != 5*time.Minute {
+		t.Errorf("TorrentStallAfter = %v, want 5m", cfg.TorrentStallAfter)
+	}
+}
+
+// TestQBittorrentBackendStillNeedsCredentials: choosing the other backend puts
+// the phase 3 posture back, unchanged.
+func TestQBittorrentBackendStillNeedsCredentials(t *testing.T) {
+	t.Setenv("TORRENT_BACKEND", "qbittorrent")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Embedded() {
+		t.Error("Embedded() = true for TORRENT_BACKEND=qbittorrent")
+	}
 	if cfg.DownloadsConfigured() {
 		t.Error("DownloadsConfigured() = true with no QBIT_USER")
+	}
+}
+
+// An unknown backend fails at startup naming both valid values, rather than
+// silently falling back to either. Falling back would mean a typo in a compose
+// file quietly downloads without the tunnel.
+func TestUnknownBackendIsAStartupError(t *testing.T) {
+	t.Setenv("TORRENT_BACKEND", "transmission")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load accepted an unknown TORRENT_BACKEND")
+	}
+	for _, want := range []string{BackendEmbedded, BackendQBittorrent} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to name %q", err, want)
+		}
+	}
+}
+
+// VPN_REQUIRED is the one escape hatch, and it has to be typed.
+func TestVPNRequiredCanBeTurnedOff(t *testing.T) {
+	t.Setenv("VPN_REQUIRED", "false")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.VPNRequired {
+		t.Error("VPN_REQUIRED=false was ignored")
+	}
+
+	t.Setenv("VPN_REQUIRED", "perhaps")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted VPN_REQUIRED=perhaps")
+	}
+}
+
+// A VPN_CONFIG_FILE that cannot be read is an error, not a silent "no VPN".
+func TestVPNConfigFileMustBeReadable(t *testing.T) {
+	t.Setenv("VPN_CONFIG_FILE", "/nowhere/wg0.conf")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted an unreadable VPN_CONFIG_FILE")
+	}
+
+	path := filepath.Join(t.TempDir(), "wg0.conf")
+	if err := os.WriteFile(path, []byte("[Interface]\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("VPN_CONFIG_FILE", path)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.VPNConfigured() {
+		t.Error("VPNConfigured() = false after reading a file")
 	}
 }
 
@@ -205,13 +295,13 @@ func TestImportDefaults(t *testing.T) {
 	}
 }
 
-// The default has to agree with the constant the importer falls back to, or a
-// deployment that sets DOWNLOADS_PATH and not QBIT_DOWNLOADS_PATH would
-// translate against a different root than it reads about.
-func TestQBitDownloadsPathDefaultMatchesTheImporter(t *testing.T) {
-	if defaultQBitDownloadsPath != importer.DefaultQBitDownloads {
-		t.Errorf("config default %q != importer.DefaultQBitDownloads %q",
-			defaultQBitDownloadsPath, importer.DefaultQBitDownloads)
+// The default has to agree with the constant the qBittorrent adapter falls back
+// to, or a deployment that sets DOWNLOADS_PATH and not QBIT_DOWNLOADS_PATH
+// would translate against a different root than it reads about.
+func TestQBitDownloadsPathDefaultMatchesTheAdapter(t *testing.T) {
+	if defaultQBitDownloadsPath != qbit.DefaultDownloadsPath {
+		t.Errorf("config default %q != qbit.DefaultDownloadsPath %q",
+			defaultQBitDownloadsPath, qbit.DefaultDownloadsPath)
 	}
 }
 

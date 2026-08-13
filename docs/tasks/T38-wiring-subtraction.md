@@ -28,11 +28,17 @@ required and the new one does not. The satisfying part.
    ([D17](../decisions.md#d17--settings-is-read-only-and-the-settings-table-stays-unused)), and
    `configured: true` has always been the honest amount to say.
 5. **Collapse add-then-confirm into one call.** `TorrentClient.AddMagnet` becomes
-   `Add(ctx, magnet, category) (torrent.Torrent, error)`. The engine's add *is* authoritative and
-   returns the torrent. qBittorrent's cannot — measured in phase 3: `torrents/add` answers
+   `Add(ctx, magnet, hash, category) (torrent.Torrent, error)`. The engine's add *is* authoritative
+   and returns the torrent. qBittorrent's cannot — measured in phase 3: `torrents/add` answers
    `200 Ok.` for a magnet it ignored and `Fails.` for one it already holds, and never returns a hash
    — so the add-then-look-up dance moves **inside that adapter**, which is the only place that
    knows why it exists. `Dispatch` loses its two-error reasoning and reads like what it does.
+
+   **Outstanding.** Everything else in this task is built; this is not. It is a pure refactor —
+   nothing works differently after it — and it touches the interface, both backends, dispatch and
+   every fake in `internal/download`'s tests, so it is a commit of its own rather than a rushed
+   passenger on this one. The two-error reasoning in `Dispatch` is correct today and its comments
+   say why.
 6. **The importer stops knowing about deployment paths.** `Paths`, `translate` and `relativeTo`
    leave `internal/importer`. The neutral `Torrent.ContentPath` becomes, by contract, **a path
    curator can open**: the engine has one namespace so there is nothing to translate, and the
