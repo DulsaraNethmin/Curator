@@ -21,5 +21,12 @@
 # on a fresh clone and under every `git bisect` step alike.
 /internal/web/dist/*
 !/internal/web/dist/.gitkeep
+
+# The embedded engine's data directory. DOWNLOADS_DIR defaults to ./downloads,
+# so a clone run with no configuration at all writes payloads — and a .curator/
+# of metainfo files beside them — straight into the working tree. Anchored, for
+# the reason at the top of this file.
+/downloads/
+
 .idea/
 .vscode/
