@@ -7,11 +7,13 @@ embedded Next.js UI. Read [`docs/architecture.md`](docs/architecture.md) for the
 [`docs/decisions.md`](docs/decisions.md) before overturning anything — several decisions here
 reversed an earlier plan for reasons that were expensive to establish.
 
-**Phases 1 and 2 are done** (both verified 2026-08-12). **Phase 3 is built**, with one verification
-outstanding — a dispatch against the real qBittorrent, which needs its Web UI password. **Phase 4 is
-built and verified locally**; it has never run against the Pi, on purpose. **Phase 5 is built** —
-five screens, embedded in the binary. Tasks live in
-[`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
+**Phases 1 and 2 are done** (both verified 2026-08-12). **Phase 3 is built**, and its outstanding
+dispatch has now run against a real qBittorrent 5.1.2 — a local container, not the Pi's. **Phase 4
+is built and verified locally**, including one real download hardlinked into the library; it has
+never run against the Pi, on purpose. **Phase 5 is built** — seven screens embedded in the binary,
+including the TMDB-first redesign of T27–T31, where the film comes from TMDB and releases hang off
+it ([D20](docs/decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it)). Tasks live
+in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 
 ### Phase 4 writes to disk, and only ever locally
 
