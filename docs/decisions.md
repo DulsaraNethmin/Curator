@@ -434,3 +434,90 @@ replaced yet.
 LAN, which is the same posture as the rest of curator and as the *arr stack it replaces — but delete
 is the first request that destroys something. The UI therefore says exactly what will be removed and
 how much disk it frees before it does it.
+
+---
+
+## D20 — The film comes from TMDB; the search box only finds it
+
+**Status:** decided, from a failure in the first real download · **Replaces:** typing a title and a
+year into a search box
+
+Curator used to learn what a film was called from whatever was typed. Searching `avengers` with no
+year recorded `title='avengers', year=0`, and that one row produced three separate failures: the
+import failed on every poll tick for ever, because `DestFolder` correctly refuses a year of 0; the
+scan matched the yearless row against TMDB and got **Avengers: Doomsday (2026)**, which is the
+confident-wrong-match [D9](#d9--query-tmdb-with-the-raw-folder-title) warns about in those exact
+words; and the folder it would have written was `Avengers Endgame (2019)` rather than the film's
+actual name.
+
+So **the movie is the primary object.** You search TMDB, pick a film from a grid of posters, and the
+releases hang off that film. Title, year and `tmdb_id` then come from TMDB and are authoritative:
+`POST /api/downloads` has always accepted a `tmdb_id` and has never been sent one, and
+`library.DestFolder` already turns the canonical `Avengers: Endgame` into the correct folder
+`Avengers - Endgame (2019)` by D9's colon rule.
+
+The measurement that settled it: **the first result TMDB returns for `avengers` is Avengers:
+Doomsday.** The old code took position one. A human looking at posters does not.
+
+### The canonical title is not the title the indexers answer
+
+Measured against the live indexers, and the reason this is a decision rather than a refactor:
+
+| query | 1337x | yts | tpb |
+|---|---|---|---|
+| `Avengers: Endgame` | **0** | 7 | 100 |
+| `Avengers Endgame` | **20** | 7 | 100 |
+| `Avengers: Infinity War` | **0** | 6 | 100 |
+| `Avengers Infinity War` | **20** | 6 | 100 |
+| `Spider-Man: No Way Home` | 20 | 6 | 55 |
+| `Dune: Part Two` | 20 | 6 | 73 |
+
+A colon silently loses 1337x on some films and not others, and it does it **without an error**:
+`indexers[]` reports `ok: true, count: 0`, which is indistinguishable from a film nobody has
+uploaded. Stripping the colon never lost a result in any case measured.
+
+So there are now **two titles**, and conflating them is the bug this prevents:
+
+- the **canonical** title — `Avengers: Endgame` — is what the API echoes, what dispatch stores, and
+  what becomes the library folder;
+- the **query** title — `Avengers Endgame` — is what the indexers are asked.
+
+`NormaliseQuery` strips the colon and **nothing else**. Not the hyphen: `Spider-Man` and `X-Men`
+contain real ones, and D9 exists because of that. Not the ampersand or the apostrophe — unmeasured,
+and this function is a record of a measurement rather than a guess.
+
+It is applied **once, in the aggregator, above the cache**. Putting it inside `x1337.searchQuery` —
+the narrower option — would leave `indexer.Cache` holding two entries, `avengers: endgame` and
+`avengers endgame`, for one identical minter fetch, so the TMDB path and the manual path would each
+pay their own browser launch. Normalising above the cache means the key is the string actually
+queried. This does **not** change `cacheNormaliseTitle`, which still refuses to fold punctuation on
+its own, for the reason its comment gives: it must not merge queries that are genuinely different,
+and after `NormaliseQuery` they are literally the same string.
+
+### The key stays optional
+
+An unset `TMDB_API_KEY` remains a supported state, as for `QBIT_USER` and `JELLYFIN_API_KEY`. With
+no key, Search falls back to the release-name search that exists today and dispatch still demands a
+year. Two paths, one of them already built — the cost of keeping "partially useful without every
+integration" true.
+
+---
+
+## D21 — The movie page is `/movie/?id=…`, because the UI is a static export
+
+**Status:** decided, forced by [D16](#d16--the-ui-is-embedded-with-all-and-a-committed-placeholder-keeps-go-build-honest)
+
+`output: 'export'` cannot build a dynamic route like `/movie/[tmdbId]/` without
+`generateStaticParams`, and TMDB ids cannot be enumerated at build time. So the id rides in a query
+string on a static route.
+
+It costs a slightly uglier URL and buys the single-binary embed, which is the whole point of the
+project. `internal/web`'s `resolve()` needs **no change**: `r.URL.Path` is `/movie/`, the query is
+not part of it, and the export writes `dist/movie/index.html`.
+
+Teaching `internal/web` to rewrite `/movie/{id}/` was rejected. It would work in the binary and 404
+under `next dev`, so the dev server and the shipped artifact would disagree about which URLs exist —
+which is the class of surprise `web.go` already refuses a catch-all for.
+
+`useSearchParams()` requires a `<Suspense>` boundary; without one the **build fails**, so this is
+enforced by the toolchain rather than by remembering.
