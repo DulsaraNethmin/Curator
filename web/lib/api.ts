@@ -191,12 +191,84 @@ export type Integration = {
   detail?: string;
 };
 
+/**
+ * SettingKind decides which control the form draws. The list is the Go
+ * registry's, and it is a union of literals plus `string` on purpose: a kind
+ * added in phase 8 must render as a text box rather than fail the build of a
+ * UI that has not been rewritten yet.
+ */
+export type SettingKind =
+  | 'text'
+  | 'int'
+  | 'bool'
+  | 'duration'
+  | 'url'
+  | 'path'
+  | 'enum'
+  | 'multiline'
+  | 'password';
+
+/** Where the value curator is running on came from. The environment wins. */
+export type SettingSource = 'env' | 'stored' | 'default';
+
+/**
+ * Setting is one row of the registry as the form sees it.
+ *
+ * `value` is optional because absent and empty are different answers, and
+ * conflating them is the one mistake this screen must not make: it is **absent
+ * for every secret, always** — there is no masked value, no length and no
+ * prefix to render — and present as `''` for DOWNLOADS_PATH, where empty is a
+ * deliberate setting meaning "use the path qBittorrent reported".
+ *
+ * `pending_change` is the field to branch on, never `pending !== null`. Two
+ * states have a pending change with nothing to print: a secret that differs,
+ * and a setting that was cleared, whose pending value is a default (D29).
+ */
+export type Setting = {
+  key: string;
+  group: string;
+  kind: SettingKind | string;
+  options?: string[];
+  secret: boolean;
+
+  // The variable that overrides this setting, and — for VPN_CONFIG alone — the
+  // second one naming a file whose contents are the value. The screen renders
+  // them rather than keeping its own copy of the registry, which would be the
+  // second vocabulary phase 7 exists to prevent.
+  env: string;
+  file_env?: string;
+
+  value?: string;
+  configured: boolean;
+  source: SettingSource | string;
+  editable: boolean;
+
+  // A stored value that would not decrypt — a database restored without its
+  // key file. It behaves as unset and asks to be entered again (D28).
+  unreadable?: boolean;
+
+  pending: string | null;
+  pending_change: boolean;
+  restart_required: boolean;
+};
+
 export type SettingsResult = {
   version: string;
   probed: boolean;
   integrations: Integration[];
   paths: Record<string, string>;
   intervals: Record<string, string>;
+  settings: Setting[];
+};
+
+/**
+ * AuthStatus is what GET /api/auth answers, and it is two booleans because the
+ * question is which screen to draw: `required` says whether there is a password
+ * at all, `authenticated` whether this browser would get past it.
+ */
+export type AuthStatus = {
+  required: boolean;
+  authenticated: boolean;
 };
 
 /**
@@ -213,10 +285,22 @@ export type SettingsResult = {
 export class ApiError extends Error {
   readonly status: number;
 
-  constructor(status: number, message: string) {
+  /**
+   * The per-field messages a settings write answers with. `PUT /api/settings`
+   * is the only endpoint that sends them, and they are the whole reason a
+   * rejected save can put "not a valid duration" under the one input that
+   * caused it instead of a banner over eight that did not.
+   *
+   * 400 is a value the parser refused; 409 is a key the environment owns. Both
+   * arrive in the same shape because the form does the same thing with them.
+   */
+  readonly fields: Record<string, string>;
+
+  constructor(status: number, message: string, fields: Record<string, string> = {}) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.fields = fields;
   }
 
   get expiredSearch() {
@@ -226,6 +310,24 @@ export class ApiError extends Error {
   get unconfigured() {
     return this.status === 503;
   }
+
+  /** The environment owns this key, so the screen may not write it. */
+  get shadowed() {
+    return this.status === 409 && Object.keys(this.fields).length > 0;
+  }
+}
+
+/**
+ * The one hook <Gate> installs, and the reason authentication needs no state
+ * manager: a 401 arriving mid-session is the same event as the first load
+ * finding `authenticated: false`, so both flip one piece of state in one
+ * component. Everything else in the UI keeps calling the API in ignorance of
+ * whether there is a password at all.
+ */
+let unauthorized: (() => void) | null = null;
+
+export function onUnauthorized(handler: (() => void) | null) {
+  unauthorized = handler;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -233,6 +335,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(base + path, {
       ...init,
+      // On EVERY call, not only the ones that need it. The session cookie is
+      // HttpOnly, so this is the only way it travels, and the default
+      // ('same-origin') is silently correct in the embedded build and silently
+      // wrong under `next dev`, where :3000 calls :8090 — which is the setup
+      // this would be debugged in.
+      credentials: 'include',
       headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
     });
   } catch (cause) {
@@ -246,18 +354,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // Every handler answers {"error": "..."} — phase 1 established the shape and
     // phases 2-4 kept it, so the message is worth showing verbatim.
     let message = text || response.statusText;
+    let fields: Record<string, string> = {};
     try {
       const body = JSON.parse(text);
       if (typeof body?.error === 'string') message = body.error;
+      if (body?.fields && typeof body.fields === 'object') fields = body.fields;
     } catch {
       // A non-JSON body means something in front of curator answered, not
       // curator. Showing it raw is more useful than hiding it.
     }
-    throw new ApiError(response.status, message);
+
+    // The login endpoint is excluded deliberately: its 401 is "wrong password",
+    // which belongs under the password box on a form that is already showing.
+    // Routing it through the gate would reset the form somebody is typing in.
+    if (response.status === 401 && path !== authLoginPath) unauthorized?.();
+
+    throw new ApiError(response.status, message, fields);
   }
 
   return (text ? JSON.parse(text) : null) as T;
 }
+
+const authLoginPath = '/api/auth/login';
 
 export const api = {
   movies: () => request<Movie[]>('/api/movies'),
@@ -315,6 +433,33 @@ export const api = {
   // is opt-in: the page loads from configuration alone and checks on request.
   settings: (probe = false) =>
     request<SettingsResult>(`/api/settings${probe ? '?probe=1' : ''}`),
+
+  /**
+   * A partial settings object: key → the text the environment variable would
+   * have carried. **Absent leaves a setting alone and `''` clears it**, which
+   * is why a form must send only what changed rather than everything it drew —
+   * the whole write is one transaction, so one rejected field rejects all of
+   * them.
+   *
+   * It answers with the same body GET does, so a save needs no reload.
+   */
+  updateSettings: (changes: Record<string, string>) =>
+    request<SettingsResult>('/api/settings', {
+      method: 'PUT',
+      body: JSON.stringify(changes),
+    }),
+
+  // Open, and it always answers: it is how the UI knows which screen to draw
+  // before it has a cookie.
+  authStatus: () => request<AuthStatus>('/api/auth'),
+
+  // The cookie comes back in a Set-Cookie the JS never sees — it is HttpOnly —
+  // so the only thing to do with the response is stop drawing the login form.
+  login: (password: string) =>
+    request<AuthStatus>(authLoginPath, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
 };
 
 // --- formatting ------------------------------------------------------------
