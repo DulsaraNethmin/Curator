@@ -49,6 +49,22 @@ const (
 	// mutex every comparison takes, so the process answers at most one wrong
 	// password per second however many connections ask at once.
 	failureDelay = time.Second
+
+	// ticketParam is the query parameter a player carries a ticket in.
+	//
+	// It is `ticket` and not the obvious `t` because T44's remux endpoint takes
+	// a seek offset that wanted the same short name; the first draft of both had
+	// `t` (docs/phase-8.md, "?t= was going to mean two things").
+	ticketParam = "ticket"
+
+	// ticketMessage prefixes what a ticket signs, and is the whole of its domain
+	// separation from a session.
+	//
+	// A session signs bare digits; a ticket signs "ticket\n" + path + "\n" +
+	// expiry under the same key. The two messages can never coincide, so a
+	// cookie value cannot be replayed as a ticket and a ticket cannot be pasted
+	// in as a cookie — asserted in the tests rather than argued here.
+	ticketMessage = "ticket\n"
 )
 
 // SessionLabel is what cmd/curator derives the session key under.
@@ -292,6 +308,21 @@ func (a *Auth) check(r *http.Request, live *credential) string {
 		return "wrong password"
 	}
 
+	// The ticket is third, after both of the credentials that are not in a URL.
+	// A browser holding a cookie never reaches this line, which is the point:
+	// the ticket exists for VLC, mpv and a television, and a credential in a
+	// query string is not what something with a cookie jar should be using
+	// (docs/decisions.md D31).
+	if ticket := r.URL.Query().Get(ticketParam); ticket != "" {
+		if live.validTicket(ticket, r.URL.Path, time.Now()) {
+			return ""
+		}
+		// Its own reason, so the log says which credential failed. It is
+		// logged, unlike no credential at all: an expired ticket is a URL
+		// somebody pasted into a player and is worth being able to see.
+		return "the ticket is expired, is for another path, or was signed with a password that has since changed"
+	}
+
 	if presented {
 		return "the session has expired, or was signed with a password that has since changed"
 	}
@@ -362,6 +393,61 @@ func (c *credential) valid(value string, now time.Time) bool {
 		return false
 	}
 	return hmac.Equal([]byte(c.session(unix)), []byte(value))
+}
+
+// ticket is the credential a player carries in a URL: the same shape as a
+// session, over a message that names the path it is for.
+//
+// `<expiry>.<HMAC-SHA256 of "ticket\n" + path + "\n" + expiry>`, keyed by the
+// session key mixed with the password — so all three of the properties D31
+// claims fall out of the construction rather than being built. It is valid for
+// one path, because the path is in the signed message. It expires, because the
+// expiry is. And changing the password invalidates every outstanding one, with
+// nothing to evict, because c.key no longer exists.
+//
+// base64url without padding, so the value needs no escaping in a query string.
+func (c *credential) ticket(path string, unix int64) string {
+	stamp := strconv.FormatInt(unix, 10)
+	mac := hmac.New(sha256.New, c.key)
+	mac.Write([]byte(ticketMessage + path + "\n" + stamp))
+	return stamp + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// validTicket reports whether value is a ticket this credential signed for this
+// path and that has not run out.
+//
+// Re-derived and compared whole, exactly as valid does it, so a tampered expiry
+// fails on the signature and a non-canonical one fails on the re-serialisation.
+func (c *credential) validTicket(value, path string, now time.Time) bool {
+	stamp, _, ok := strings.Cut(value, ".")
+	if !ok {
+		return false
+	}
+	unix, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil || !now.Before(time.Unix(unix, 0)) {
+		return false
+	}
+	return hmac.Equal([]byte(c.ticket(path, unix)), []byte(value))
+}
+
+// Ticket mints a bearer credential for one URL path, and satisfies Tickets.
+//
+// ok is false when there is no password to be a credential for, which is the
+// default and is how POST /api/movies/{id}/playback knows to answer with a
+// plain URL rather than a meaningless token. It is also false in the state
+// install refuses to enforce — authentication switched on with nothing to log
+// in with — because a ticket for a door that is not locked is a token that
+// would keep working after somebody locked it.
+//
+// The returned time is the one that was signed, truncated to the second, so
+// what a caller reports as expires_at is exactly when it stops working.
+func (a *Auth) Ticket(path string, ttl time.Duration) (string, time.Time, bool) {
+	live := a.live.Load()
+	if !live.Enabled {
+		return "", time.Time{}, false
+	}
+	expires := time.Now().Add(ttl).Truncate(time.Second)
+	return live.ticket(path, expires.Unix()), expires.UTC(), true
 }
 
 // authBody is what GET /api/auth answers, and what a successful login answers.

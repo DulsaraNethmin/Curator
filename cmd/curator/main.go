@@ -269,7 +269,14 @@ func run() error {
 		WithDownloads(downloads).
 		WithSettings(view).
 		WithLogs(logBuffer).
-		WithBrowser(browser)
+		WithBrowser(browser).
+		// *Auth is the minter: a ticket is the session cookie's own machinery
+		// pointed at a URL, so the thing that signs one signs the other with
+		// the same key (docs/decisions.md D31). It is passed even with
+		// authentication off — Ticket answers ok=false in that state, which is
+		// how POST .../playback returns a plain URL and the UI keeps one code
+		// path.
+		WithTickets(auth)
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
 	apiSrv.RegisterDownloads(mux)
@@ -277,6 +284,7 @@ func run() error {
 	apiSrv.RegisterLogs(mux)
 	apiSrv.RegisterMovieDelete(mux)
 	apiSrv.RegisterBrowse(mux)
+	apiSrv.RegisterStream(mux)
 	auth.Register(mux)
 
 	// The UI is mounted last and at "/", so it can never shadow an API pattern.

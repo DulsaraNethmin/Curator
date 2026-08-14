@@ -158,7 +158,7 @@ func TestImportRejectsATitleThatIsNotAName(t *testing.T) {
 func TestAssertInsideLibraryRefusesAnEscape(t *testing.T) {
 	h := newHarness(t)
 
-	if err := h.importer.assertInsideLibrary(filepath.Join(h.library, "Interstellar (2014)")); err != nil {
+	if err := library.AssertInside(h.library, filepath.Join(h.library, "Interstellar (2014)")); err != nil {
 		t.Errorf("a normal destination was refused: %v", err)
 	}
 	for _, dest := range []string{
@@ -166,7 +166,7 @@ func TestAssertInsideLibraryRefusesAnEscape(t *testing.T) {
 		filepath.Join(h.library, "..", "..", "etc"),
 		"/etc/cron.d",
 	} {
-		if err := h.importer.assertInsideLibrary(dest); err == nil {
+		if err := library.AssertInside(h.library, dest); err == nil {
 			t.Errorf("%s was accepted as inside %s", dest, h.library)
 		}
 	}
