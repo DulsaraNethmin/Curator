@@ -19,10 +19,13 @@ it ([D20](docs/decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-fi
 built and verified locally**, tunnel included: the torrent engine and a WireGuard tunnel now live
 inside the binary
 ([D22](docs/decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend),
-[D27](docs/decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)). **Phase 7 is
-specified**: [`docs/phase-7.md`](docs/phase-7.md) makes settings writable, which is what a
-`docker run` with no `.env` needs and what a private key at rest forces
-([D28](docs/decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api)).
+[D27](docs/decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)). **Phase 7 is built
+and verified locally**: settings are writable, secrets are encrypted at rest and write-only across
+the API, and one optional password gates it
+([D28](docs/decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api),
+[D25](docs/decisions.md#d25--authentication-is-optional-and-off-by-default)). **Phase 8 is
+specified**: [`docs/phase-8.md`](docs/phase-8.md) makes the library something you can press play on —
+direct play, a remux for the containers a browser refuses, and Open in Jellyfin.
 Tasks live in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 
 ### Phase 4 writes to disk, and only ever locally

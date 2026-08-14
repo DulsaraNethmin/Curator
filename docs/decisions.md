@@ -594,6 +594,48 @@ reverted under pressure.
 
 ---
 
+## D24 — Playback remuxes, and never transcodes
+
+**Status:** decided while specifying phase 8 · **Implemented in:**
+[T44](tasks/T44-remux.md) · **Does not touch:** [D4](#d4--pure-go-sqlite)
+
+Direct play first. When the browser refuses the file, curator rewrites the **container** and copies
+the streams — `ffmpeg -c copy`, a few percent of one core, lossless. It never re-encodes the video,
+not behind a setting and not for one codec.
+
+**The container is what actually breaks, so this buys nearly everything a transcode would.** YTS
+ships `.mp4` that plays in every browser; the `.mkv` releases are where Play fails, and an
+H.264 + AAC stream inside an MKV is playable the moment it is inside a fragmented MP4 instead. The
+remaining cases — HEVC a browser will not decode, DTS or TrueHD audio, VC-1 — are a minority of a
+library, and their answer is the VLC link rather than a bigger ffmpeg.
+
+**What a transcode would cost, which is the arithmetic behind this.** A Pi 5 does not re-encode 1080p
+in software in real time, so the honest version of "transcode when needed" on the target hardware is
+"stutter when needed". It also throws away quality the user chose deliberately half an hour earlier
+at a specific release size, and it turns a playback feature into a queue, a job, a progress bar and a
+cache with an eviction policy. Jellyfin does all of that well and is one click away; curator's claim
+is the film it just downloaded, on the page you are already on.
+
+**ffmpeg is an external binary, not a linked library**, so `CGO_ENABLED=0` and D4 are untouched — the
+same property that makes the arm64 cross-compile one command makes a `FROM scratch` image possible,
+and a cgo libav binding would end both. It is **optional**: absent ffmpeg means direct play only,
+reported in the UI and never a start-up failure, which is
+[D15](#d15--the-jellyfin-refresh-is-best-effort-and-its-key-is-optional)'s posture applied to a
+second optional dependency.
+
+**The alternatives, and why they lost.** *Transcoding on demand* is above. *Shipping the 78 MB
+general-purpose static ffmpeg* is four times the binary curator ships today, for encoders this
+decision says will never run. *Pre-remuxing every import to MP4* doubles the disk for a file most
+players already handle and makes the library a derived artifact rather than the films themselves.
+*Running Jellyfin for playback and linking to it* is what the Open in Jellyfin link already does —
+this is the case where you do not want to leave the page.
+
+**The stated size budget is 20 MB, and past 40 MB the answer is to ship direct play alone.** That
+fallback is real, not a formality: T43 and T45 stand without T44, and the `error` event's fallback
+chain simply has one fewer step before the VLC card.
+
+---
+
 ## D25 — Authentication is optional, and off by default
 
 **Status:** decided, implemented in [T41](tasks/T41-auth.md) · **Rewrites:**
@@ -869,3 +911,47 @@ it.
 `live_test.go`'s Debian magnet, which carries exactly one **`http://`** tracker — the one tracker
 scheme that never asks for a packet socket. A fixture that avoided the normal case made the normal
 case the untested one for two phases.
+
+---
+
+## D31 — The stream is behind the same password, and a ticket is how a player carries it
+
+**Status:** decided while specifying phase 8 · **Implemented in:**
+[T43](tasks/T43-stream.md) · **Follows from:**
+[D25](#d25--authentication-is-optional-and-off-by-default)
+
+`GET /api/movies/{id}/stream` is protected exactly like every other route under `/api/`, with no
+exemption. A player that cannot carry a cookie carries a **ticket** instead: a signed, expiring,
+single-path bearer credential minted only when somebody asks for one.
+
+**Exempting the route was the cheap option and it is indefensible.** With authentication on,
+`GET /api/movies` is protected — so an install that hides the *titles* of its films while serving the
+*films* to anyone on the network is not a posture, it is an oversight. The browser needs nothing new
+for this: a `<video src>` is a same-origin subresource and sends the session cookie by itself.
+
+**The ticket is the cookie's own machinery pointed at a URL**, which is why it adds a signature and
+no state: `<expiry>.<HMAC>` over `"ticket\n" + path + "\n" + expiry`, keyed by the session key mixed
+with the current credential. Three properties fall out rather than being built — it is valid for one
+path, so a ticket for one film is not a ticket for the library; it expires in 12 hours, comfortably
+longer than a film and far shorter than a cookie's 30 days; and **changing the password invalidates
+every outstanding one**, with nothing to evict, exactly as it already ends every session.
+
+**Its cost, stated rather than implied: a ticket is a bearer credential in a URL.** It lands in shell
+history, in VLC's recent-files list, and in any proxy's access log. So it is minted on request and
+never used by the page's own player, and the playback response keeps the two apart — a relative
+`stream_url` for the browser, an absolute `external_url` for the clipboard.
+
+**The alternative that lost: putting the password in the URL.**
+`http://x:hunter2@curator:8090/api/movies/7/stream` works in VLC today with no code at all, and it
+will keep working, because it is a property of Basic auth and not something curator can or should
+block. It is not what a *button* should hand out: that URL is the whole install rather than one film,
+it never expires, it cannot be revoked short of changing the password, and it goes into the same
+recent-files list. A per-film credential that dies on its own is strictly better for the same click.
+
+**Session tokens in a query string were rejected for the browser path** for the ordinary reason —
+they leak through `Referer`, through history, and through anything that logs a URL — which is
+precisely why the ticket is confined to the one case that has no other option.
+
+**With authentication off, which is the default, none of this exists.**
+`POST /api/movies/{id}/playback` answers with plain URLs and mints nothing, so the UI has one code
+path and every LAN install gets a Play button and never meets a ticket.
