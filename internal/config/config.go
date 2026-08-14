@@ -52,6 +52,14 @@ type Config struct {
 	JellyfinURL       string
 	JellyfinAPIKey    string
 
+	// JellyfinPublicURL is what a BROWSER can reach, and it is not redundant
+	// with JellyfinURL: that one is what *curator* uses, which inside Docker is
+	// http://jellyfin:8096 — a name that resolves on the container network and
+	// nowhere a browser can follow. Empty falls back to JellyfinURL, which is
+	// right on a laptop and wrong in the image; that gap is the whole reason
+	// the setting exists (docs/phase-8.md). Use JellyfinLink, never this field.
+	JellyfinPublicURL string
+
 	// Phase 6: curator's own engine, and the tunnel under it.
 	//
 	// TorrentBackend chooses which client downloads. `embedded` is the default
@@ -100,6 +108,20 @@ func (c *Config) VPNConfigured() bool { return strings.TrimSpace(c.VPNConfig) !=
 // (decisions.md D15).
 func (c *Config) JellyfinConfigured() bool {
 	return c.JellyfinURL != "" && c.JellyfinAPIKey != ""
+}
+
+// JellyfinLink is the base a BROWSER should use to reach Jellyfin.
+//
+// One function rather than the fallback written at each use, because there will
+// be more than one use and two answers to "which URL does the link get" is
+// exactly the bug the setting was added to prevent: inside Docker curator talks
+// to http://jellyfin:8096 and a browser cannot, so a link built from the wrong
+// one is the kind of failure that gets reported as "Jellyfin is down".
+func (c *Config) JellyfinLink() string {
+	if public := strings.TrimSpace(c.JellyfinPublicURL); public != "" {
+		return public
+	}
+	return c.JellyfinURL
 }
 
 // DownloadsConfigured reports whether there is something to download with.
@@ -298,6 +320,11 @@ func Load(resolved map[string]string) (*Config, error) {
 		QBitDownloadsPath: r.get("QBIT_DOWNLOADS_PATH", defaultQBitDownloadsPath),
 		JellyfinURL:       r.get("JELLYFIN_URL", defaultJellyfinURL),
 		JellyfinAPIKey:    r.get("JELLYFIN_API_KEY", ""),
+
+		// No default, and empty is meaningful: "the browser can reach Jellyfin
+		// at the same URL curator does". A default of defaultJellyfinURL here
+		// would hard-code 127.0.0.1 into a link somebody clicks from a phone.
+		JellyfinPublicURL: r.get("JELLYFIN_PUBLIC_URL", ""),
 
 		DownloadsDir:  r.get("DOWNLOADS_DIR", defaultDownloadsDir),
 		VPNIPCheckURL: r.get("VPN_IP_CHECK_URL", ""),

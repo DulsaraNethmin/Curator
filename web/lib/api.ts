@@ -143,6 +143,47 @@ export type MovieDetails = MovieSummary & {
   studios: string[];
   homepage: string;
   imdb_id: string;
+
+  /**
+   * Where to open this film in Jellyfin, absent when there is no link to draw.
+   *
+   * Absent rather than '' in the two states that mean the same thing to a
+   * screen: no Jellyfin configured, and a film curator does not have on disk.
+   * The UI draws nothing for an absent one — no disabled button and no tooltip
+   * explaining what you are missing.
+   *
+   * It is a deep link to the item when the Go side found one and a link to a
+   * Jellyfin search when it did not, and this deliberately cannot tell which.
+   * Both land somewhere useful and the difference is not one anybody can act on.
+   */
+  jellyfin_url?: string;
+};
+
+/**
+ * PlaybackURLs is what POST /api/movies/{id}/playback answers: how this film
+ * can be played, in one round trip.
+ *
+ * The two URLs are kept apart on purpose. `stream_url` is relative and
+ * same-origin, so a <video src> sends the session cookie by itself and no
+ * credential ever reaches the DOM. `external_url` is absolute and carries a
+ * ticket when there is a password for one to stand in for — it is for the
+ * clipboard, and **the page must never fetch it**, which would put a bearer
+ * credential into the browser's network log for no gain (D31).
+ */
+export type PlaybackURLs = {
+  stream_url: string;
+  external_url: string;
+
+  /**
+   * The same film through ffmpeg, **absent when this install has no ffmpeg** —
+   * omitted, not empty, and not a URL that answers 503. Its absence is how this
+   * screen knows to say direct play only rather than offering a fallback that
+   * cannot run.
+   */
+  remux_url?: string;
+
+  /** Absent with authentication off, because nothing was minted. */
+  expires_at?: string;
 };
 
 export type TMDBSearchResult = {
@@ -460,6 +501,28 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(changes),
     }),
+
+  // One call, then one <video>. It is a POST because it MINTS something when
+  // there is a password — a ticket is not a thing to hand out on a GET that a
+  // prefetcher might make.
+  playback: (movieID: number) =>
+    request<PlaybackURLs>(`/api/movies/${movieID}/playback`, { method: 'POST' }),
+
+  /**
+   * One HEAD, to tell a codec failure from a transport failure.
+   *
+   * `MediaError.code` is 4 for a container the browser will not decode *and*
+   * for a response it could not load at all, so the error event cannot tell an
+   * expired session from an unplayable file. This can: 200 means the bytes are
+   * there and the browser simply refuses them, and anything else means the
+   * problem is not the codec. Without it an expired cookie silently remuxes,
+   * fails again, and offers VLC for a film that would have played fine after
+   * logging back in.
+   *
+   * It goes through `request`, which is what makes a 401 here reach <Gate> and
+   * draw the login form, exactly as a 401 from any other call does.
+   */
+  probe: (url: string) => request<null>(url, { method: 'HEAD' }),
 
   // Open, and it always answers: it is how the UI knows which screen to draw
   // before it has a cookie.

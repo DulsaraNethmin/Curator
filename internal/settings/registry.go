@@ -143,6 +143,13 @@ var registry = []Setting{
 	{Env: "JELLYFIN_URL", Group: "jellyfin", Kind: KindURL},
 	{Env: "JELLYFIN_API_KEY", Group: "jellyfin", Kind: KindText, Secret: true},
 
+	// The second of phase 8's two rows, and the one that is not obviously
+	// needed until it is: JELLYFIN_URL is what curator uses to reach Jellyfin,
+	// and inside Docker that is http://jellyfin:8096 — a name a browser cannot
+	// resolve. Open in Jellyfin is clicked by a browser. One URL cannot be
+	// both, and empty falls back to JELLYFIN_URL (docs/phase-8.md).
+	{Env: "JELLYFIN_PUBLIC_URL", Group: "jellyfin", Kind: KindURL},
+
 	{Env: "AUTH_ENABLED", Group: "access", Kind: KindBool, Immediate: true},
 	{Env: "AUTH_PASSWORD", Group: "access", Kind: KindPassword, Secret: true, Immediate: true},
 }

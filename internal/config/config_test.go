@@ -500,3 +500,41 @@ func TestIndexersAreOnUnlessTurnedOff(t *testing.T) {
 		t.Error("INDEXER_YTS accepted a value that is not a boolean")
 	}
 }
+
+// JELLYFIN_PUBLIC_URL is the setting that stops "Open in Jellyfin" from being a
+// link to a hostname the browser cannot resolve, and its whole behaviour is the
+// fallback, so that is what is asserted.
+func TestJellyfinLinkPrefersThePublicURL(t *testing.T) {
+	// The image case, and the one the setting exists for: curator reaches
+	// Jellyfin by a container name, and a browser never can.
+	t.Setenv("JELLYFIN_URL", "http://jellyfin:8096")
+	t.Setenv("JELLYFIN_PUBLIC_URL", "http://192.168.1.26:8096")
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.JellyfinLink(); got != "http://192.168.1.26:8096" {
+		t.Errorf("JellyfinLink() = %q, want the public URL — a browser cannot resolve a container name", got)
+	}
+
+	// The laptop case: one URL is both, and nobody should have to say so twice.
+	t.Setenv("JELLYFIN_PUBLIC_URL", "")
+	cfg, err = Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.JellyfinLink(); got != "http://jellyfin:8096" {
+		t.Errorf("JellyfinLink() = %q, want JellyfinURL", got)
+	}
+
+	// Whitespace is what a settings textarea produces, and " " must not beat
+	// a real URL.
+	t.Setenv("JELLYFIN_PUBLIC_URL", "   ")
+	cfg, err = Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.JellyfinLink(); got != "http://jellyfin:8096" {
+		t.Errorf("JellyfinLink() = %q, want JellyfinURL — blank is not a value", got)
+	}
+}

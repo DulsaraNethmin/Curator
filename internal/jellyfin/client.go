@@ -1,15 +1,17 @@
-// Package jellyfin asks Jellyfin to rescan its library, and does nothing else.
+// Package jellyfin asks Jellyfin to rescan its library, looks up one item, and
+// does nothing else.
 //
 // The one on the Pi is 10.10.7 at 192.168.1.26:8096, reached as
-// http://jellyfin:8096 from inside Docker. There is no API key yet, and an
-// unset key disables the refresh rather than failing startup
-// (docs/decisions.md D15).
+// http://jellyfin:8096 from inside Docker. An unset key disables both calls
+// rather than failing startup (docs/decisions.md D15).
 //
-// The narrowness is the design. There are no item queries, no per-item
-// refreshes, no user or session endpoints and no playback control, for the same
-// reason internal/qbit cannot delete or pause a torrent: a method that does not
-// exist cannot be called by mistake against a media server the household is
-// watching. If a later phase needs more, it can add exactly what it needs.
+// The narrowness is the design, and phase 8 amended it by exactly one method.
+// There are no per-item refreshes, no user or session endpoints, no playback
+// control and nothing that writes, for the same reason internal/qbit cannot
+// delete or pause a torrent: a method that does not exist cannot be called by
+// mistake against a media server the household is watching. FindMovie is the
+// one lookup T45 needed and it is read-only; if a later phase needs more, it
+// can add exactly what it needs and no more.
 //
 // RefreshLibrary returns an error, deliberately. The guarantee that a refresh
 // can never fail an import or a poll tick is implemented one layer up, at
@@ -20,10 +22,12 @@ package jellyfin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -35,14 +39,27 @@ import (
 // most.
 const DefaultBaseURL = "http://127.0.0.1:8096"
 
-// requestTimeout bounds the one request this package makes. Jellyfin answers a
-// refresh immediately — it queues the scan rather than performing it — so this
-// is a ceiling for a wedged instance, not a budget.
+// requestTimeout bounds a refresh. Jellyfin answers one immediately — it queues
+// the scan rather than performing it — so this is a ceiling for a wedged
+// instance, not a budget.
 const requestTimeout = 15 * time.Second
+
+// lookupTimeout bounds FindMovie, and it is much shorter than requestTimeout
+// because of who is waiting.
+//
+// A refresh is fired by a poller with nobody watching, so fifteen seconds costs
+// nothing. This one is inside a page load: it decides whether the Open in
+// Jellyfin link is a deep link or a search link, and both are useful, so a
+// Jellyfin that is switched off must cost a moment rather than a page. Measured
+// against the real 10.10.7 over a LAN: 5.5 ms.
+const lookupTimeout = 2 * time.Second
 
 // pathLibraryRefresh queues a scan of every library. Jellyfin answers 204 and
 // does the work in the background.
 const pathLibraryRefresh = "/Library/Refresh"
+
+// pathItems is the query behind Open in Jellyfin.
+const pathItems = "/Items"
 
 // tokenHeader is how Jellyfin takes an API key. It can also be passed as an
 // api_key query parameter, which this package deliberately does not use: a
@@ -149,4 +166,166 @@ func snippet(body []byte) string {
 		flat = flat[:256] + "…"
 	}
 	return strconv.Quote(flat)
+}
+
+// --- the one lookup, and the links it is for --------------------------------
+
+// ErrNotFound reports that Jellyfin answered and does not have this film.
+//
+// Separate from every transport failure for the same reason ErrUnauthorized is:
+// the caller does the same thing with it either way — falls back to a search
+// link — but only one of the two is worth a line in the log.
+var ErrNotFound = errors.New("jellyfin has no movie with this tmdb id")
+
+// maxItemsBody caps the lookup's response.
+//
+// Narrowed by year it is 542 bytes, measured. Unnarrowed — which happens only
+// for a film TMDB has no release date for — it is the whole movie library at
+// about 1.2 KB per film, so this is roughly a three-thousand-film ceiling.
+// Past it the JSON is truncated, the decode fails, and the caller falls back to
+// the search link, which is the same thing it does for every other miss.
+const maxItemsBody = 4 << 20
+
+// Item is a film as Jellyfin holds it: enough to build a link to it and
+// nothing else. Widening this is how the narrowness rule above gets lost one
+// convenient field at a time.
+type Item struct {
+	ID       string
+	ServerID string
+}
+
+// itemsResponse is the shape of GET /Items, cut down to what is used.
+type itemsResponse struct {
+	Items []struct {
+		ID          string            `json:"Id"`
+		ServerID    string            `json:"ServerId"`
+		ProviderIDs map[string]string `json:"ProviderIds"`
+	} `json:"Items"`
+}
+
+// providerTMDB is the key Jellyfin files a TMDB id under. Compared case-
+// insensitively at the point of use: 10.10.7 writes "Tmdb", and a version that
+// wrote "TMDB" would otherwise silently stop finding anything.
+const providerTMDB = "Tmdb"
+
+// FindMovie returns the Jellyfin item for a film, found by its TMDB id.
+//
+// **The TMDB id and not the path, and that is a measured decision rather than a
+// preference** (docs/decisions.md D32). Jellyfin's /Items accepts a Path
+// parameter and silently ignores it — a path that exists and a path that does
+// not both answer the whole library — and it ignores AnyProviderIdEquals the
+// same way, while years= and searchTerm= filter perfectly well. So there is no
+// server-side identity filter to use, and the match happens here.
+//
+// The path would be the wrong key even if it worked: Jellyfin sees its own bind
+// mount (/movies) where curator sees /media/storage/media/movies, and Jellyfin's
+// Path is the file where curator's library_path is the folder. Every TMDB id is
+// already on both sides, it survives a re-import at a different quality, and it
+// steps around the ` - ` → `:` folder-title trap that a name match walks into.
+//
+// year narrows the query server-side to a few hundred bytes and is safe to
+// narrow with: both sides take the year from TMDB, and all 18 films on the real
+// 10.10.7 had a ProductionYear equal to TMDB's release year, checked film by
+// film. A zero year skips the narrowing rather than the query.
+func (c *Client) FindMovie(ctx context.Context, tmdbID, year int) (Item, error) {
+	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
+
+	query := url.Values{
+		"Recursive":        {"true"},
+		"IncludeItemTypes": {"Movie"},
+		// ProviderIds is the whole point of the request; the images are the
+		// bulk of an item and nothing here draws one.
+		"Fields":       {"ProviderIds"},
+		"EnableImages": {"false"},
+	}
+	if year > 0 {
+		query.Set("years", strconv.Itoa(year))
+	}
+
+	// No userId, deliberately. With one the library shrinks to what that user
+	// may see — 18 items became 16 on the real server — and the link is being
+	// built for whoever is holding the laptop, not for the API key's owner.
+	endpoint := c.baseURL + pathItems + "?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return Item{}, fmt.Errorf("jellyfin find movie: build request: %w", err)
+	}
+	req.Header.Set(tokenHeader, c.apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return Item{}, fmt.Errorf("jellyfin find movie: calling jellyfin at %s: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return Item{}, fmt.Errorf("jellyfin find movie: jellyfin answered %d %s (%s): %w",
+			resp.StatusCode, http.StatusText(resp.StatusCode), snippet(body), ErrUnauthorized)
+	default:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return Item{}, fmt.Errorf("jellyfin find movie: jellyfin answered %d %s: %s",
+			resp.StatusCode, http.StatusText(resp.StatusCode), snippet(body))
+	}
+
+	var decoded itemsResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxItemsBody)).Decode(&decoded); err != nil {
+		return Item{}, fmt.Errorf("jellyfin find movie: decoding the item list: %w", err)
+	}
+
+	want := strconv.Itoa(tmdbID)
+	for _, item := range decoded.Items {
+		for key, value := range item.ProviderIDs {
+			if !strings.EqualFold(key, providerTMDB) || value != want {
+				continue
+			}
+			// **The first match wins, and a TMDB id is not unique.** Iron Man is
+			// in the real library twice under 1726 — once under /movies and once
+			// under /media/downloads/complete. Either lands on that film, so a
+			// tie-break here would be inventing a preference nobody expressed.
+			return Item{ID: item.ID, ServerID: item.ServerID}, nil
+		}
+	}
+	return Item{}, ErrNotFound
+}
+
+// WebItemURL is a film's own page in Jellyfin's web client.
+//
+// The shape is not guesswork: it is the string main.jellyfin.bundle.js builds
+// for an item of type Movie on the real 10.10.7. The item carries its own
+// ServerId, so a multi-server web client opens the right one.
+//
+// base is jellyfin_public_url — what a BROWSER can reach, which inside Docker is
+// never the http://jellyfin:8096 curator itself uses.
+func WebItemURL(base string, item Item) string {
+	if strings.TrimSpace(base) == "" || item.ID == "" {
+		return ""
+	}
+	link := webBase(base) + "#/details?id=" + url.QueryEscape(item.ID)
+	if item.ServerID != "" {
+		link += "&serverId=" + url.QueryEscape(item.ServerID)
+	}
+	return link
+}
+
+// WebSearchURL is the fallback every miss lands on: Jellyfin's own search,
+// pre-filled with the title.
+//
+// It always lands somewhere useful and it can never 404, which is the whole
+// argument for preferring it to a guessed item id.
+func WebSearchURL(base, title string) string {
+	if strings.TrimSpace(base) == "" || strings.TrimSpace(title) == "" {
+		return ""
+	}
+	return webBase(base) + "#/search.html?query=" + url.QueryEscape(title)
+}
+
+// webBase turns a server URL into the web client's, trimming a trailing slash
+// so that neither "…:8096" nor "…:8096/" produces a doubled one.
+func webBase(base string) string {
+	return strings.TrimSuffix(strings.TrimSpace(base), "/") + "/web/index.html"
 }

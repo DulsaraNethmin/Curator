@@ -396,6 +396,44 @@ a.movie:hover .title { color: var(--accent); }
   .hero-poster { width: 8rem; }
 }
 
+/* --- the player -------------------------------------------------------------
+
+   The film gets the width of the page and a cap on its height, because a 4:3
+   scan of a 1975 film is otherwise taller than the viewport and the controls
+   land below the fold — where a play button that cannot be seen is the same as
+   one that is not there. */
+.player { margin: 0 0 1.5rem; }
+.player .film {
+  width: 100%;
+  max-height: 70vh;
+  display: block;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.player .banner { margin-top: .75rem; }
+
+.actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+
+.vlc { margin-top: .75rem; padding: 1rem 1.1rem; }
+.vlc h3 { margin: 0 0 .3rem; font-size: 1rem; }
+.vlc p { margin: .4rem 0 0; max-width: 46rem; }
+.vlc-url { display: flex; gap: .5rem; margin-top: .7rem; }
+/* Monospace and full width: this is a URL somebody is about to check by eye
+   before pasting it into a player, and a proportional font hides the
+   difference between a 1 and an l in a signed token. */
+.vlc-url input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .82rem;
+  padding: .45rem .6rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
 /* Three columns at full width, not five: "English, Japanese, Xhosa" and a
    studio list are the widest values here, and a column narrow enough to wrap
    them mid-list reads as damage. */

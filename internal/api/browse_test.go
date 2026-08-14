@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DulsaraNethmin/curator/internal/jellyfin"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
 )
@@ -305,5 +306,168 @@ func TestLibraryRoutesAreUnaffectedByAMissingKey(t *testing.T) {
 			t.Errorf("%s = %d with no TMDB key, want 200 — it is the library, not the catalogue",
 				target, rec.Code)
 		}
+	}
+}
+
+// --- the Open in Jellyfin link ----------------------------------------------
+
+// fakeMediaServer stands in for internal/jellyfin's one read-only query. The
+// three failure modes are the interesting part and all three are awkward to
+// produce from a real client, which is why the seam is an interface.
+type fakeMediaServer struct {
+	item jellyfin.Item
+	err  error
+
+	gotTMDBID int
+	gotYear   int
+	calls     int
+}
+
+func (f *fakeMediaServer) FindMovie(_ context.Context, tmdbID, year int) (jellyfin.Item, error) {
+	f.calls++
+	f.gotTMDBID, f.gotYear = tmdbID, year
+	return f.item, f.err
+}
+
+// importedEndgame is the fixture for these: the film is on disk, which is the
+// only state that gets a link at all.
+func importedEndgame(t *testing.T) *fakeStore {
+	t.Helper()
+	st := newFakeStore()
+	path := "/library/Avengers - Endgame (2019)"
+	st.library = map[int64]store.LibraryState{
+		299534: {MovieID: 7, Status: store.StatusImported, LibraryPath: &path},
+	}
+	return st
+}
+
+func jellyfinServer(t *testing.T, st *fakeStore, m MediaServer, publicURL string) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := New(st, ScannerFunc(nil), nil, fixtureRoot, quiet()).
+		WithBrowser(&fakeBrowser{details: &tmdb.Details{Match: endgame()}}).
+		WithJellyfin(m, publicURL)
+	srv.RegisterBrowse(mux)
+	return mux
+}
+
+// The happy path: a film on disk that Jellyfin has gets a deep link to the item
+// itself, which is the whole point — landing on Jellyfin's home screen is the
+// failure this task exists to remove.
+func TestDetailBodyCarriesADeepJellyfinLink(t *testing.T) {
+	media := &fakeMediaServer{item: jellyfin.Item{ID: "bbb", ServerID: "srv"}}
+
+	var body movieDetailBody
+	rec := getJSON(t, jellyfinServer(t, importedEndgame(t), media, "http://192.168.1.26:8096"),
+		"/api/tmdb/movies/299534", &body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	const want = "http://192.168.1.26:8096/web/index.html#/details?id=bbb&serverId=srv"
+	if body.JellyfinURL != want {
+		t.Errorf("jellyfin_url = %q, want %q", body.JellyfinURL, want)
+	}
+	// The TMDB id and the year, which is what makes the query one small request
+	// instead of the whole library (docs/decisions.md D32).
+	if media.gotTMDBID != 299534 || media.gotYear != 2019 {
+		t.Errorf("looked up tmdb %d year %d, want 299534 / 2019", media.gotTMDBID, media.gotYear)
+	}
+}
+
+// Every way the lookup can fail lands on the same search link, because all four
+// are the same thing to a person: the deep link is not available and a search
+// always is. None of them may fail the page.
+func TestAFailedLookupBecomesASearchLinkAndNeverAnError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"jellyfin does not have the film", jellyfin.ErrNotFound},
+		{"the key was revoked", fmt.Errorf("jellyfin answered 401: %w", jellyfin.ErrUnauthorized)},
+		{"jellyfin is switched off", errors.New("dial tcp 192.168.1.26:8096: connection refused")},
+		{"jellyfin answered rubbish", errors.New("decoding the item list: unexpected EOF")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			media := &fakeMediaServer{err: tc.err}
+
+			var body movieDetailBody
+			rec := getJSON(t, jellyfinServer(t, importedEndgame(t), media, "http://jf:8096"),
+				"/api/tmdb/movies/299534", &body)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 — a Jellyfin problem is not the movie page's problem", rec.Code)
+			}
+			const want = "http://jf:8096/web/index.html#/search.html?query=Avengers%3A+Endgame"
+			if body.JellyfinURL != want {
+				t.Errorf("jellyfin_url = %q, want the search fallback %q", body.JellyfinURL, want)
+			}
+		})
+	}
+}
+
+// "Carries nothing new for a film that is not on disk", and the reason is not
+// tidiness: linking a film nobody owns into a media server that certainly does
+// not have it is a link to a search for something that is not there.
+func TestNoJellyfinLinkForAFilmThatIsNotOnDisk(t *testing.T) {
+	notImported := map[string]*fakeStore{
+		"never heard of it": newFakeStore(),
+		"wanted":            {byPath: map[string]*store.Movie{}, byID: map[int64]*store.Movie{}, library: map[int64]store.LibraryState{299534: {MovieID: 7, Status: store.StatusWanted}}},
+		"downloading":       {byPath: map[string]*store.Movie{}, byID: map[int64]*store.Movie{}, library: map[int64]store.LibraryState{299534: {MovieID: 7, Status: store.StatusWanted, Downloading: true}}},
+	}
+	for name, st := range notImported {
+		t.Run(name, func(t *testing.T) {
+			media := &fakeMediaServer{item: jellyfin.Item{ID: "bbb"}}
+
+			var body movieDetailBody
+			getJSON(t, jellyfinServer(t, st, media, "http://jf:8096"), "/api/tmdb/movies/299534", &body)
+
+			if body.JellyfinURL != "" {
+				t.Errorf("jellyfin_url = %q, want absent", body.JellyfinURL)
+			}
+			// And it did not go and ask, which would be a network round trip on
+			// every page view of every film in the catalogue.
+			if media.calls != 0 {
+				t.Errorf("asked Jellyfin %d times about a film that is not in the library", media.calls)
+			}
+		})
+	}
+}
+
+// No Jellyfin configured means no link — not a disabled button and not a
+// tooltip explaining what you are missing, which is the rule the rest of the UI
+// already follows for an unconfigured integration.
+func TestNoJellyfinConfiguredMeansNoLink(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		media     MediaServer
+		publicURL string
+	}{
+		{"no client", nil, "http://jf:8096"},
+		{"no url", &fakeMediaServer{item: jellyfin.Item{ID: "bbb"}}, ""},
+		{"a blank url", &fakeMediaServer{item: jellyfin.Item{ID: "bbb"}}, "   "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body movieDetailBody
+			rec := getJSON(t, jellyfinServer(t, importedEndgame(t), tc.media, tc.publicURL),
+				"/api/tmdb/movies/299534", &body)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if body.JellyfinURL != "" {
+				t.Errorf("jellyfin_url = %q, want absent", body.JellyfinURL)
+			}
+		})
+	}
+}
+
+// The key is absent from the JSON rather than present and empty, so a UI can
+// branch on the field existing at all.
+func TestTheJellyfinKeyIsOmittedRatherThanEmpty(t *testing.T) {
+	rec := getJSON(t, jellyfinServer(t, newFakeStore(), nil, ""), "/api/tmdb/movies/299534", nil)
+	if strings.Contains(rec.Body.String(), "jellyfin_url") {
+		t.Errorf("the body carries an empty jellyfin_url: %s", rec.Body)
 	}
 }
