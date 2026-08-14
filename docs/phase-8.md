@@ -34,8 +34,8 @@ and the movie screen already holds the id the stream URL needs.
 
 | Task | Owns | Depends on | State |
 |---|---|---|---|
-| [T43](tasks/T43-stream.md) the stream endpoint | `internal/api/stream.go`, `internal/library/contain.go` | — | specified |
-| [T44](tasks/T44-remux.md) remux | `internal/remux/`, the ffmpeg build | T43 | specified |
+| [T43](tasks/T43-stream.md) the stream endpoint | `internal/api/stream.go`, `internal/library/contain.go` | — | **built** |
+| [T44](tasks/T44-remux.md) remux | `internal/remux/`, the ffmpeg build | T43 | **built** — 2.2 MB |
 | [T45](tasks/T45-player.md) the player and the Jellyfin link | `web/app/movie/`, `internal/jellyfin` | T43, T44 | specified |
 | [T46](tasks/T46-subtitles.md) the subtitle sidecar | `internal/importer`, `internal/api/stream.go` | T43 | specified |
 

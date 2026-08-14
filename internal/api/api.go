@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/DulsaraNethmin/curator/internal/library"
+	"github.com/DulsaraNethmin/curator/internal/remux"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
 )
@@ -79,6 +80,11 @@ type Server struct {
 	// browser is the TMDB catalogue behind the browsing screens, attached with
 	// WithBrowser. Nil when TMDB_API_KEY is unset, which is a supported state.
 	browser Browser
+
+	// remux is phase 8's ffmpeg fallback, attached with WithRemux. Nil is the
+	// state of every install without an ffmpeg on it, and it is what makes
+	// POST .../playback omit remux_url and GET .../remux answer 404.
+	remux *remux.Remuxer
 
 	// tickets mints phase 8's playback credential, attached with WithTickets.
 	// Nil is the state every install without a password is in, and it is what

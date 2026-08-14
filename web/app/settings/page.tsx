@@ -239,6 +239,11 @@ const groups: Record<string, { title: string; blurb?: string; warning?: React.Re
     blurb:
       '1337x needs minter running to get past Cloudflare; YTS and TPB do not. A source that is off is not searched at all.',
   },
+  playback: {
+    title: 'Playback',
+    blurb:
+      'Optional. Films play in the browser directly; when the browser refuses the container, curator hands the file to ffmpeg and rewrites the container without re-encoding anything. With no ffmpeg it is direct play only, and anything the browser refuses offers a VLC link instead.',
+  },
   jellyfin: {
     title: 'Jellyfin',
     blurb:

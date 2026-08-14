@@ -7,7 +7,9 @@ what is **done, verified, and outstanding**. Update it when a phase closes or a 
 dispatch now run against a real qBittorrent locally · phase 4 built and verified locally ·
 phase 5 built, including the TMDB-first redesign (T27–T31) · **phase 6 built and verified locally,
 tunnel included — a real NordLynx endpoint, and a torrent downloading through it** · **phase 7 built
-and verified locally**, settings writable and a password in front of the API · **phase 8 specified**
+and verified locally**, settings writable and a password in front of the API · **phase 8 in progress
+— T43 and T44 built and verified locally; the remux is a 2.2 MB ffmpeg, and there is still no Play
+button**
 
 ---
 
@@ -22,7 +24,7 @@ and verified locally**, settings writable and a password in front of the API · 
 | **5** | Interface — Next.js screens embedded via `embed.FS` | **built** — T22–T26, then T27–T31's TMDB-first redesign, verified locally 2026-08-13 |
 | **6** | Own the download — the torrent engine and a WireGuard tunnel move inside the binary | **built** — T32–T38 done, verified locally 2026-08-14 against a real NordLynx endpoint; one v4-only crash found afterwards and fixed in T56 |
 | **7** | Settings that write — writable config, secrets at rest, optional password | **built** — T39–T42 and T55 done, verified locally 2026-08-14; bcrypt's cost on the Pi is still unmeasured (D25, deferred to phase 10) |
-| 8 | Watch it here — direct play, remux, Open in Jellyfin | **specified** 2026-08-14 — T43–T46, blocked by nothing |
+| 8 | Watch it here — direct play, remux, Open in Jellyfin | **in progress** — T43 (the stream endpoint and the ticket) and T44 (the remux) built and verified locally 2026-08-14; T45 and T46 specified. **There is still no Play button** — nothing in the UI reaches either endpoint yet, and that is T45 |
 | 9 | One command — the image, the release pipeline, minter on demand | T47–T51 |
 | 10 | Cutover — run alongside, confirm parity, remove the containers | back up the *arr configs first (T52) |
 
@@ -721,12 +723,12 @@ than one introduced under pressure.
 
 ## Phase 8 tasks
 
-Specified 2026-08-14, no code yet. Spec in [`phase-8.md`](phase-8.md).
+Specified 2026-08-14. Spec in [`phase-8.md`](phase-8.md).
 
 | Task | Owns | Status |
 |---|---|---|
-| [T43](tasks/T43-stream.md) the stream endpoint | `internal/api/stream.go`, `internal/library/contain.go`, the ticket in `auth.go` | specified |
-| [T44](tasks/T44-remux.md) remux | `internal/remux/`, the ffmpeg build | specified |
+| [T43](tasks/T43-stream.md) the stream endpoint | `internal/api/stream.go`, `internal/library/contain.go`, the ticket in `auth.go` | **built** 2026-08-14 |
+| [T44](tasks/T44-remux.md) remux | `internal/remux/`, the ffmpeg build | **built** 2026-08-14 |
 | [T45](tasks/T45-player.md) the player and the Jellyfin link | `web/app/movie/`, `internal/jellyfin` | specified |
 | [T46](tasks/T46-subtitles.md) the subtitle sidecar | `internal/importer`, `internal/api/stream.go` | specified |
 
@@ -751,6 +753,60 @@ image. T43 carries its own four-entry table.
 one — only the library, which has existed since phase 1 — and what phases 6 and 7 changed is not what
 it builds but what it must be careful about: a password now sits in front of `/api/*`, and a
 `<video>` carries a cookie where VLC does not.
+
+### T44, and the number phase 9's image budget is built on
+
+**The minimal ffmpeg is 2,232,152 bytes — 2.2 MB, stripped, static, linux/arm64.** Budget was 20 MB
+and 40 MB was the abort line, so the fallback of shipping direct play alone never came near being
+needed. ffmpeg 8.1.1, built by [`scripts/build-ffmpeg.sh`](../scripts/build-ffmpeg.sh) in an Alpine
+container: `--disable-everything`, then the `matroska`/`mov`/`avi` demuxers, the `mp4` muxer, the
+`file` and `pipe` protocols, and the parsers and bitstream filters a stream copy needs. **No
+encoders, no filters, no network protocols** — `--disable-network` is in the flags, so the binary
+curator ships is incapable of opening a socket.
+
+For scale: Homebrew's general-purpose ffmpeg 8.1.1 on this Mac is a 441 KB launcher against ~40 MB of
+shared libav\*; the static 78 MB general-purpose build is what D24 refused. 2.2 MB is what is left
+when the only thing a binary can do is copy streams between four containers.
+
+**Measured against the real film, not a fixture.** `Backrooms (2026).mp4` is h264 + aac, so it direct
+plays and is not a test case — the case had to be built, and it was built out of the film itself:
+`ffmpeg -c copy -t 600 -f matroska` gives a 241,659,312-byte `.mkv` with the same streams inside a
+container browsers refuse, which is exactly what D24 says the remux is for. Through the arm64 binary,
+`-c copy` produced 241,767,352 bytes — **0.04 % container overhead, h264 and aac untouched** — and the
+whole 10 minutes remuxed in about 4 seconds of wall clock. `-ss 300` on the 600-second file yielded
+301 seconds of output, so the `?start=` seam T45 needs is real and is effectively instant.
+
+**ffmpeg is not quiet at `-loglevel warning`, and that is why the tail is bounded.** One remux of that
+`.mkv` wrote **274,201 bytes of stderr** — Matroska stores no DTS, so every B-frame produces an
+`Invalid DTS … replacing by guess` or a `Non-monotonic DTS` line. Unbounded and at info level that is
+the whole of `/api/logs` filled by one film ([D18](decisions.md#d18--the-log-tail-is-readable-without-authentication-so-it-is-redacted-at-the-source)
+made that buffer a product surface). curator keeps the last 4 KB and logs it **only on a non-zero
+exit**: across a live session of about ten remuxes, three of them refused by the cap, **curator wrote
+8 log lines in total**.
+
+**Verified live on 8097, against the embedded build.** `POST .../playback` returned `remux_url`;
+`GET .../remux` answered `200` with `Accept-Ranges: none`, `Transfer-Encoding: chunked` and **no
+`Content-Length`**; `?start=` refused `abc`, `-5`, `NaN`, `1e999` and `90 -c:v libx264` with `400`
+apiece while an empty one still played. **The subprocess dies with the request**: ffmpeg was observed
+running under a reading client, and gone within three seconds of that client being killed, with no
+log line — a closed tab is the ordinary case and is not a failure. Three slow readers held all three
+slots, the fourth got `503` with `Retry-After: 30`, and killing the three gave the slots back. **VLC
+3.0.23 decodes the live stream**: `mp4 demux`, `videotoolbox decoder: Using Video Toolbox to decode
+'h264'`, playing from `?start=300`.
+
+**One defect the live run found that no test had.** The cap's `503` went through `s.fail`, which logs
+anything past 500 at **ERROR** — so a cap doing exactly its job put a red line in the tail. It is a
+`Warn` of its own now, and a test asserts no `ERROR` entry is produced by a refusal.
+
+**What T44 did NOT establish, on purpose.** *A browser has not played a remux.* Chrome 151 renders its
+native media player for the `/remux` URL and answers `probably` to
+`canPlayType('video/mp4; codecs="avc1.64001f, mp4a.40.2"')`, but the automated tab is `hidden` and
+Chrome throttles media preload in a hidden tab, so no frame was decoded there. That check belongs
+with T45 anyway — **there is still no Play button**, and the `error`-event fallback chain it verifies
+does not exist yet. Two things to carry into it: `canPlayType('video/x-matroska')` answers **`maybe`**
+in Chrome 151, which is precisely why phase 8 refuses to keep a codec-support matrix; and a hidden
+`<video>` pointed at an `.mkv` fired `loadstart, stalled` and then **nothing at all in 20 seconds — no
+`error` event** — so a fallback chain that waits on `error` alone can wait for ever.
 
 ## Corrections made to the docs
 

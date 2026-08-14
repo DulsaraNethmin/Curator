@@ -215,15 +215,18 @@ Every row is stored, has one environment variable, and takes effect at the next 
 | | `minter_url` · `MINTER_URL` | url | |
 | | `search_timeout` · `SEARCH_TIMEOUT` | duration | |
 | | `search_cache_ttl` · `SEARCH_CACHE_TTL` | duration | |
+| Playback | `ffmpeg_path` · `FFMPEG_PATH` | path | **phase 8**; empty = look on `PATH`, not found = remux off |
 | Jellyfin | `jellyfin_url` · `JELLYFIN_URL` | url | |
 | | `jellyfin_api_key` · `JELLYFIN_API_KEY` | **secret** | |
 | Access | `auth_enabled` · `AUTH_ENABLED` | bool | default `false`; **applies at once** |
 | | `auth_password` · `AUTH_PASSWORD` | **write-only, hashed** | applies at once |
 
-**Playback is not in this table**, and the plan's "done when" says it should be. Playback settings do
-not exist until phase 8 builds the thing they configure, and inventing a "prefer direct play" toggle
-now would be a row nothing reads. The registry is what phase 7 owes phase 8: when T45
-adds a player, its settings are one entry in it, not a screen.
+**Playback was not in this table when phase 7 shipped**, and the plan's "done when" said it should
+be. Playback settings did not exist until phase 8 built the thing they configure, and inventing a
+"prefer direct play" toggle then would have been a row nothing reads. The registry is what phase 7
+owed phase 8, and the debt came due exactly as promised: `ffmpeg_path` arrived with
+[T44](tasks/T44-remux.md) as **one row above**, not a screen. There is still no "prefer direct play"
+toggle, for the original reason — direct play is always tried first and the browser decides.
 
 ---
 
