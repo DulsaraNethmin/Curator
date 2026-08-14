@@ -150,8 +150,17 @@ func (p *Poller) Tick(ctx context.Context) error {
 		// that saw a torrent finish, the state and the progress are unchanged, so
 		// a `continue` here skipped the import too — and an import that failed
 		// once would never be attempted again.
-		if state != row.State || t.Progress != row.Progress || completedAt != nil {
-			if err := p.store.UpdateDownloadProgress(ctx, hash, state, t.Progress, completedAt); err != nil {
+		//
+		// The reason is one of the things that can move on its own. A torrent
+		// stays `stalled` at the same 0% while the explanation changes from "no
+		// peers have answered" to "peers are connected but none of them is
+		// sending data" — same state, same progress, a different sentence — and
+		// the row would keep serving the first one for ever. It is written
+		// verbatim, empty included, so a torrent that starts moving has its
+		// stale explanation cleared by the same statement that records the
+		// movement rather than keeping one that is no longer true.
+		if state != row.State || t.Progress != row.Progress || t.Reason != row.Reason || completedAt != nil {
+			if err := p.store.UpdateDownloadProgress(ctx, hash, state, t.Progress, t.Reason, completedAt); err != nil {
 				return err
 			}
 			if completedAt != nil {

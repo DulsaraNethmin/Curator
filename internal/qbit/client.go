@@ -171,13 +171,18 @@ func (c *Client) neutral(i info) (torrent.Torrent, error) {
 	if err != nil {
 		return torrent.Torrent{}, err
 	}
+	state := mapState(i.State)
 	return torrent.Torrent{
 		Hash:        torrent.NormalizeHash(i.Hash),
 		Name:        i.Name,
-		State:       mapState(i.State),
+		State:       state,
 		Progress:    i.Progress,
 		ContentPath: content,
 		Category:    i.Category,
+		// Derived from curator's state rather than from qBittorrent's, so the
+		// two can never disagree: whatever `stalledDL` is spelled as, the
+		// sentence appears exactly when this package answered `stalled`.
+		Reason: stalledReason(state),
 	}, nil
 }
 

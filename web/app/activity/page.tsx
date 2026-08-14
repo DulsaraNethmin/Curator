@@ -132,6 +132,16 @@ export default function Activity() {
                   </td>
                   <td>
                     <State state={download.state} />
+                    {/* The badge is the state; this is why. Only on `stalled`,
+                        and only when the server sent one — every other state
+                        either needs no explanation or has one on screen
+                        already, and a reason left under a recovered download
+                        would say nobody is seeding a file that is arriving.
+                        Rendered verbatim: the backend that knows writes the
+                        sentence, and there is no table of codes here. */}
+                    {download.state === 'stalled' && download.reason && (
+                      <div className="small muted reason">{download.reason}</div>
+                    )}
                   </td>
                   <td>
                     <div className="bar" title={`${Math.round(download.progress * 100)}%`}>
@@ -176,7 +186,8 @@ function State({ state }: { state: string }) {
     case 'stalled':
       // Added, wanted, and getting nowhere: nobody is seeding it. Warn rather
       // than bad, because the fix is to pick another release rather than to
-      // repair anything — and Logs carries the sentence saying which it is.
+      // repair anything — and the sentence saying which it is now sits under
+      // this badge rather than only in Logs.
       return <span className="badge warn">stalled</span>;
     case 'failed':
       return <span className="badge bad">failed</span>;

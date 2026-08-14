@@ -542,8 +542,9 @@ func (e *Engine) describe(t *anacrolix.Torrent) torrent.Torrent {
 	// saying `failed` would tell somebody their download died when what
 	// happened is that they picked an unpopular release.
 	if out.State == torrent.StateQueued || out.State == torrent.StateDownloading {
-		if e.stalled(t, out) {
+		if stalled, reason := e.stalled(t, out); stalled {
 			out.State = torrent.StateStalled
+			out.Reason = reason
 		}
 	}
 	return out
@@ -566,16 +567,26 @@ func (e *Engine) setUnchecked(hash string, yes bool) {
 }
 
 // stalled reports whether this torrent has gained nothing for long enough to
-// say so out loud, and says it once when it first does.
+// say so out loud, with the reason when it has, and logs it once when it first
+// does.
 //
 // The trigger is byte progress, not peer count, because "no peers" and "fifty
 // peers, none of whom will send" are the same experience — a progress bar that
 // does not move. The peer count goes in the reason, which is the part a human
 // can act on: nobody is seeding this release, so pick another one.
 //
+// The reason is computed on EVERY stalled tick and the log line is still
+// written once. Those used to be the same event, when the sentence only ever
+// went to the log; since T55 it also goes into the row, and a row is rewritten
+// every tick — so a reason produced only on the first tick would be missing
+// from every write after a restart, when `reported` is back to false but the
+// stall is not. `t.Stats()` is a locked read of counters the client already
+// keeps, so paying for it per stalled torrent per tick costs nothing worth
+// arranging around.
+//
 // A verifying torrent is exempt: it is busy, just not with the network. So is a
 // completed one, which by definition never gains another byte.
-func (e *Engine) stalled(t *anacrolix.Torrent, out torrent.Torrent) bool {
+func (e *Engine) stalled(t *anacrolix.Torrent, out torrent.Torrent) (bool, string) {
 	bytes := t.BytesCompleted()
 	now := e.now()
 
@@ -584,7 +595,7 @@ func (e *Engine) stalled(t *anacrolix.Torrent, out torrent.Torrent) bool {
 	if !seen || previous.bytes != bytes {
 		e.progress[out.Hash] = mark{bytes: bytes, since: now}
 		e.mu.Unlock()
-		return false
+		return false, ""
 	}
 	stalled := now.Sub(previous.since) >= e.stallAfter
 	firstTime := stalled && !previous.reported
@@ -594,22 +605,32 @@ func (e *Engine) stalled(t *anacrolix.Torrent, out torrent.Torrent) bool {
 	}
 	e.mu.Unlock()
 
+	if !stalled {
+		return false, ""
+	}
+
+	// Said by the backend rather than by the poller, because the reason is a
+	// fact only the backend has: the poller sees a percentage that did not move
+	// and cannot tell "nobody has this" from "nobody will send it".
+	stats := t.Stats()
+	reason := stallReason(stats.ActivePeers, t.Info() == nil)
+
 	if firstTime {
-		// Said by the backend rather than by the poller, because the reason is
-		// a fact only the backend has: the neutral torrent type carries six
-		// fields and none of them is "why". Once per torrent, not once per
-		// tick — a five-second poll must not produce a five-second warning.
-		stats := t.Stats()
+		// Once per torrent, not once per tick — a five-second poll must not
+		// produce a five-second warning.
 		e.log.Warn("torrent is stalled: nothing has arrived for a while",
 			"hash", out.Hash, "name", out.Name, "for", now.Sub(previous.since).Round(time.Second),
 			"progress", fmt.Sprintf("%.1f%%", out.Progress*100),
 			"peers", stats.ActivePeers, "seeders", stats.ConnectedSeeders,
-			"reason", stallReason(stats.ActivePeers, t.Info() == nil))
+			"reason", reason)
 	}
-	return stalled
+	return true, reason
 }
 
-// stallReason is the sentence somebody reads in the Logs screen and can act on.
+// stallReason is the sentence somebody reads — in the Logs screen since T36,
+// and since T55 under the badge in Activity as well. It is prose in both
+// places, and deliberately not a code with a table of renderings beside it:
+// the screen prints what the backend said.
 func stallReason(peers int, noMetadata bool) string {
 	switch {
 	case peers == 0 && noMetadata:

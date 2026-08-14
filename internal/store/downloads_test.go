@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -432,7 +433,7 @@ func TestUpdateDownloadProgressMovesStateAndProgress(t *testing.T) {
 	}
 
 	// A tick that only reports progress, in the case qBittorrent uses.
-	if err := s.UpdateDownloadProgress(ctx, strings.ToLower(testInfoHash), DownloadDownloading, 0.42, nil); err != nil {
+	if err := s.UpdateDownloadProgress(ctx, strings.ToLower(testInfoHash), DownloadDownloading, 0.42, "", nil); err != nil {
 		t.Fatalf("UpdateDownloadProgress: %v", err)
 	}
 	got, err := s.GetDownloadByHash(ctx, testInfoHash)
@@ -453,7 +454,7 @@ func TestUpdateDownloadProgressMovesStateAndProgress(t *testing.T) {
 	// The tick that finishes it. The caller decides the moment; sub-second
 	// precision is asserted because the fixed-width timestamp format exists for it.
 	done := time.Date(2026, 8, 12, 9, 30, 0, 123456789, time.UTC)
-	if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadCompleted, 1, &done); err != nil {
+	if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadCompleted, 1, "", &done); err != nil {
 		t.Fatalf("UpdateDownloadProgress: %v", err)
 	}
 	got, err = s.GetDownloadByHash(ctx, testInfoHash)
@@ -472,7 +473,7 @@ func TestUpdateDownloadProgressMovesStateAndProgress(t *testing.T) {
 
 	// A later tick with no completion time must not erase the one already there —
 	// the poller passes nil on every tick after the first.
-	if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadCompleted, 1, nil); err != nil {
+	if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadCompleted, 1, "", nil); err != nil {
 		t.Fatalf("UpdateDownloadProgress: %v", err)
 	}
 	got, err = s.GetDownloadByHash(ctx, testInfoHash)
@@ -481,6 +482,129 @@ func TestUpdateDownloadProgressMovesStateAndProgress(t *testing.T) {
 	}
 	if got.CompletedAt == nil || !got.CompletedAt.Equal(done) {
 		t.Errorf("completed_at = %v after a nil update, want %v preserved", got.CompletedAt, done)
+	}
+}
+
+// T55: the reason travels with the state, and the state is what makes it true.
+//
+// The three writes are the three things that happen to a stalled download: it
+// gains an explanation, the explanation changes while the state does not, and
+// it starts moving. The last one is the one worth having a test for — a reason
+// that survived recovery would sit under a `downloading` badge saying nobody is
+// seeding the file that is arriving.
+func TestUpdateDownloadProgressCarriesTheReason(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	m := seedWantedMovie(t, s)
+
+	if _, err := s.InsertDownload(ctx, dispatchedDownload(m.ID, testInfoHash)); err != nil {
+		t.Fatalf("InsertDownload: %v", err)
+	}
+
+	// A fresh row has no reason: nothing has polled it yet, and InsertDownload
+	// ignores the field for exactly that reason.
+	if got, err := s.GetDownloadByHash(ctx, testInfoHash); err != nil {
+		t.Fatalf("GetDownloadByHash: %v", err)
+	} else if got.Reason != "" {
+		t.Errorf("Reason = %q on a freshly inserted download, want empty", got.Reason)
+	}
+
+	const noPeers = "no peers are connected — nobody appears to be seeding this release"
+	if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadStalled, 0, noPeers, nil); err != nil {
+		t.Fatalf("UpdateDownloadProgress: %v", err)
+	}
+	got, err := s.GetDownloadByHash(ctx, testInfoHash)
+	if err != nil {
+		t.Fatalf("GetDownloadByHash: %v", err)
+	}
+	if got.State != DownloadStalled || got.Reason != noPeers {
+		t.Errorf("state/reason = %q/%q, want %q/%q", got.State, got.Reason, DownloadStalled, noPeers)
+	}
+
+	// Same state, same progress, a different sentence. The poller's write
+	// condition has to notice this one, and the column has to take it.
+	const noData = "peers are connected but none of them is sending data"
+	if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadStalled, 0, noData, nil); err != nil {
+		t.Fatalf("UpdateDownloadProgress: %v", err)
+	}
+	if got, err = s.GetDownloadByHash(ctx, testInfoHash); err != nil {
+		t.Fatalf("GetDownloadByHash: %v", err)
+	} else if got.Reason != noData {
+		t.Errorf("Reason = %q, want the newer %q — a stale sentence is worse than none", got.Reason, noData)
+	}
+
+	// It starts moving. An empty reason CLEARS, unlike completed_at, which the
+	// same call preserves — the two are next to each other in the signature and
+	// they are deliberately not the same rule.
+	if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadDownloading, 0.1, "", nil); err != nil {
+		t.Fatalf("UpdateDownloadProgress: %v", err)
+	}
+	if got, err = s.GetDownloadByHash(ctx, testInfoHash); err != nil {
+		t.Fatalf("GetDownloadByHash: %v", err)
+	} else if got.Reason != "" {
+		t.Errorf("Reason = %q after the download started moving, want it cleared", got.Reason)
+	}
+
+	// And it is NULL rather than '': one spelling of empty in the column, so
+	// nothing downstream has to test for two.
+	var isNull bool
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT reason IS NULL FROM downloads WHERE torrent_hash = ?`, testInfoHash).Scan(&isNull); err != nil {
+		t.Fatalf("read reason: %v", err)
+	}
+	if !isNull {
+		t.Error("a cleared reason is stored as '' rather than NULL; the column now has two spellings of empty")
+	}
+}
+
+// ListDownloads reads the column too — it is a different SELECT from
+// GetDownloadByHash only by its WHERE clause, and GET /api/downloads uses this
+// one. A reason that arrived on one path and not the other would be invisible
+// in every test above and missing on the only screen that renders it.
+func TestListDownloadsCarriesTheReason(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	m := seedWantedMovie(t, s)
+
+	if _, err := s.InsertDownload(ctx, dispatchedDownload(m.ID, testInfoHash)); err != nil {
+		t.Fatalf("InsertDownload: %v", err)
+	}
+	const why = "no peers are connected — nobody appears to be seeding this release"
+	if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadStalled, 0, why, nil); err != nil {
+		t.Fatalf("UpdateDownloadProgress: %v", err)
+	}
+
+	all, err := s.ListDownloads(ctx)
+	if err != nil {
+		t.Fatalf("ListDownloads: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("downloads = %d, want 1", len(all))
+	}
+	if all[0].Reason != why {
+		t.Errorf("Reason = %q, want %q", all[0].Reason, why)
+	}
+}
+
+// An empty reason is omitted from the JSON rather than serialised as "". The
+// assertion is against the raw bytes, because a typed test would pass on a
+// `"reason":""` that the UI then has to know is not a sentence.
+func TestDownloadJSONOmitsAnEmptyReason(t *testing.T) {
+	blank, err := json.Marshal(Download{TorrentHash: testInfoHash, State: DownloadDownloading})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(blank), "reason") {
+		t.Errorf("JSON = %s, want no reason key at all when there is nothing to explain", blank)
+	}
+
+	const why = "no peers are connected — nobody appears to be seeding this release"
+	stalled, err := json.Marshal(Download{TorrentHash: testInfoHash, State: DownloadStalled, Reason: why})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(stalled), why) {
+		t.Errorf("JSON = %s, want the reason carried verbatim", stalled)
 	}
 }
 
@@ -496,7 +620,7 @@ func TestUpdateDownloadProgressWithUnchangedValuesSucceeds(t *testing.T) {
 		t.Fatalf("InsertDownload: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadQueued, 0, nil); err != nil {
+		if err := s.UpdateDownloadProgress(ctx, testInfoHash, DownloadQueued, 0, "", nil); err != nil {
 			t.Fatalf("tick %d: %v", i, err)
 		}
 	}
@@ -508,7 +632,7 @@ func TestUpdateDownloadProgressUnknownHashIsNotFound(t *testing.T) {
 	s := newTestStore(t)
 
 	err := s.UpdateDownloadProgress(context.Background(),
-		"0000000000000000000000000000000000000000", DownloadDownloading, 0.1, nil)
+		"0000000000000000000000000000000000000000", DownloadDownloading, 0.1, "", nil)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want one wrapping ErrNotFound", err)
 	}
@@ -610,7 +734,7 @@ func TestListDownloadsCarriesCompletedAtPerRow(t *testing.T) {
 		t.Fatalf("InsertDownload: %v", err)
 	}
 	done := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
-	if err := s.UpdateDownloadProgress(ctx, otherHash, DownloadCompleted, 1, &done); err != nil {
+	if err := s.UpdateDownloadProgress(ctx, otherHash, DownloadCompleted, 1, "", &done); err != nil {
 		t.Fatalf("UpdateDownloadProgress: %v", err)
 	}
 

@@ -34,7 +34,10 @@ export type DownloadState =
   | 'downloading'
   | 'completed'
   | 'imported'
-  | 'failed';
+  | 'failed'
+  // Added, wanted, and getting nowhere. Phase 6 shipped the state and this
+  // union was not told; `| string` below is why nothing complained.
+  | 'stalled';
 
 export type Download = {
   id: number;
@@ -45,6 +48,15 @@ export type Download = {
   magnet: string;
   state: DownloadState | string;
   progress: number; // 0..1, not a percentage
+
+  // Why this download is getting nowhere, in prose, on `stalled` rows.
+  //
+  // Optional because the server omits the key rather than sending "": there is
+  // no sentence, so there is no field. It is rendered verbatim — the backend
+  // that knows why writes the words, and nothing here maps a code onto a
+  // string, which would be a second vocabulary to keep in step with the Go one.
+  reason?: string;
+
   added_at: string;
   completed_at: string | null;
 };

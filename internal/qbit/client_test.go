@@ -488,6 +488,37 @@ func TestTorrentsDecodesTheWireShapeVerbatim(t *testing.T) {
 	}
 }
 
+// T55: a stalled torrent arrives with the sentence attached, through the whole
+// path rather than through the mapping alone. The `stalledUP` fixture above
+// asserts the other half by struct equality — a completed torrent's Reason is
+// "" and a field appearing there would fail that comparison.
+func TestTorrentsCarryTheStallReason(t *testing.T) {
+	stub := newStub(t, serveJSON(`[
+	  {
+	    "hash": "`+infoHashLower+`",
+	    "name": "Interstellar (2014) [1080p]",
+	    "state": "stalledDL",
+	    "progress": 0,
+	    "content_path": "",
+	    "category": "curator"
+	  }
+	]`))
+
+	torrents, err := stub.client.Torrents(context.Background(), testCategory)
+	if err != nil {
+		t.Fatalf("Torrents: %v", err)
+	}
+	if len(torrents) != 1 {
+		t.Fatalf("torrents = %d, want 1", len(torrents))
+	}
+	if torrents[0].State != torrent.StateStalled {
+		t.Fatalf("State = %q, want stalled", torrents[0].State)
+	}
+	if torrents[0].Reason == "" {
+		t.Error("Reason is empty on a stalledDL torrent; Activity would show a badge and no explanation")
+	}
+}
+
 // TestTorrentsEmptyIsNilAndNil — no torrents in the category is a normal answer.
 func TestTorrentsEmptyIsNilAndNil(t *testing.T) {
 	stub := newStub(t, serveJSON(`[]`))

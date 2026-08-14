@@ -37,6 +37,12 @@ const (
 // TorrentHash is always the upper-case 40-hex form indexer.InfoHash produces.
 // qBittorrent reports lower-case, so every method here normalises before it
 // queries — unnormalised the two never match and the reason is invisible.
+//
+// Reason is `omitempty` rather than a pointer, and it is the one field here
+// that is: CompletedAt distinguishes "not finished" from a timestamp, while a
+// reason has nothing to distinguish — a NULL column and an empty string both
+// mean there is no sentence to show, so a `reason: null` in the JSON would be a
+// third spelling of the same nothing for the UI to test for.
 type Download struct {
 	ID          int64      `json:"id"`
 	MovieID     int64      `json:"movie_id"`
@@ -46,13 +52,14 @@ type Download struct {
 	Magnet      string     `json:"magnet"`
 	State       string     `json:"state"`
 	Progress    float64    `json:"progress"`
+	Reason      string     `json:"reason,omitempty"`
 	AddedAt     time.Time  `json:"added_at"`
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
 const selectDownload = `
 SELECT id, movie_id, torrent_hash, indexer, release_name, magnet,
-       state, progress, added_at, completed_at
+       state, progress, reason, added_at, completed_at
 FROM downloads`
 
 // normaliseHash puts a torrent hash into the one case the table stores.
@@ -146,9 +153,11 @@ func (s *Store) UpsertWantedMovie(ctx context.Context, title string, year int, t
 // restart converges here too instead of turning a working torrent into a 500.
 //
 // The caller supplies MovieID, TorrentHash, Indexer, ReleaseName, Magnet and
-// optionally State and Progress. ID, AddedAt and CompletedAt on the argument are
-// ignored — the id is the database's, added_at is this store's clock, and a
-// download being inserted has by definition not completed.
+// optionally State and Progress. ID, AddedAt, CompletedAt and Reason on the
+// argument are ignored — the id is the database's, added_at is this store's
+// clock, a download being inserted has by definition not completed, and a
+// torrent nobody has polled yet has nothing to explain. The poller writes the
+// reason on the first tick that has one.
 //
 // movie_id is NOT NULL REFERENCES movies(id) and foreign keys are on, so a
 // download for a movie that does not exist fails here. That is the point of the
@@ -211,7 +220,14 @@ func (s *Store) InsertDownload(ctx context.Context, d Download) (Download, error
 // alone** rather than clearing it, so a poller can pass nil on every tick after
 // the first without erasing the moment the download finished, and without having
 // to read the row back before each write.
-func (s *Store) UpdateDownloadProgress(ctx context.Context, hash string, state string, progress float64, completedAt *time.Time) error {
+//
+// reason behaves the opposite way on purpose, and the difference is the whole
+// reason it is a plain string next to a pointer. It is written as given, so an
+// empty one CLEARS the column: completed_at records a moment that happened and
+// stays true for ever, while a reason describes the state in the same row and
+// stops being true the moment that state does. A torrent that starts moving
+// must lose its explanation in the same statement that says it is moving.
+func (s *Store) UpdateDownloadProgress(ctx context.Context, hash string, state string, progress float64, reason string, completedAt *time.Time) error {
 	normalised := normaliseHash(hash)
 
 	// Formatted here rather than handed to the driver as a time.Time, for the
@@ -222,11 +238,18 @@ func (s *Store) UpdateDownloadProgress(ctx context.Context, hash string, state s
 		completed = formatTime(*completedAt)
 	}
 
+	// NULL rather than '' for "no reason", so the column has one spelling of
+	// empty and not two. scanDownload reads either back as "".
+	var why any
+	if reason != "" {
+		why = reason
+	}
+
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE downloads
-		SET state = ?, progress = ?, completed_at = COALESCE(?, completed_at)
+		SET state = ?, progress = ?, reason = ?, completed_at = COALESCE(?, completed_at)
 		WHERE torrent_hash = ?`,
-		state, progress, completed, normalised)
+		state, progress, why, completed, normalised)
 	if err != nil {
 		return fmt.Errorf("update download %s: %w", normalised, err)
 	}
@@ -286,13 +309,18 @@ func scanDownload(row rowScanner) (Download, error) {
 		// documents why the driver's own representation cannot be assumed.
 		addedAt     any
 		completedAt any
+		// reason is nullable and every row written before T55 has it NULL, so
+		// it cannot scan into a string. Valid is not consulted: an invalid
+		// NullString has String == "", which is exactly what no reason means.
+		reason sql.NullString
 	)
 	if err := row.Scan(
 		&d.ID, &d.MovieID, &d.TorrentHash, &d.Indexer, &d.ReleaseName, &d.Magnet,
-		&d.State, &d.Progress, &addedAt, &completedAt,
+		&d.State, &d.Progress, &reason, &addedAt, &completedAt,
 	); err != nil {
 		return Download{}, err
 	}
+	d.Reason = reason.String
 
 	parsed, err := asTime(addedAt)
 	if err != nil {

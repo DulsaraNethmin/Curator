@@ -218,6 +218,48 @@ func TestUnfinishedDownloadHasNullCompletedAt(t *testing.T) {
 	}
 }
 
+// T55: GET /api/downloads carries the stall reason, and omits the key entirely
+// when there is nothing to explain.
+//
+// Asserted against the raw JSON on purpose. A typed decode cannot tell an
+// absent key from `"reason": ""`, and the difference is the whole contract the
+// screen is written against: a key that is there is a sentence to render.
+// Nothing was added to internal/api to carry it — the handler responds with
+// store.Download, so the field is the store's and a copy here would be a second
+// shape to keep in step.
+func TestListDownloadsCarriesTheStallReason(t *testing.T) {
+	const why = "no peers are connected — nobody appears to be seeding this release"
+	stalled := savedDownload()
+	stalled.State = store.DownloadStalled
+	stalled.Reason = why
+
+	fake := &fakeDispatcher{list: []store.Download{stalled, savedDownload()}}
+	rec := do(t, newDownloadServer(t, fake), http.MethodGet, "/api/downloads")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var raw []map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(raw) != 2 {
+		t.Fatalf("downloads = %d, want 2", len(raw))
+	}
+
+	var got string
+	if err := json.Unmarshal(raw[0]["reason"], &got); err != nil {
+		t.Fatalf("decode reason: %v", err)
+	}
+	if got != why {
+		t.Errorf("reason = %q, want the backend's sentence verbatim — the UI renders it and translates nothing", got)
+	}
+	if _, present := raw[1]["reason"]; present {
+		t.Errorf("reason = %s on a download with nothing wrong, want the key absent",
+			raw[1]["reason"])
+	}
+}
+
 // Phases 1 and 2 must keep answering on a server that also serves downloads.
 func TestEarlierPhasesSurviveDownloadRegistration(t *testing.T) {
 	h := newDownloadServer(t, &fakeDispatcher{})

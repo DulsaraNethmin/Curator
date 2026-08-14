@@ -42,6 +42,105 @@ func TestTickWritesStateAndProgress(t *testing.T) {
 	}
 }
 
+// T55: the reason is written in the same call as the state it explains, and it
+// comes off the torrent rather than being composed here. The poller sees a
+// percentage that did not move; it cannot tell "nobody has this" from "nobody
+// will send it", which is precisely the distinction worth showing.
+func TestTickWritesTheStallReasonWithTheState(t *testing.T) {
+	const why = "no peers are connected — nobody appears to be seeding this release"
+	client := &fakeClient{torrents: []torrent.Torrent{
+		{Hash: testHash, State: torrent.StateStalled, Progress: 0, Reason: why},
+	}}
+	st := newFakeStore()
+	st.byHash[testHash] = store.Download{TorrentHash: testHash, State: store.DownloadQueued}
+
+	if err := newPoller(client, st).Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(st.updates) != 1 {
+		t.Fatalf("updates = %d, want 1", len(st.updates))
+	}
+	if st.updates[0].state != store.DownloadStalled || st.updates[0].reason != why {
+		t.Errorf("update = %+v, want stalled with the backend's own sentence", st.updates[0])
+	}
+}
+
+// The sentence can change while the state and the progress do not: a torrent
+// sits at 0% and `stalled` while the explanation moves from "nobody answered"
+// to "peers are connected but none of them is sending data". Without the reason
+// in the write condition the row keeps serving the first one for ever, and this
+// is the only test that fails when it is dropped — state and progress are
+// deliberately identical on both sides.
+func TestTickWritesWhenOnlyTheReasonChanged(t *testing.T) {
+	const newer = "peers are connected but none of them is sending data"
+	client := &fakeClient{torrents: []torrent.Torrent{
+		{Hash: testHash, State: torrent.StateStalled, Progress: 0, Reason: newer},
+	}}
+	st := newFakeStore()
+	st.byHash[testHash] = store.Download{
+		TorrentHash: testHash, State: store.DownloadStalled, Progress: 0,
+		Reason: "no peers are connected — nobody appears to be seeding this release",
+	}
+
+	if err := newPoller(client, st).Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(st.updates) != 1 {
+		t.Fatalf("updates = %d, want 1 — the reason moved and nothing else did", len(st.updates))
+	}
+	if st.updates[0].reason != newer {
+		t.Errorf("reason = %q, want the newer %q", st.updates[0].reason, newer)
+	}
+}
+
+// A peer appears. The state goes back to downloading and the explanation has to
+// go with it — an empty reason overwrites the stale one rather than being
+// skipped as "no news", or the row would say nobody is seeding a file that is
+// arriving.
+func TestTickClearsTheReasonWhenATorrentStartsMoving(t *testing.T) {
+	client := &fakeClient{torrents: []torrent.Torrent{
+		{Hash: testHash, State: torrent.StateDownloading, Progress: 0.1},
+	}}
+	st := newFakeStore()
+	st.byHash[testHash] = store.Download{
+		TorrentHash: testHash, State: store.DownloadStalled, Progress: 0,
+		Reason: "no peers are connected — nobody appears to be seeding this release",
+	}
+
+	if err := newPoller(client, st).Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if len(st.updates) != 1 {
+		t.Fatalf("updates = %d, want 1", len(st.updates))
+	}
+	if st.updates[0].reason != "" {
+		t.Errorf("reason = %q on a moving download, want it cleared", st.updates[0].reason)
+	}
+}
+
+// A torrent that is fine, polled repeatedly, writes nothing — the reason must
+// not become a third value that differs every tick and turns an idle poll into
+// a write. Both sides are empty and both sides stay empty.
+func TestTickWithNothingMovingAndNoReasonWritesNothing(t *testing.T) {
+	client := &fakeClient{torrents: []torrent.Torrent{
+		{Hash: testHash, State: torrent.StateDownloading, Progress: 0.42},
+	}}
+	st := newFakeStore()
+	st.byHash[testHash] = store.Download{
+		TorrentHash: testHash, State: store.DownloadDownloading, Progress: 0.42,
+	}
+
+	p := newPoller(client, st)
+	for i := 0; i < 3; i++ {
+		if err := p.Tick(context.Background()); err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+	}
+	if len(st.updates) != 0 {
+		t.Errorf("updates = %d, want 0 — nothing about this torrent changed", len(st.updates))
+	}
+}
+
 // The moment a download finishes is stamped once, here. Which of qBittorrent's
 // spellings mean "finished" — stoppedUP, pausedUP, uploading, stalledUP — is
 // asserted in internal/qbit's state test now that the mapping happens in the
