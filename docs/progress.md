@@ -6,7 +6,8 @@ what is **done, verified, and outstanding**. Update it when a phase closes or a 
 **Last updated:** 2026-08-14 · **Phases 1 and 2 complete** · phase 3 built, and its outstanding
 dispatch now run against a real qBittorrent locally · phase 4 built and verified locally ·
 phase 5 built, including the TMDB-first redesign (T27–T31) · **phase 6 built and verified locally,
-tunnel included — a real NordLynx endpoint, and a torrent downloading through it**
+tunnel included — a real NordLynx endpoint, and a torrent downloading through it** · **phase 7 built
+and verified locally**, settings writable and a password in front of the API · **phase 8 specified**
 
 ---
 
@@ -19,9 +20,9 @@ tunnel included — a real NordLynx endpoint, and a torrent downloading through 
 | **3** | Downloads — qBittorrent client, magnet dispatch, state polling | **built** — T13–T16 done; dispatch verified 2026-08-13 against a local qBittorrent 5.1.2, never against the Pi's |
 | **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** — T17–T21 done, verified locally 2026-08-12 against a stub and 2026-08-13 against a real download; never run against the Pi |
 | **5** | Interface — Next.js screens embedded via `embed.FS` | **built** — T22–T26, then T27–T31's TMDB-first redesign, verified locally 2026-08-13 |
-| **6** | Own the download — the torrent engine and a WireGuard tunnel move inside the binary | **built** — T32–T38 done, verified locally 2026-08-14; the tunnel's device code has never brought up a real peer |
-| 7 | Settings that write — writable config, secrets at rest, optional password | **specified** 2026-08-14 — T39–T42 and T55, no code yet |
-| 8 | Watch it here — direct play, remux, Open in Jellyfin | T43–T46, blocked by nothing |
+| **6** | Own the download — the torrent engine and a WireGuard tunnel move inside the binary | **built** — T32–T38 done, verified locally 2026-08-14 against a real NordLynx endpoint; one v4-only crash found afterwards and fixed in T56 |
+| **7** | Settings that write — writable config, secrets at rest, optional password | **built** — T39–T42 and T55 done, verified locally 2026-08-14; bcrypt's cost on the Pi is still unmeasured (D25, deferred to phase 10) |
+| 8 | Watch it here — direct play, remux, Open in Jellyfin | **specified** 2026-08-14 — T43–T46, blocked by nothing |
 | 9 | One command — the image, the release pipeline, minter on demand | T47–T51 |
 | 10 | Cutover — run alongside, confirm parity, remove the containers | back up the *arr configs first (T52) |
 
@@ -650,16 +651,18 @@ phase 4 built. It fired against the new backend exactly as designed. The check w
 
 ## Phase 7 tasks
 
-Specified 2026-08-14, no code yet. Spec in [`phase-7.md`](phase-7.md). Phases 1–6 are merged to
-`main` and pushed; this is on `phase-7-settings-that-write` and is not.
+Specified and built 2026-08-14. Spec in [`phase-7.md`](phase-7.md). Each task's own file carries what
+it shipped beyond its sketch and what it measured live — those sections are the detail, and they are
+not repeated here.
 
 | Task | Owns | Status |
 |---|---|---|
-| [T39](tasks/T39-settings-store.md) the settings store | `internal/settings/`, `internal/store/settings.go`, `migrate.go` | specified |
-| [T40](tasks/T40-settings-api.md) settings becomes read/write | `internal/api/settings.go`, wiring | specified |
-| [T41](tasks/T41-auth.md) optional authentication | `internal/api/auth.go`, wiring | specified |
-| [T42](tasks/T42-settings-screens.md) the Settings screens | `web/app/settings/`, `web/lib/api.ts` | specified |
-| [T55](tasks/T55-stall-reason.md) the stall reason reaches the screen | `torrent`, `store`, `download`, `api`, `web` | specified |
+| [T39](tasks/T39-settings-store.md) the settings store | `internal/settings/`, `internal/store/settings.go`, `migrate.go` | **done** — `092968c` |
+| [T40](tasks/T40-settings-api.md) settings becomes read/write | `internal/api/settings.go`, wiring | **done** — `e01a0fc` |
+| [T41](tasks/T41-auth.md) optional authentication | `internal/api/auth.go`, wiring | **done** — `6966d2a` |
+| [T42](tasks/T42-settings-screens.md) the Settings screens | `web/app/settings/`, `web/lib/api.ts` | **done** — `cb20a4d` |
+| [T55](tasks/T55-stall-reason.md) the stall reason reaches the screen | `torrent`, `store`, `download`, `api`, `web` | **done** — `e56561a` |
+| [T56](tasks/T56-udp-tracker-panic.md) a `udp://` tracker stops taking the process down | `internal/engine/network.go` | **done** — `beb5147`, verified live with both binaries against one row |
 
 Three decisions were written while specifying:
 [D25](decisions.md#d25--authentication-is-optional-and-off-by-default) (authentication is optional
@@ -669,8 +672,6 @@ cite), [D28](decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-re
 survives, its environment-only conclusion does not) and
 [D29](decisions.md#d29--a-written-setting-applies-at-the-next-start-the-password-applies-at-once)
 (a written setting applies at the next start; the password applies at once).
-
-| [T56](tasks/T56-udp-tracker-panic.md) a `udp://` tracker stops taking the process down | `internal/engine/network.go` | **done** — verified live 2026-08-14, both binaries against one row |
 
 **T55 is numbered outside the plan on purpose.** The plan reserved T43–T54 for phases 8–10, so a
 task found afterwards takes the next free number rather than displacing one other documents cite. It
@@ -694,6 +695,62 @@ argument — `schema.sql` is all `IF NOT EXISTS` and every column phases 3–6 n
 already exists. The mechanism arrives now rather than in phase 9 because from phase 9 there are
 databases this repo has never seen, and a mechanism introduced with one nullable column is cheaper
 than one introduced under pressure.
+
+### Still live going out
+
+- **bcrypt's cost on the Pi has never been measured.** Tests use `MinCost`, production uses the
+  default, and [D25](decisions.md#d25--authentication-is-optional-and-off-by-default) defers the
+  number to phase 10 on purpose — tuning a cost against a laptop is how you ship one that is wrong
+  for the hardware. The serialising mutex means the number is a login latency, not a throughput
+  ceiling.
+- **The real NordLynx `.conf` has never gone through the settings textarea.** What was pasted was a
+  structurally identical file with random keys. The parser is the same one `VPN_CONFIG_FILE` uses,
+  so this is breadth rather than a gap in the mechanism.
+- **A stall reason CLEARING has never been watched live.** Proven hermetically in three places; the
+  live run saw a reason appear and not a torrent recover from one.
+- **The writer still refuses a secret when the codec is nil** — a database restored without its key.
+  The screen renders `unreadable` with a repair sentence, and no real unreadable row has ever been
+  seen.
+- **The documented dev workflow does not work in a browser.** `next dev` on `:3000` against the API
+  on `:8090` is cross-origin and there is **no CORS header anywhere in the Go code**, so every UI
+  check has to run against the embedded build. It is not to be fixed with a permissive CORS block:
+  the API now carries a session cookie, which makes that a CSRF surface and a decision record of its
+  own.
+
+---
+
+## Phase 8 tasks
+
+Specified 2026-08-14, no code yet. Spec in [`phase-8.md`](phase-8.md).
+
+| Task | Owns | Status |
+|---|---|---|
+| [T43](tasks/T43-stream.md) the stream endpoint | `internal/api/stream.go`, `internal/library/contain.go`, the ticket in `auth.go` | specified |
+| [T44](tasks/T44-remux.md) remux | `internal/remux/`, the ffmpeg build | specified |
+| [T45](tasks/T45-player.md) the player and the Jellyfin link | `web/app/movie/`, `internal/jellyfin` | specified |
+| [T46](tasks/T46-subtitles.md) the subtitle sidecar | `internal/importer`, `internal/api/stream.go` | specified |
+
+Two decisions were written while specifying:
+[D24](decisions.md#d24--playback-remuxes-and-never-transcodes) (playback remuxes and never
+transcodes — the container is what actually breaks, and a Pi 5 does not re-encode 1080p in software
+in real time) and
+[D31](decisions.md#d31--the-stream-is-behind-the-same-password-and-a-ticket-is-how-a-player-carries-it)
+(the stream is behind the same password as everything else, and a ticket — signed with the cookie's
+own key, valid for one path, dead when the password changes — is how VLC carries it).
+
+**The one thing measured while specifying, because it is a bug that would only appear in phase 9.**
+Go's builtin MIME table (`mime/type.go:53-70`) contains **no video extension at all**. On this Mac
+`mime.TypeByExtension(".mkv")` answers `video/x-matroska`, and it does so only by reading
+`/etc/apache2/mime.types`; phase 9's image is `FROM scratch`, where none of the four files Go looks
+in exists, every answer becomes `""`, and `http.ServeContent` falls back to sniffing. **Sniffing an
+MKV gives `video/webm`**, measured, because Matroska and WebM share the EBML magic — so a stream
+endpoint that let Go decide would work perfectly on this laptop and mislabel every file in the
+image. T43 carries its own four-entry table.
+
+**Phase 8 is where the plan's parallel branch finally runs.** It has depended on nothing since day
+one — only the library, which has existed since phase 1 — and what phases 6 and 7 changed is not what
+it builds but what it must be careful about: a password now sits in front of `/api/*`, and a
+`<video>` carries a cookie where VLC does not.
 
 ## Corrections made to the docs
 
