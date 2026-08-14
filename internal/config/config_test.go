@@ -468,3 +468,35 @@ func TestLoadTakesTheTunnelFromTheResolvedSettings(t *testing.T) {
 		t.Error("VPNConfigured() = false with a stored tunnel")
 	}
 }
+
+// The three toggles are new in phase 7, so an unset value has to mean what
+// curator did before they existed — otherwise upgrading turns search off.
+func TestIndexersAreOnUnlessTurnedOff(t *testing.T) {
+	for _, key := range []string{"INDEXER_YTS", "INDEXER_TPB", "INDEXER_1337X"} {
+		t.Setenv(key, "")
+	}
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.IndexerYTS || !cfg.IndexerTPB || !cfg.IndexerX1337 {
+		t.Errorf("an unset toggle disabled an indexer: yts=%v tpb=%v 1337x=%v",
+			cfg.IndexerYTS, cfg.IndexerTPB, cfg.IndexerX1337)
+	}
+
+	off, err := Load(map[string]string{"indexer_1337x": "false"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if off.IndexerX1337 {
+		t.Error("a stored indexer_1337x=false did not turn 1337x off")
+	}
+	if !off.IndexerYTS || !off.IndexerTPB {
+		t.Error("turning one indexer off turned another off with it")
+	}
+
+	if _, err := Load(map[string]string{"indexer_yts": "sometimes"}); err == nil {
+		t.Error("INDEXER_YTS accepted a value that is not a boolean")
+	}
+}

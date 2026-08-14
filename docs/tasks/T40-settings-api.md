@@ -131,3 +131,34 @@ Then live, on the laptop:
   setting that has only ever come from `.env`
 - `curl -s localhost:8090/api/settings | grep -c "$THE_KEY_YOU_JUST_SET"` → **0**
 - `sqlite3 curator.db 'select value from settings where key="tmdb_api_key"'` → `enc.v1.…`
+
+## What it shipped, beyond the sketch above
+
+Three fields the example JSON does not name, each because a screen cannot be written without it:
+
+- **`env`** — the variable, so T42 can render "set by `LIBRARY_MOVIES`" without the UI keeping its
+  own copy of the registry, which would be the second vocabulary this phase exists to prevent.
+- **`pending_change`** — a boolean beside `pending`, because two states have a pending change with
+  nothing to show for it: a **secret** that differs (reportable, unprintable) and a **cleared**
+  setting, whose pending value is a default. Do not infer "pending" from `pending != null`.
+- **`unreadable`** — a stored value that would not decrypt. The field behaves as unset; being told
+  it is *simply* unset is what would make a database restored without its key unrecoverable
+  ([D28](../decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api)).
+
+**`pending` is computed by calling `config.Load` on the current stored values** and diffing its
+`effective()` map against the running one — the same function that will run at the next start,
+rather than a second one that agrees with it today. That is what makes a *cleared* setting report
+its default as pending rather than reporting nothing.
+
+**A rejected secret's message is redacted, and the floor is 20 characters.** `vpn.ParseConfig`
+quotes the line it could not parse, and for a wg-quick file that line can be the private key. At
+eight characters the redaction ate its own explanation — a config missing its key answered
+`vpn config: [redacted] [redacted] is missing`, because `[Interface]` and `PrivateKey` are in the
+submitted text as well as in the sentence about it. Twenty is longer than any word a parser puts in
+a message and shorter than anything these settings carry: a WireGuard key is 44 base64 characters, a
+TMDB key is 32. Found live, not reasoned about, and both halves now have a test.
+
+**`api.Access` is the seam T41 lands on.** One method, `Reload(ctx) error`, called after a write
+that touched an `Immediate` setting. `cmd/curator` does not attach one yet, so `auth_enabled` and
+`auth_password` are stored — hashed, by the writer — and take effect at the next start until T41
+attaches the holder that makes them immediate.

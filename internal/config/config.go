@@ -31,6 +31,14 @@ type Config struct {
 	SearchTimeout  time.Duration
 	SearchCacheTTL time.Duration
 
+	// Phase 7: which of them are asked at all. All three are on unless somebody
+	// turns one off, so an unset value keeps exactly the behaviour phases 2-6
+	// shipped — and turning 1337x off is also what stops minter being probed for
+	// a service nobody asked for (docs/tasks/T40-settings-api.md).
+	IndexerYTS   bool
+	IndexerTPB   bool
+	IndexerX1337 bool
+
 	// Phase 3: downloads.
 	QBitURL              string
 	QBitUser             string
@@ -288,6 +296,12 @@ func Load(resolved map[string]string) (*Config, error) {
 		// Mandatory by default, and it has to be typed to turn off. A VPN that
 		// defaults to optional is a slogan (docs/decisions.md D27).
 		VPNRequired: true,
+
+		// Every indexer on by default: these three variables are new in phase 7,
+		// so an unset value has to mean what curator did before they existed.
+		IndexerYTS:   true,
+		IndexerTPB:   true,
+		IndexerX1337: true,
 	}
 
 	// Parsed from the raw value rather than from a pre-lowered copy, so the
@@ -304,12 +318,26 @@ func Load(resolved map[string]string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if raw := r.get("VPN_REQUIRED", ""); raw != "" {
-		required, parseErr := ParseBool("VPN_REQUIRED", raw)
+	// Every boolean defaults to something deliberate above, so an unset variable
+	// is left alone rather than parsed into a false.
+	for _, b := range []struct {
+		key   string
+		field *bool
+	}{
+		{"VPN_REQUIRED", &cfg.VPNRequired},
+		{"INDEXER_YTS", &cfg.IndexerYTS},
+		{"INDEXER_TPB", &cfg.IndexerTPB},
+		{"INDEXER_1337X", &cfg.IndexerX1337},
+	} {
+		raw := r.get(b.key, "")
+		if raw == "" {
+			continue
+		}
+		value, parseErr := ParseBool(b.key, raw)
 		if parseErr != nil {
 			return nil, parseErr
 		}
-		cfg.VPNRequired = required
+		*b.field = value
 	}
 
 	for _, n := range []struct {
