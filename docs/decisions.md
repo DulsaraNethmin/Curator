@@ -821,3 +821,51 @@ correct *if something restarts the process* — true of `docker run --restart`, 
 `go run ./cmd/curator`, which is how this is developed. It is worth reconsidering in phase 9, where
 the container has a supervisor by construction and the answer stops depending on how curator was
 launched.
+
+---
+
+## D30 — A tunnel announces only in the families it has, and never hands the library an error it panics on
+
+**Status:** decided, measured (T56) · **Follows from:**
+[D27](#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)
+
+A `udp://` tracker in a resumed magnet took the whole process down at boot, and the two halves of
+why are two different decisions.
+
+**A v4-only tunnel refuses a udp6 announce; it does not fake a listener for one, and it is not a
+configuration error.** anacrolix turns one `udp://` tracker into two announcers, `udp4://` and
+`udp6://` (`torrent.go:2180`), and starts the v6 one unless `DisableIPv6` says otherwise. A NordLynx
+`.conf` has a single IPv4 `Address` line, so there is no v6 address to bind — and that is not a
+broken config, it is *every* config this product will meet. So curator probes the network for the
+families it can actually listen on and tells the client the truth. The same fact is what anacrolix's
+peer filters want (`client.go:475-478`): a tunnel with no v6 address cannot reach a v6 peer either,
+so offering it one is only a connection attempt that has to fail.
+
+**The alternatives, and why they lost.** *Refusing at config time* turns a crash into a product that
+will not start for the config everybody has. *Handing back a listener that fails politely* — as the
+only answer — opens a socket that cannot work for every udp tracker in every magnet, forever, and
+buries an answerable question under a retry loop. It is kept, but as the backstop below rather than
+the fix. What is not on the table is a fallback to `net.ListenPacket`: that is the kill switch D27
+measured as zero OS sockets, and "just for trackers" is exactly how it would be lost.
+
+**The wider rule, which is the part that outlives this bug: no curator error may reach a library's
+`panicif` on a path that cannot return it.** `TrackerListenPacket`'s error is passed straight to
+`panicif.Err` on a function that returns nothing (`client-tracker-announcer.go:861`), so an error
+there is not one failed announce, it is the process — and at boot, where resume re-adds every
+unfinished row, it is a crash loop. That hook therefore **never returns an error**; a network that
+will not open the socket yields one that fails on every operation instead.
+
+An audit of the other five things curator hands the client — `HTTPDialContext`,
+`TrackerDialContext`, the added dialer, the added listener, the DHT server — found all five land in
+ordinary error paths. One of six. The number is in the code, with its line reference, because a
+wrapper that looks like ceremony is a wrapper somebody deletes.
+
+**The lie stops at the engine.** `internal/vpn` keeps returning a real error from `ListenPacket`,
+because its own callers want one — including `New`, which must refuse to start a tunnel that cannot
+listen at all. It is the engine that knows the library is hostile, so it is the engine that absorbs
+it.
+
+**What this cost to find, and the lesson in it.** Phase 6 verified the entire tunnel against
+`live_test.go`'s Debian magnet, which carries exactly one **`http://`** tracker — the one tracker
+scheme that never asks for a packet socket. A fixture that avoided the normal case made the normal
+case the untested one for two phases.

@@ -633,6 +633,10 @@ phase 4 built. It fired against the new backend exactly as designed. The check w
 - **Only one provider, one server, one run.** NordLynx against a Singapore endpoint, once. Nothing
   says how this behaves on a provider with a different MTU, an IPv6-only address, or a config
   carrying `Table`/`PostUp` directives the parser ignores.
+  **[T56](tasks/T56-udp-tracker-panic.md) is the first evidence that this reaches further than
+  expected**: the v4-only `Address` line was not just untested breadth, it was a crash on the normal
+  download path, and it survived two phases because the only magnet ever run live carried an
+  `http://` tracker.
 - **Dispatch from the UI was not re-driven end to end.** The release-id path from search to
   `POST /api/downloads` is phase 2 and 3 code, unchanged here, and driving it to completion would
   mean downloading a real film. Everything downstream of the row — resume, engine, poller, importer,
@@ -666,10 +670,23 @@ survives, its environment-only conclusion does not) and
 [D29](decisions.md#d29--a-written-setting-applies-at-the-next-start-the-password-applies-at-once)
 (a written setting applies at the next start; the password applies at once).
 
+| [T56](tasks/T56-udp-tracker-panic.md) a `udp://` tracker stops taking the process down | `internal/engine/network.go` | **done** — verified live 2026-08-14, both binaries against one row |
+
 **T55 is numbered outside the plan on purpose.** The plan reserved T43–T54 for phases 8–10, so a
 task found afterwards takes the next free number rather than displacing one other documents cite. It
 is [T36](tasks/T36-resume-stall.md)'s deferred stall *reason*, which needs a column, which is what
 makes it the first passenger of the repo's first migration.
+
+**T56 is phase 6's bug, found by phase 7's live run.** T55's first attempt never reached the
+listener: a `udp://` tracker in a resumed magnet panicked the process at boot, because anacrolix
+splits one `udp://` announce into `udp4://` **and** `udp6://` and a NordLynx tunnel has no v6
+address to give the second one — and curator's error for that went to a `panicif` on a function that
+returns nothing. **Every real indexer magnet carries `udp://` trackers**, so the case that crashed
+was the normal one; phase 6 missed it for two phases because `live_test.go`'s Debian magnet carries
+a single `http://` tracker, the one scheme that never asks for a packet socket.
+[D30](decisions.md#d30--a-tunnel-announces-only-in-the-families-it-has-and-never-hands-the-library-an-error-it-panics-on)
+records both halves: announce only in the families the tunnel has, and never hand the library an
+error it panics on.
 
 **This phase needs a migration, and it is the first.** Five phases shipped without one on a real
 argument — `schema.sql` is all `IF NOT EXISTS` and every column phases 3–6 needed already existed.
