@@ -57,6 +57,15 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema to %s: %w", path, err)
 	}
+
+	// schema.sql creates what is missing; migrate.go changes what is already
+	// there. Both run on every start and both are no-ops after the first, which
+	// is what lets this stay "open the database" rather than becoming a command
+	// somebody has to remember to run.
+	if err := s.migrate(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate %s: %w", path, err)
+	}
 	return s, nil
 }
 

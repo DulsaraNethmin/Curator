@@ -23,6 +23,8 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/library"
 	"github.com/DulsaraNethmin/curator/internal/logs"
 	"github.com/DulsaraNethmin/curator/internal/qbit"
+	"github.com/DulsaraNethmin/curator/internal/secret"
+	"github.com/DulsaraNethmin/curator/internal/settings"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
 	"github.com/DulsaraNethmin/curator/internal/vpn"
@@ -49,7 +51,32 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
+	// Start-up happens in two steps since phase 7, and the order is the whole
+	// of it. The settings that say where the database is have to be read before
+	// the database; everything else is read out of it, decrypted, and resolved
+	// against the environment — which wins (docs/decisions.md D28).
+	boot, err := config.Bootstrap()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Opened before there is a logger, which is legal only because store.Open
+	// returns its errors and logs nothing. Check that is still true before
+	// moving anything above this line.
+	db, err := store.Open(ctx, boot.DBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	resolution, unreadable, err := resolveSettings(ctx, db, boot)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(resolution.Values)
 	if err != nil {
 		return err
 	}
@@ -63,18 +90,23 @@ func run() error {
 	// the API key out of transport errors at the source — but a log line is now
 	// a log line on the network, and the guarantee has to hold for log calls
 	// nobody has written yet (docs/decisions.md D18).
-	logBuffer := logs.NewBuffer(cfg.LogBufferLines, cfg.TMDBAPIKey, cfg.QBitPass, cfg.JellyfinAPIKey)
-	log := slog.New(logBuffer.Handler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
+	//
+	// The list comes off the resolution rather than being spelled out here,
+	// because a hand-written list gains a member and not a line: T37 said to
+	// hand over the tunnel's keys and nothing did, so for two commits the one
+	// secret this phase exists to protect was the one that was not scrubbed.
+	logBuffer := logs.NewBuffer(boot.LogBufferLines, resolution.Secrets()...)
+	log := slog.New(logBuffer.Handler(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: boot.LogLevel})))
 	slog.SetDefault(log)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	db, err := store.Open(ctx, cfg.DBPath)
-	if err != nil {
-		return err
+	for _, key := range unreadable {
+		// Not fatal, and never silently treated as unset: a database restored
+		// without its key file is recoverable by typing the value again, and
+		// the only thing that makes it unrecoverable is not being told.
+		log.Error("a stored setting cannot be decrypted and is being ignored: enter it again. "+
+			"The secret key is missing, or is not the one this value was written with",
+			"key", key)
 	}
-	defer db.Close()
 
 	// A nil Matcher is a supported state: with no key the library still scans and
 	// everything is reported unmatched. Declared as the interface so the nil stays
@@ -255,6 +287,35 @@ func run() error {
 		return err
 	}
 	return <-errc
+}
+
+// resolveSettings reads the settings table, decrypts what is encrypted, and
+// resolves the lot against the environment.
+//
+// It returns the keys it could not decrypt rather than failing on them. A
+// missing key file is a state to report and carry on from — the library still
+// scans, search still works, and the settings screen can be used to type the
+// values in again — while a malformed SECRET_KEY is a typo in something
+// somebody set deliberately, and starting with it ignored would encrypt the
+// next write under a key nobody meant.
+func resolveSettings(ctx context.Context, db *store.Store, boot config.Boot) (settings.Resolution, []string, error) {
+	raw, err := db.Settings(ctx)
+	if err != nil {
+		return settings.Resolution{}, nil, err
+	}
+
+	// A key is generated only when there is nothing it could orphan. With
+	// ciphertext already in the table and no key to read it, inventing one
+	// would turn "I restored the database without its key" from recoverable
+	// into invisible (docs/decisions.md D28).
+	codec, err := secret.Open(boot.SecretKey, boot.SecretKeyFile, !secret.AnyEncrypted(raw))
+	if err != nil && !errors.Is(err, secret.ErrNoKey) {
+		return settings.Resolution{}, nil, err
+	}
+
+	values, unreadable := secret.Reveal(codec, raw)
+	resolution, err := settings.Resolve(values)
+	return resolution, unreadable, err
 }
 
 // healthz is deliberately cheap: no database, no disk. It answers "is the process

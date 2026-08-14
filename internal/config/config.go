@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -174,60 +175,139 @@ const (
 	// download moves every second, so five minutes is long enough that
 	// "stalled" means it.
 	defaultTorrentStallAfter = 5 * time.Minute
+
+	// defaultSecretKeyName is the key that decrypts the stored settings, placed
+	// beside the database so it rides in the same volume and survives the same
+	// restart. Anything that copies the volume copies both, which is stated
+	// plainly in D28 rather than implied otherwise — what it defends against is
+	// a database that travels alone.
+	defaultSecretKeyName = "curator.key"
 )
 
-// Load reads the configuration from the environment, applying defaults for
-// anything unset. It returns an error rather than panicking so main can report
-// the problem and exit cleanly.
+// Boot is the part of the configuration that has to exist before there is a
+// database to read the rest from.
+//
+// It is a subset, not a separate configuration: Load reads every one of these
+// again, so *Config stays the single thing passed down and nothing downstream
+// has to know that start-up happens in two steps.
+type Boot struct {
+	DBPath         string
+	LogLevel       slog.Level
+	LogBufferLines int
+
+	// SecretKey and SecretKeyFile are where the key that decrypts the stored
+	// settings comes from. It cannot itself be a stored setting, for the same
+	// reason DBPath cannot: a key readable from the store it protects is not a
+	// key (docs/decisions.md D28).
+	SecretKey     string
+	SecretKeyFile string
+}
+
+// Bootstrap reads the environment-only settings.
+//
+// These five are not in the settings registry and are deliberately unsettable
+// from the settings screen. The rule is one sentence — anything needed in order
+// to reach the settings screen is not settable from the settings screen — and
+// they are read through os.Getenv here and in Load, never through the resolved
+// map, so a row written into the settings table by hand cannot move the
+// database or silence the log.
+func Bootstrap() (Boot, error) {
+	boot := Boot{
+		DBPath:         env("DB_PATH", defaultDBPath),
+		LogBufferLines: defaultLogBufferLines,
+		SecretKey:      os.Getenv("SECRET_KEY"),
+		SecretKeyFile:  os.Getenv("SECRET_KEY_FILE"),
+	}
+
+	level, err := parseLevel(env("LOG_LEVEL", defaultLogLevel))
+	if err != nil {
+		return Boot{}, err
+	}
+	boot.LogLevel = level
+
+	if raw := os.Getenv("LOG_BUFFER_LINES"); raw != "" {
+		lines, err := strconv.Atoi(raw)
+		if err != nil || lines < 1 {
+			return Boot{}, fmt.Errorf("LOG_BUFFER_LINES %q: want a positive whole number", raw)
+		}
+		boot.LogBufferLines = lines
+	}
+
+	// The key lives beside the database, so it rides in the same volume and
+	// survives the same restart. It is a separate file rather than a row
+	// because the thing that leaks a database — a copy, a backup, a dump pasted
+	// into an issue — takes the rows and not the neighbour.
+	if boot.SecretKeyFile == "" {
+		boot.SecretKeyFile = filepath.Join(filepath.Dir(boot.DBPath), defaultSecretKeyName)
+	}
+	return boot, nil
+}
+
+// Load reads the configuration, applying defaults for anything unset. It
+// returns an error rather than panicking so main can report the problem and
+// exit cleanly.
+//
+// resolved is the settings map with environment precedence ALREADY applied —
+// internal/settings.Resolve produces it, keyed by setting key. Passing nil
+// means "the environment and the defaults", which is exactly what phases 1-6
+// did and is still what every test and every caller outside cmd/curator wants.
+//
+// Precedence lives in one place, in internal/settings, rather than being
+// implemented again here: this reads the resolved value first and falls through
+// to the environment, which is the same answer when Resolve ran and the only
+// answer when it did not.
 //
 // An empty TMDB_API_KEY is deliberately not an error: scanning the library works
 // without it, only metadata matching does not.
-func Load() (*Config, error) {
+func Load(resolved map[string]string) (*Config, error) {
+	r := source(resolved)
+
 	cfg := &Config{
 		Port:          defaultPort,
 		DBPath:        env("DB_PATH", defaultDBPath),
-		LibraryMovies: env("LIBRARY_MOVIES", defaultLibraryMovies),
-		TMDBAPIKey:    os.Getenv("TMDB_API_KEY"),
-		MinterURL:     env("MINTER_URL", defaultMinterURL),
-		QBitURL:       env("QBIT_URL", defaultQBitURL),
-		QBitUser:      os.Getenv("QBIT_USER"),
-		QBitPass:      os.Getenv("QBIT_PASS"),
-		QBitCategory:  env("QBIT_CATEGORY", defaultQBitCategory),
+		LibraryMovies: r.get("LIBRARY_MOVIES", defaultLibraryMovies),
+		TMDBAPIKey:    r.get("TMDB_API_KEY", ""),
+		MinterURL:     r.get("MINTER_URL", defaultMinterURL),
+		QBitURL:       r.get("QBIT_URL", defaultQBitURL),
+		QBitUser:      r.get("QBIT_USER", ""),
+		QBitPass:      r.get("QBIT_PASS", ""),
+		QBitCategory:  r.get("QBIT_CATEGORY", defaultQBitCategory),
 
 		LogBufferLines: defaultLogBufferLines,
 
-		// DOWNLOADS_PATH is read raw rather than through env(): it has no
-		// default, and empty is a meaningful value — "the path qBittorrent
-		// reports is already the path curator sees".
-		DownloadsPath:     os.Getenv("DOWNLOADS_PATH"),
-		QBitDownloadsPath: env("QBIT_DOWNLOADS_PATH", defaultQBitDownloadsPath),
-		JellyfinURL:       env("JELLYFIN_URL", defaultJellyfinURL),
-		JellyfinAPIKey:    os.Getenv("JELLYFIN_API_KEY"),
+		// DOWNLOADS_PATH has no default, and empty is a meaningful value — "the
+		// path qBittorrent reports is already the path curator sees".
+		DownloadsPath:     r.get("DOWNLOADS_PATH", ""),
+		QBitDownloadsPath: r.get("QBIT_DOWNLOADS_PATH", defaultQBitDownloadsPath),
+		JellyfinURL:       r.get("JELLYFIN_URL", defaultJellyfinURL),
+		JellyfinAPIKey:    r.get("JELLYFIN_API_KEY", ""),
 
-		TorrentBackend: strings.ToLower(strings.TrimSpace(env("TORRENT_BACKEND", BackendEmbedded))),
-		DownloadsDir:   env("DOWNLOADS_DIR", defaultDownloadsDir),
-		VPNIPCheckURL:  os.Getenv("VPN_IP_CHECK_URL"),
+		DownloadsDir:  r.get("DOWNLOADS_DIR", defaultDownloadsDir),
+		VPNIPCheckURL: r.get("VPN_IP_CHECK_URL", ""),
 
 		// Mandatory by default, and it has to be typed to turn off. A VPN that
 		// defaults to optional is a slogan (docs/decisions.md D27).
 		VPNRequired: true,
 	}
 
-	switch cfg.TorrentBackend {
-	case BackendEmbedded, BackendQBittorrent:
-	default:
-		return nil, fmt.Errorf("TORRENT_BACKEND %q: want %q or %q", cfg.TorrentBackend, BackendEmbedded, BackendQBittorrent)
-	}
-
-	vpn, err := vpnConfig()
+	// Parsed from the raw value rather than from a pre-lowered copy, so the
+	// message quotes what was actually typed — and so it is the same message
+	// internal/settings produces when the same value is refused on its way into
+	// the database, which a test in that package asserts.
+	backend, err := ParseBackend(r.get("TORRENT_BACKEND", BackendEmbedded))
 	if err != nil {
 		return nil, err
 	}
-	cfg.VPNConfig = vpn
-	if raw := os.Getenv("VPN_REQUIRED"); raw != "" {
-		required, parseErr := strconv.ParseBool(raw)
+	cfg.TorrentBackend = backend
+
+	cfg.VPNConfig, err = r.vpnConfig()
+	if err != nil {
+		return nil, err
+	}
+	if raw := r.get("VPN_REQUIRED", ""); raw != "" {
+		required, parseErr := ParseBool("VPN_REQUIRED", raw)
 		if parseErr != nil {
-			return nil, fmt.Errorf("VPN_REQUIRED %q: want true or false", raw)
+			return nil, parseErr
 		}
 		cfg.VPNRequired = required
 	}
@@ -241,17 +321,21 @@ func Load() (*Config, error) {
 		{"TORRENT_MAX_CONNS", &cfg.TorrentMaxConns, 1, 500},
 		{"TORRENT_PORT", &cfg.TorrentPort, 0, 65535},
 	} {
-		raw := os.Getenv(n.key)
+		raw := r.get(n.key, "")
 		if raw == "" {
 			continue
 		}
-		value, parseErr := strconv.Atoi(raw)
-		if parseErr != nil || value < n.min || value > n.max {
-			return nil, fmt.Errorf("%s %q: want a number between %d and %d", n.key, raw, n.min, n.max)
+		value, parseErr := ParseInt(n.key, raw, n.min, n.max)
+		if parseErr != nil {
+			return nil, parseErr
 		}
 		*n.field = value
 	}
 
+	// PORT, LOG_LEVEL and LOG_BUFFER_LINES are read from the environment
+	// directly and never from the resolved map. They are Bootstrap's, and the
+	// rule is that anything needed in order to reach the settings screen is not
+	// settable from it.
 	if raw := os.Getenv("PORT"); raw != "" {
 		port, err := strconv.Atoi(raw)
 		if err != nil {
@@ -277,35 +361,64 @@ func Load() (*Config, error) {
 	}
 	cfg.LogLevel = level
 
-	cfg.SearchTimeout, err = duration("SEARCH_TIMEOUT", defaultSearchTimeout)
-	if err != nil {
-		return nil, err
-	}
-	cfg.SearchCacheTTL, err = duration("SEARCH_CACHE_TTL", defaultSearchCacheTTL)
-	if err != nil {
-		return nil, err
-	}
-	cfg.DownloadPollInterval, err = duration("DOWNLOAD_POLL_INTERVAL", defaultDownloadPollInterval)
-	if err != nil {
-		return nil, err
-	}
-	cfg.TorrentStallAfter, err = duration("TORRENT_STALL_AFTER", defaultTorrentStallAfter)
-	if err != nil {
-		return nil, err
+	for _, d := range []struct {
+		key      string
+		field    *time.Duration
+		fallback time.Duration
+	}{
+		{"SEARCH_TIMEOUT", &cfg.SearchTimeout, defaultSearchTimeout},
+		{"SEARCH_CACHE_TTL", &cfg.SearchCacheTTL, defaultSearchCacheTTL},
+		{"DOWNLOAD_POLL_INTERVAL", &cfg.DownloadPollInterval, defaultDownloadPollInterval},
+		{"TORRENT_STALL_AFTER", &cfg.TorrentStallAfter, defaultTorrentStallAfter},
+	} {
+		raw := r.get(d.key, "")
+		if raw == "" {
+			*d.field = d.fallback
+			continue
+		}
+		value, err := ParseDuration(d.key, raw)
+		if err != nil {
+			return nil, err
+		}
+		*d.field = value
 	}
 
 	return cfg, nil
 }
 
-// vpnConfig reads the tunnel's wg-quick file, from VPN_CONFIG directly or from
-// the path in VPN_CONFIG_FILE.
+// source reads a value out of the resolved settings, then out of the
+// environment, then out of the caller's default.
+type source map[string]string
+
+func (r source) get(key, fallback string) string {
+	// The resolved map is keyed by the lower-case form of the variable, which
+	// is the invariant internal/settings is built on and asserts. Lower-casing
+	// here rather than importing that package is what keeps this one importing
+	// nothing of curator's.
+	if v := r[strings.ToLower(key)]; v != "" {
+		return v
+	}
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// vpnConfig returns the tunnel's wg-quick file.
 //
-// Both exist because both are how it arrives: a provider hands out a file, and
-// a container is configured with an environment variable. A path that cannot be
+// The resolved value already accounts for VPN_CONFIG and VPN_CONFIG_FILE, so
+// the two branches below only run when Load was given nil — which is every
+// caller that is not cmd/curator, including every test.
+//
+// Both variables exist because both are how it arrives: a provider hands out a
+// file, and a container is configured with a variable. A path that cannot be
 // read is an error rather than a silent "no VPN" — a mandatory tunnel that
 // disappears because of a typo in a path is the failure this whole design is
 // trying not to have.
-func vpnConfig() (string, error) {
+func (r source) vpnConfig() (string, error) {
+	if v := r["vpn_config"]; strings.TrimSpace(v) != "" {
+		return v, nil
+	}
 	if inline := strings.TrimSpace(os.Getenv("VPN_CONFIG")); inline != "" {
 		return inline, nil
 	}
@@ -320,6 +433,58 @@ func vpnConfig() (string, error) {
 	return string(body), nil
 }
 
+// ParseBackend checks a TORRENT_BACKEND value.
+//
+// Exported, like the three parsers below it, so that internal/settings can
+// validate a value on its way *into* the database with the function that will
+// reject it at the next start rather than with a second one that agrees today.
+// A settings screen accepting a value the next boot refuses is a settings
+// screen that bricks a container (docs/tasks/T39-settings-store.md).
+func ParseBackend(raw string) (string, error) {
+	backend := strings.ToLower(strings.TrimSpace(raw))
+	switch backend {
+	case BackendEmbedded, BackendQBittorrent:
+		return backend, nil
+	default:
+		return "", fmt.Errorf("TORRENT_BACKEND %q: want %q or %q", raw, BackendEmbedded, BackendQBittorrent)
+	}
+}
+
+// ParseBool reads a boolean setting.
+func ParseBool(key, raw string) (bool, error) {
+	value, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false, fmt.Errorf("%s %q: want true or false", key, raw)
+	}
+	return value, nil
+}
+
+// ParseInt reads a whole number and bounds it.
+func ParseInt(key, raw string, min, max int) (int, error) {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < min || value > max {
+		return 0, fmt.Errorf("%s %q: want a number between %d and %d", key, raw, min, max)
+	}
+	return value, nil
+}
+
+// ParseDuration reads a Go duration string ("30s", "1h").
+//
+// A non-positive value is an error rather than a silent disable: a zero
+// SEARCH_TIMEOUT would cancel every search the instant it started, and a zero
+// TTL would quietly reinstate the browser launch on every repeat search that
+// the cache exists to prevent.
+func ParseDuration(key, raw string) (time.Duration, error) {
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, fmt.Errorf("%s %q: not a duration (want e.g. \"30s\", \"1h\")", key, raw)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s %q: must be positive", key, raw)
+	}
+	return d, nil
+}
+
 // Addr is the listen address for the HTTP server.
 func (c *Config) Addr() string {
 	return fmt.Sprintf(":%d", c.Port)
@@ -330,25 +495,6 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// duration reads a Go duration string ("30s", "1h"). A non-positive value is an
-// error rather than a silent disable: a zero SEARCH_TIMEOUT would cancel every
-// search the instant it started, and a zero TTL would quietly reinstate the
-// browser launch on every repeat search that the cache exists to prevent.
-func duration(key string, fallback time.Duration) (time.Duration, error) {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return fallback, nil
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		return 0, fmt.Errorf("%s %q: not a duration (want e.g. \"30s\", \"1h\")", key, raw)
-	}
-	if d <= 0 {
-		return 0, fmt.Errorf("%s %q: must be positive", key, raw)
-	}
-	return d, nil
 }
 
 func parseLevel(raw string) (slog.Level, error) {

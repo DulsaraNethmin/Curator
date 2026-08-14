@@ -81,6 +81,20 @@
    about where settings come from, which is the property that has kept this package testable against
    fakes since phase 1.
 
+   Two things main owns here, because both are wiring and neither is a handler:
+
+   - **The effective value of every setting** comes off `*config.Config`, as a map literal beside
+     the `paths` and `intervals` ones that already exist. It is explicit and it is boring, and it
+     cannot drift from what the process is running because it is what the process is running —
+     which is why T39's registry holds no defaults to disagree with it.
+   - **The indexer toggles have to be honoured by somebody**, and it is the line that builds the
+     aggregator. `INDEXER_YTS`, `INDEXER_TPB` and `INDEXER_1337X` are stored settings with nobody
+     reading them until `indexer.NewAggregator` is given only the enabled ones. Found while
+     building T39: the phase says the indexers are configurable and no task owned the half that
+     makes a toggle do anything. Default is all three on, so an unset value keeps today's
+     behaviour, and disabling 1337x is also what stops minter being probed for a service nobody
+     asked for.
+
 ## Do not
 
 - Return a secret. Assert it in a test against the **raw JSON**, not against a typed struct, so a

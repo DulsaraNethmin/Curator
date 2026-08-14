@@ -55,25 +55,43 @@ the plan takes the next free number rather than displacing one that other docume
 ## The shape
 
 ```
-internal/settings/          the registry, the resolver and the codec              T39
-internal/store/settings.go  get, set and delete on a key/value table              T39
+internal/settings/          the registry, the resolver and the scrub list         T39
+internal/secret/            AES-256-GCM, and the key file beside the database     T39
+internal/store/settings.go  read and write a key/value table                      T39
 internal/store/migrate.go   the first migration, and the rule it sets             T39
 internal/api/settings.go    GET grows fields; PUT is new                          T40
 internal/api/auth.go        the middleware, the login endpoint, the cookie        T41
 web/app/settings/           the form, the sections and the login screen           T42
 ```
 
+**The codec is its own package, not a file in `internal/settings`.** It turned
+out that nothing above `cmd/curator` needs it: main decrypts what the store hands
+back and passes plaintext into the resolver, so `internal/settings` never holds a
+key and `internal/config` never touches crypto at all. A leaf that imports only
+the standard library is also the one part of this phase worth being able to read
+in one sitting.
+
 **`internal/settings`, not `internal/store/settings.go` alone.** The plan gave T39 one file in the
 store. Storage is the smallest part of it: what phase 7 actually needs is a *registry* — every
-setting's key, its environment variable, its kind, whether it is a secret, how it is validated, what
-it defaults to — plus the rule that resolves the three sources into one value. `internal/store`'s
-own doc comment says it "knows about rows and nothing else, and never reads a disk or calls an API";
-a package that owns validation and an encryption key is not that package. The table access stays in
-`internal/store/settings.go`, where it belongs, and handles opaque strings.
+setting's key, its environment variable, its kind, whether it is a secret, how it is validated —
+plus the rule that resolves the three sources into one value. `internal/store`'s own doc comment
+says it "knows about rows and nothing else, and never reads a disk or calls an API"; a package that
+owns validation is not that package. The table access stays in `internal/store/settings.go`, where
+it belongs, and handles opaque strings.
 
-`internal/config` keeps its shape and its job — the whole of the configuration, read once at
-startup, passed down explicitly — and gains a second constructor. Nothing downstream of `Load`
-learns that a value could have come from a database.
+**The registry deliberately holds no defaults.** The default of `SEARCH_TIMEOUT` is a documented
+constant in `internal/config`, next to the reasoning for its value, and a copy in the registry would
+be a second answer that drifts. What a screen shows as the current value is what this process
+actually resolved, read off `*config.Config` — which cannot disagree with the running program,
+because it *is* the running program. `source` says whether that came from the environment, the
+store, or the default.
+
+`internal/config` keeps its shape, its job and its invariant — it imports nothing of curator's, so
+the parsers cannot pick up a dependency on the things they configure — and gains a second
+constructor plus four exported parsers. `internal/settings` validates a write by calling those, so
+the message a screen shows is the message the next start-up would print, asserted by a test that
+compares the two rather than either against a literal. Nothing downstream of `Load` learns that a
+value could have come from a database.
 
 ---
 

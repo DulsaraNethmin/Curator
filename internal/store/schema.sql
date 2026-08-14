@@ -30,7 +30,12 @@ CREATE TABLE IF NOT EXISTS downloads (
   state         TEXT NOT NULL,              -- queued | downloading | stalled | completed | imported | failed
   progress      REAL NOT NULL DEFAULT 0,
   added_at      DATETIME NOT NULL,
-  completed_at  DATETIME
+  completed_at  DATETIME,
+  -- Why a torrent is stalled, from the backend that knows (T55). Nullable and
+  -- unindexed: it is a sentence about the current state, read with the row.
+  -- A database created before phase 7 gets it from migrate.go instead, because
+  -- CREATE TABLE IF NOT EXISTS does nothing to a table that already exists.
+  reason        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS settings (

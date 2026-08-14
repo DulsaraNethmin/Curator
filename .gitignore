@@ -10,6 +10,12 @@
 # One got as far as `git status` before this was noticed.
 .env.*
 !.env.example
+
+# The key that decrypts the stored settings. It is generated beside the
+# database on first write, so a `go run ./cmd/curator` in the working tree makes
+# one here (D28). Unanchored on purpose: DB_PATH can put the database anywhere
+# in the tree, and the key follows it.
+curator.key
 .DS_Store
 /web/node_modules/
 /web/out/
