@@ -114,10 +114,11 @@ work and name it for the work — `phase-2-indexers`, not `wip`.
 that reaches `origin`. Leave the finished branch local and say it is ready.
 
 **One commit per task**, each of which **builds, vets, tests and cross-compiles on its own**, so a
-bisect lands on one task and not on a half-finished phase:
+bisect lands on one task and not on a half-finished phase. That is `make check`, which runs the UI
+export as well, because since phase 5 the binary embeds it:
 
 ```bash
-go build ./... && go vet ./... && go test -race ./... && GOOS=linux GOARCH=arm64 go build ./...
+make check     # npm run build, go build, go vet, go test -race, arm64 cross-compile
 ```
 
 Verify that per commit rather than only at the end — a temporary worktree per commit
@@ -148,6 +149,9 @@ web/                 Next.js UI — static export, embedded from internal/web/di
 ```
 
 ## Commands
+
+`make` lists them; `make status` says where the build is, derived from the repo rather than from a
+list somebody has to remember to update.
 
 ```bash
 go build ./... && go test ./...
