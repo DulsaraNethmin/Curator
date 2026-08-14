@@ -207,7 +207,7 @@ func New(cfg Config) (*Engine, error) {
 			return nil, err
 		}
 		e.socket = socket
-		bindConfig(ctx, cc, cfg.Network)
+		bindConfig(ctx, cc, cfg.Network, cfg.Log)
 	}
 
 	client, err := anacrolix.NewClient(cc)
