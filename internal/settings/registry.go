@@ -132,6 +132,14 @@ var registry = []Setting{
 	{Env: "SEARCH_TIMEOUT", Group: "indexers", Kind: KindDuration},
 	{Env: "SEARCH_CACHE_TTL", Group: "indexers", Kind: KindDuration},
 
+	// Phase 7 promised the registry would make playback one entry rather than a
+	// screen (docs/phase-7.md, "Playback is not in this table"). This is that
+	// entry. There is deliberately no "prefer direct play" toggle beside it: it
+	// would be a row nothing reads, because direct play is always tried first
+	// and the browser decides. The only switch anybody needs is whether the
+	// remux exists at all, and this is it.
+	{Env: "FFMPEG_PATH", Group: "playback", Kind: KindPath},
+
 	{Env: "JELLYFIN_URL", Group: "jellyfin", Kind: KindURL},
 	{Env: "JELLYFIN_API_KEY", Group: "jellyfin", Kind: KindText, Secret: true},
 

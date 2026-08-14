@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/logs"
+	"github.com/DulsaraNethmin/curator/internal/remux"
 	"github.com/DulsaraNethmin/curator/internal/store"
 )
 
@@ -137,6 +138,13 @@ func (f *streamFixture) feature(path string, size int64) string {
 	return path
 }
 
+// entries is the log as records, for the assertions that are about a LEVEL
+// rather than about a string.
+func (f *streamFixture) entries() []logs.Entry {
+	out, _, _ := f.logs.Since(0, 200)
+	return out
+}
+
 // logged flattens the buffer, message and attributes, which is where a path
 // would actually end up.
 func (f *streamFixture) logged() string {
@@ -152,7 +160,54 @@ func (f *streamFixture) logged() string {
 	return out.String()
 }
 
+// ffmpeg writes an executable script standing in for the real one and attaches
+// a remuxer around it. body is shell; the tests that need to observe what it
+// was given interpolate a path into it, because the child inherits the test
+// process's environment and there is nothing to arrange there.
+//
+// A fake and not the real binary: what this file owns is the endpoint — its
+// framing, its refusals and its credential — and none of that is a question
+// about what ffmpeg does with a film. internal/remux owns the subprocess.
+func (f *streamFixture) ffmpeg(concurrent int, body string) {
+	f.t.Helper()
+	path := filepath.Join(f.t.TempDir(), "ffmpeg")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		f.t.Fatalf("write the fake ffmpeg: %v", err)
+	}
+	f.srv.WithRemux(remux.New(path, concurrent))
+}
+
+// live puts the mux on a real listener.
+//
+// The remux tests need one and the rest do not. Its whole contract is the
+// framing — a 200 with NO Content-Length, chunked, flushed as it is produced —
+// and an httptest.ResponseRecorder has no framing at all, so the assertion that
+// matters most here could not fail against one.
+func (f *streamFixture) live(h http.Handler) *httptest.Server {
+	f.t.Helper()
+	srv := httptest.NewServer(h)
+	f.t.Cleanup(srv.Close)
+	return srv
+}
+
+// waitFor polls until cond, or fails. Everything it waits for is another
+// process starting or a slot coming back, so there is nothing to synchronise on.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func exists(path string) bool { _, err := os.Stat(path); return err == nil }
+
 func streamOf(id int64) string { return streamPath(id) }
+func remuxOf(id int64) string  { return remuxPath(id) }
 
 func rangeRequest(target, spec string) *http.Request {
 	req := get(target)
@@ -717,6 +772,332 @@ func TestARefusedTicketIsNotWrittenDown(t *testing.T) {
 	// expired VLC URL is worth being able to see.
 	if !strings.Contains(logged, "auth failed") || !strings.Contains(logged, streamOf(id)) {
 		t.Errorf("the refusal is not in the log:\n%s", logged)
+	}
+}
+
+// --- GET .../remux, which is not the stream endpoint ------------------------
+
+// The framing, which is the whole difference between the two endpoints. A pipe
+// has no length and no byte-range semantics, so: 200 and never 206, no
+// Content-Length, and Accept-Ranges: none said explicitly so a player stops
+// asking for something nothing here can answer.
+func TestRemuxIsAStreamOfUnknownLengthAndSaysSo(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	f.ffmpeg(1, `printf 'FRAGMENTEDMP4'`)
+
+	resp, err := http.Get(f.live(f.bare).URL + remuxOf(id))
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "video/mp4" {
+		t.Errorf("Content-Type = %q, want video/mp4 — whatever went in, -f mp4 came out", got)
+	}
+	if got := resp.Header.Get("Accept-Ranges"); got != "none" {
+		t.Errorf("Accept-Ranges = %q, want none", got)
+	}
+	// -1 is "no Content-Length, and the body ends when the connection says so".
+	// The flush on every write is what guarantees it: without one, net/http
+	// buffers a short response, sees the handler return, and helpfully adds the
+	// length of a stream that does not have one.
+	if resp.ContentLength != -1 {
+		t.Errorf("Content-Length = %d, want none: a pipe does not know how long it is", resp.ContentLength)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(body) != "FRAGMENTEDMP4" {
+		t.Errorf("body = %q, want what ffmpeg wrote", body)
+	}
+}
+
+// Seeking is a parameter and not a header, and `start` rather than `t` because
+// `ticket` already owns that letter (docs/phase-8.md, the traps).
+func TestRemuxSeeksWithStartAndRefusesRubbishRatherThanPastingIt(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	argv := filepath.Join(t.TempDir(), "argv")
+	f.ffmpeg(1, `printf '%s\n' "$@" > `+strconv.Quote(argv)+`
+printf 'FRAGMENTEDMP4'`)
+
+	if rec := serve(f.bare, get(remuxOf(id)+"?start=90")); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	raw, err := os.ReadFile(argv)
+	if err != nil {
+		t.Fatalf("the fake recorded no argv: %v", err)
+	}
+	if !strings.Contains(string(raw), "-ss\n90\n") {
+		t.Errorf("-ss 90 did not reach ffmpeg:\n%s", raw)
+	}
+
+	// Never pasted into an argv. The handler parses a number and internal/remux
+	// formats that number back out, so the string below has no path into the
+	// command line even if this assertion were deleted — this is the second
+	// guard, and the one that answers with a status code.
+	for _, rubbish := range []string{"abc", "-5", "90 -c:v libx264", "NaN", "1e999", "; rm -rf /"} {
+		rec := serve(f.bare, get(remuxOf(id)+"?"+url.Values{startParam: {rubbish}}.Encode()))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("start=%q: status = %d, want 400", rubbish, rec.Code)
+		}
+	}
+
+	// An empty one is an absent one, which is what a player sends when it has
+	// not seeked yet.
+	if rec := serve(f.bare, get(remuxOf(id)+"?start=")); rec.Code != http.StatusOK {
+		t.Errorf("start= : status = %d, want 200", rec.Code)
+	}
+}
+
+// Refused, never queued: queueing would turn "the film is slow to start" into
+// "the film never starts", which is worse and much harder to explain.
+func TestTheNthRemuxIsRefusedWithARetryAfterAndTheSlotComesBack(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	long := f.film("Long (2014)", "Long (2014).mkv")
+	short := f.film("Short (2014)", "Short (2014).mkv")
+
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	// One fake, two behaviours, chosen by the film it is asked for: the long one
+	// holds its slot until it is killed and the short one exits by itself.
+	f.ffmpeg(1, `echo started >> `+strconv.Quote(started)+`
+case "$*" in
+  *Short*) printf 'OK'; exit 0;;
+esac
+sleep 60`)
+
+	// The request's own context rather than a client that hangs up, because what
+	// frees the slot is the handler returning and that is what this asserts. A
+	// cancelled client would go through the server's disconnect detection as
+	// well, which is net/http's invariant and not curator's.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	held := make(chan struct{})
+	go func() {
+		defer close(held)
+		serve(f.bare, get(remuxOf(long)).WithContext(ctx))
+	}()
+
+	waitFor(t, "the only slot to be occupied", func() bool { return exists(started) })
+
+	// The one over the cap.
+	rec := serve(f.bare, get(remuxOf(short)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 — the cap queued instead of refusing", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("a 503 with no Retry-After tells a player nothing about when to come back")
+	}
+	// A designed refusal is not a server fault. It was an ERROR line first —
+	// s.fail logs anything past 500 that way — and a red line in the tail
+	// /api/logs serves (docs/decisions.md D18) reads as a bug rather than as a
+	// cap doing exactly what it was built to do.
+	for _, entry := range f.entries() {
+		if entry.Level == "ERROR" {
+			t.Errorf("the cap logged at ERROR: %s %v", entry.Msg, entry.Attrs)
+		}
+	}
+	if !strings.Contains(f.logged(), "every slot is in use") {
+		t.Errorf("the refusal is not in the log at all, so \"it told me to try again\" is undiagnosable:\n%s", f.logged())
+	}
+
+	// A slot freeing lets the next one through, which is the half that makes
+	// this a cap rather than a ceiling nothing comes back down from. There is
+	// nothing to poll for: the slot is released as the handler returns.
+	cancel()
+	<-held
+	if rec := serve(f.bare, get(remuxOf(short))); rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 — the freed slot was never given back: %s", rec.Code, rec.Body)
+	}
+}
+
+// The headers went out with the first byte, so a failure after that cannot
+// become an error page. It ends the response and the browser's error event does
+// the rest — which is exactly the fallback chain's next step.
+func TestAFailureMidStreamEndsTheResponseAndIsLoggedOnce(t *testing.T) {
+	const complaint = "Invalid data found when processing input"
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	f.ffmpeg(1, `printf 'PARTIAL'
+echo `+strconv.Quote(complaint)+` >&2
+exit 1`)
+
+	rec := serve(f.bare, get(remuxOf(id)))
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 — the headers went out with the first byte", rec.Code)
+	}
+	if rec.Body.String() != "PARTIAL" {
+		t.Errorf("body = %q, want the bytes that did come out", rec.Body)
+	}
+	// Once. ffmpeg writes several lines a second at its default verbosity, and
+	// the log tail is a product surface (docs/decisions.md D18).
+	if got := strings.Count(f.logged(), complaint); got != 1 {
+		t.Errorf("ffmpeg's stderr reached the log %d times, want exactly 1:\n%s", got, f.logged())
+	}
+}
+
+// Before a byte comes out there is still a status code to be had, and it is
+// worth having: this is a film ffmpeg would not open at all.
+func TestAFailureBeforeTheFirstByteIsStillAStatusCode(t *testing.T) {
+	const complaint = "Invalid data found when processing input"
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	f.ffmpeg(1, `echo `+strconv.Quote(complaint)+` >&2
+exit 1`)
+
+	rec := serve(f.bare, get(remuxOf(id)))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	// The caller is told it failed and NOT what ffmpeg said: the captured stderr
+	// names a path on the server's own disk.
+	if strings.Contains(rec.Body.String(), complaint) {
+		t.Errorf("ffmpeg's stderr was sent to the caller: %s", rec.Body)
+	}
+	if got := strings.Count(f.logged(), complaint); got != 1 {
+		t.Errorf("ffmpeg's stderr reached the log %d times, want exactly 1:\n%s", got, f.logged())
+	}
+}
+
+// A player probes with HEAD before it asks for a byte, and T45's player probes
+// specifically to tell a 401 from a codec failure. Spawning an ffmpeg to answer
+// a question about headers would burn one of three slots on a probe.
+func TestAHEADOnTheRemuxStartsNothing(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	started := filepath.Join(t.TempDir(), "started")
+	f.ffmpeg(1, `echo started > `+strconv.Quote(started)+`
+printf 'FRAGMENTEDMP4'`)
+
+	rec := serve(f.bare, httptest.NewRequest(http.MethodHead, remuxOf(id), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Accept-Ranges"); got != "none" {
+		t.Errorf("Accept-Ranges = %q, want none — a HEAD is where a player learns that", got)
+	}
+	if exists(started) {
+		t.Error("a HEAD started an ffmpeg")
+	}
+}
+
+// --- no ffmpeg is an ordinary state, not a degraded one ---------------------
+
+// A URL that exists and never works is worse than one that does not exist. So
+// the field is omitted entirely and the route says what it is rather than
+// answering 503 for ever.
+func TestWithNoFFmpegThereIsNoRemuxURLAndTheRouteSaysSo(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+
+	body := decodePlayback(t, playback(f.bare, id))
+	if body.RemuxURL != "" {
+		t.Errorf("remux_url = %q, want absent with no ffmpeg configured", body.RemuxURL)
+	}
+	// Absent from the JSON and not merely empty: the UI's question is whether
+	// the fallback exists at all.
+	if strings.Contains(playback(f.bare, id).Body.String(), "remux_url") {
+		t.Errorf("remux_url is in the body: %s", playback(f.bare, id).Body)
+	}
+	// Direct play is untouched by any of this.
+	if body.StreamURL != streamOf(id) {
+		t.Errorf("stream_url = %q, want %q", body.StreamURL, streamOf(id))
+	}
+
+	if rec := serve(f.bare, get(remuxOf(id))); rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 — there is nothing here to come back for", rec.Code)
+	}
+}
+
+func TestWithAnFFmpegPlaybackOffersTheRemux(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	f.ffmpeg(1, `printf 'FRAGMENTEDMP4'`)
+
+	body := decodePlayback(t, playback(f.bare, id))
+	if body.RemuxURL != remuxOf(id) {
+		t.Fatalf("remux_url = %q, want %q", body.RemuxURL, remuxOf(id))
+	}
+	// Relative and with no ticket on it, exactly like stream_url: this is what
+	// the page's own <video> re-points at, and that carries a cookie.
+	if strings.Contains(body.RemuxURL, "ticket") {
+		t.Errorf("remux_url carries a ticket: %q", body.RemuxURL)
+	}
+	// And it works.
+	if rec := serve(f.guarded, get(body.RemuxURL)); rec.Code != http.StatusOK {
+		t.Errorf("the returned remux_url answered %d", rec.Code)
+	}
+}
+
+// The remux is behind the same password as everything else under /api/, with no
+// exemption (docs/decisions.md D31). Serving a film through ffmpeg to anybody on
+// the network would be the same oversight as serving the file.
+func TestTheRemuxIsBehindTheSamePasswordAsTheStream(t *testing.T) {
+	f := newStreamFixture(t, Credential{Enabled: true, Hash: hashed(t, authPassword)})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	f.ffmpeg(1, `printf 'FRAGMENTEDMP4'`)
+	target := remuxOf(id)
+
+	if rec := serve(f.guarded, get(target)); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no credential: status = %d, want 401", rec.Code)
+	}
+	cookie := session(t, serve(f.guarded, postLogin(authPassword)))
+	if rec := serve(f.guarded, withCookie(target, cookie)); rec.Code != http.StatusOK {
+		t.Errorf("cookie: status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if rec := serve(f.guarded, basic(target, authPassword)); rec.Code != http.StatusOK {
+		t.Errorf("basic: status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	// A STREAM ticket does not open the remux, and that falls out of the path
+	// being in the signed message rather than being a rule anybody wrote. It is
+	// also why nothing mints one: the ticket exists for VLC, and VLC has never
+	// needed an MKV rewritten. The middleware is uniform all the same — a ticket
+	// minted for this path does work — so the route is not an exemption in
+	// either direction.
+	value, _, ok := f.auth.Ticket(streamOf(id), ticketLifetime)
+	if !ok {
+		t.Fatal("no ticket was minted")
+	}
+	replayed := target + "?" + url.Values{ticketParam: {value}}.Encode()
+	if rec := serve(f.guarded, get(replayed)); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a stream ticket opened the remux: %d", rec.Code)
+	}
+	if rec := serve(f.guarded, get(ticketed(t, f, target))); rec.Code != http.StatusOK {
+		t.Errorf("a ticket for this very path answered %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
+// The same four answers the stream gives, because it is the same lookup and the
+// same picker — a folder whose only video is a 6 MB sample has nothing to remux
+// either.
+func TestRemuxMissesMatchTheStreams(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	f.ffmpeg(1, `printf 'FRAGMENTEDMP4'`)
+
+	sampleOnly := filepath.Join(f.root, "Sample (2014)")
+	f.feature(filepath.Join(sampleOnly, "sample.mkv"), sampleSize)
+
+	cases := []struct {
+		name   string
+		target string
+		want   int
+	}{
+		{"only a sample in the folder", remuxOf(f.row("Sample (2014)", sampleOnly)), http.StatusNotFound},
+		{"the folder has gone missing", remuxOf(f.row("Gone (2014)", filepath.Join(f.root, "Gone (2014)"))), http.StatusNotFound},
+		{"no such movie", remuxOf(9999), http.StatusNotFound},
+		{"the id is not a number", "/api/movies/seven/remux", http.StatusBadRequest},
+	}
+	for _, c := range cases {
+		if rec := serve(f.bare, get(c.target)); rec.Code != c.want {
+			t.Errorf("%s: status = %d, want %d (%s)", c.name, rec.Code, c.want, rec.Body)
+		}
 	}
 }
 

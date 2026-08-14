@@ -26,6 +26,7 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/library"
 	"github.com/DulsaraNethmin/curator/internal/logs"
 	"github.com/DulsaraNethmin/curator/internal/qbit"
+	"github.com/DulsaraNethmin/curator/internal/remux"
 	"github.com/DulsaraNethmin/curator/internal/secret"
 	"github.com/DulsaraNethmin/curator/internal/settings"
 	"github.com/DulsaraNethmin/curator/internal/store"
@@ -227,6 +228,23 @@ func run() error {
 	// importer writing anywhere else would produce movies the scanner never sees.
 	imports := importer.New(db, cfg.LibraryMovies, refresher, log)
 
+	// ffmpeg, probed ONCE and here rather than per request. A miss is the fourth
+	// optional dependency with this shape — direct play still works, and the
+	// only thing lost is the fallback for a container the browser refuses
+	// (docs/decisions.md D24, D15). It is logged either way, because "why is
+	// there no Play fallback on this install" is otherwise a question with no
+	// evidence anywhere.
+	var remuxer *remux.Remuxer
+	ffmpegPath, err := remux.Find(cfg.FFmpegPath)
+	if err != nil {
+		log.Info("no ffmpeg: playback is direct play only, and a container this browser refuses "+
+			"will offer VLC instead of a remux. Set FFMPEG_PATH, or put ffmpeg on PATH", "err", err)
+	} else {
+		remuxer = remux.New(ffmpegPath, remux.DefaultConcurrent)
+		log.Info("ffmpeg found: a container the browser refuses will be remuxed, never transcoded",
+			"path", ffmpegPath, "concurrent", remux.DefaultConcurrent)
+	}
+
 	downloads := download.NewService(torrents, db, aggregator, cfg.QBitCategory, log).
 		WithImporter(imports).
 		WithGuard(guard)
@@ -257,7 +275,7 @@ func run() error {
 	// does not wait for a restart. All three are wiring and none is a handler,
 	// which is why they are built here and passed in — internal/api still knows
 	// nothing about where a setting comes from.
-	view := settingsView(cfg, matcher, torrents, tunnel, indexerHTTP)
+	view := settingsView(cfg, matcher, torrents, tunnel, indexerHTTP, ffmpegPath)
 	view.States = settingsStates(cfg, db, codec, log)
 	view.Writer = settingsWriter{db: db, codec: codec}
 	view.Access = auth
@@ -276,7 +294,10 @@ func run() error {
 		// authentication off — Ticket answers ok=false in that state, which is
 		// how POST .../playback returns a plain URL and the UI keeps one code
 		// path.
-		WithTickets(auth)
+		WithTickets(auth).
+		// Nil when there is no ffmpeg, which is not a degraded mode: the stream
+		// endpoint is untouched and only the fallback is missing.
+		WithRemux(remuxer)
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
 	apiSrv.RegisterDownloads(mux)
@@ -404,7 +425,10 @@ func healthz(w http.ResponseWriter, _ *http.Request) {
 //
 // Every probe here is READ-ONLY. That is the constraint that decides which of
 // them exist at all.
-func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.TorrentClient, tunnel *vpn.Tunnel, httpClient *http.Client) api.Settings {
+// ffmpeg is the resolved binary or "" — the answer remux.Find already gave at
+// start-up, passed in rather than looked up again, so this screen cannot
+// disagree with the process about whether there is a fallback.
+func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.TorrentClient, tunnel *vpn.Tunnel, httpClient *http.Client, ffmpeg string) api.Settings {
 	integrations := []api.Integration{{
 		Name:       "tmdb",
 		Env:        "TMDB_API_KEY",
@@ -445,6 +469,19 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 		// watching. A read-only probe needs an endpoint that package does not
 		// have, and adding one to satisfy a status page is the wrong trade.
 		Detail: jellyfinDetail(cfg.JellyfinConfigured()),
+	}, {
+		// ffmpeg. Configured means one was actually FOUND, not that a path was
+		// typed — the difference is the whole of what this row is for, and it is
+		// why the resolved path comes in rather than cfg.FFmpegPath.
+		//
+		// No Probe: the binary was run at start-up in the only sense that
+		// matters, which is that it exists and is executable, and a probe that
+		// spawned an ffmpeg to render a settings page would be a subprocess per
+		// page load for an answer already known.
+		Name:       "ffmpeg",
+		Env:        "FFMPEG_PATH",
+		Configured: ffmpeg != "",
+		Detail:     ffmpegDetail(ffmpeg),
 	}}
 
 	if matcher != nil {
@@ -553,6 +590,11 @@ func effective(cfg *config.Config) map[string]string {
 		"minter_url":       cfg.MinterURL,
 		"search_timeout":   cfg.SearchTimeout.String(),
 		"search_cache_ttl": cfg.SearchCacheTTL.String(),
+
+		// What was CONFIGURED, and empty is meaningful — "look on PATH". The
+		// binary that was actually resolved is the ffmpeg integration's detail,
+		// beside whether one was found at all.
+		"ffmpeg_path": cfg.FFmpegPath,
 
 		"jellyfin_url":     cfg.JellyfinURL,
 		"jellyfin_api_key": cfg.JellyfinAPIKey,
@@ -850,4 +892,16 @@ func jellyfinDetail(configured bool) string {
 		return "the library refresh is disabled: set JELLYFIN_API_KEY"
 	}
 	return "not probed: the only call available is a refresh, which would queue a library scan"
+}
+
+// ffmpegDetail says what playback can and cannot do on this install.
+//
+// The path is reported rather than hidden: it is a location on the server's own
+// disk and not a credential, and "which ffmpeg is this" is the question somebody
+// asks when the remux behaves differently from the one on their laptop.
+func ffmpegDetail(path string) string {
+	if path == "" {
+		return "no ffmpeg found: direct play only, and a container the browser refuses offers VLC"
+	}
+	return path + " — remuxed, never transcoded"
 }

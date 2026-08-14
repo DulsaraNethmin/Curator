@@ -66,6 +66,15 @@ type Config struct {
 	VPNConfig     string
 	VPNRequired   bool
 	VPNIPCheckURL string
+
+	// Phase 8: playback.
+	//
+	// FFmpegPath is where the remux's ffmpeg is. Empty means look on PATH, and
+	// not finding one is not a startup error — it means direct play only, the
+	// same posture an unset JELLYFIN_API_KEY already has (docs/decisions.md D24,
+	// D15). What this holds is what was CONFIGURED; the binary that was actually
+	// resolved is internal/remux's answer and is logged once at start-up.
+	FFmpegPath string
 }
 
 // The two torrent backends. An unknown value is a startup error naming both,
@@ -292,6 +301,11 @@ func Load(resolved map[string]string) (*Config, error) {
 
 		DownloadsDir:  r.get("DOWNLOADS_DIR", defaultDownloadsDir),
 		VPNIPCheckURL: r.get("VPN_IP_CHECK_URL", ""),
+
+		// No default, and empty is meaningful: "look on PATH". A default of
+		// "ffmpeg" here would be the same behaviour spelled twice, and it would
+		// make the settings screen show a value nobody typed.
+		FFmpegPath: r.get("FFMPEG_PATH", ""),
 
 		// Mandatory by default, and it has to be typed to turn off. A VPN that
 		// defaults to optional is a slogan (docs/decisions.md D27).
