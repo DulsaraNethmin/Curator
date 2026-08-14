@@ -691,8 +691,8 @@ func (e *Engine) persistMetainfo(t *anacrolix.Torrent) error {
 }
 
 // assertInsideData refuses a path that has escaped the data directory. The same
-// check importer.assertInsideLibrary makes, for the same reason: the last
-// component came from a torrent's own metadata.
+// check library.AssertInside makes, for the same reason: the last component
+// came from a torrent's own metadata.
 func (e *Engine) assertInsideData(path string) error {
 	absolute, err := filepath.Abs(path)
 	if err != nil {

@@ -132,7 +132,7 @@ func (im *Importer) Import(ctx context.Context, t torrent.Torrent, d store.Downl
 	// Belt and braces over DestFolder's rejection of separators: whatever the
 	// naming rules become, the resolved destination has to be inside the library
 	// or nothing is created.
-	if err := im.assertInsideLibrary(destDir); err != nil {
+	if err := library.AssertInside(im.moviesRoot, destDir); err != nil {
 		return fail(err)
 	}
 
@@ -230,26 +230,6 @@ func (im *Importer) logFailure(hash, name string, err error) {
 		return
 	}
 	im.log.Warn("import failed", "hash", hash, "name", name, "err", err)
-}
-
-// assertInsideLibrary refuses a destination that has escaped LIBRARY_MOVIES.
-func (im *Importer) assertInsideLibrary(dest string) error {
-	root, err := filepath.Abs(im.moviesRoot)
-	if err != nil {
-		return err
-	}
-	absolute, err := filepath.Abs(dest)
-	if err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(root, absolute)
-	if err != nil {
-		return fmt.Errorf("destination %s is not under the library root %s", dest, im.moviesRoot)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("destination %s escapes the library root %s", dest, im.moviesRoot)
-	}
-	return nil
 }
 
 // RemoveFromLibrary deletes a movie's folder and the hardlink inside it.

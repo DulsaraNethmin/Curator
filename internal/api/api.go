@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/DulsaraNethmin/curator/internal/library"
 	"github.com/DulsaraNethmin/curator/internal/store"
@@ -78,6 +79,17 @@ type Server struct {
 	// browser is the TMDB catalogue behind the browsing screens, attached with
 	// WithBrowser. Nil when TMDB_API_KEY is unset, which is a supported state.
 	browser Browser
+
+	// tickets mints phase 8's playback credential, attached with WithTickets.
+	// Nil is the state every install without a password is in, and it is what
+	// makes POST .../playback answer with a plain URL.
+	tickets Tickets
+
+	// streamWarned is the set of folders the stream endpoint has already said
+	// hold more than one film. It is here rather than beside its one use in
+	// stream.go so that it is per-Server and not per-process; see passedOver
+	// for why the line is deduplicated at all.
+	streamWarned sync.Map
 }
 
 // New builds a Server. matcher may be nil; log may be nil, in which case the
