@@ -193,7 +193,7 @@ year was a stopgap; making the movie the primary object is the fix.
 
 See [D20](decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it) — including the
 measured table showing that a canonical title with a colon **silently loses 1337x** — and
-[D21](decisions.md#d21--the-movie-page-is-movieid--because-the-ui-is-a-static-export) for why the
+[D21](decisions.md#d21--the-movie-page-is-movieid-because-the-ui-is-a-static-export) for why the
 movie page is a query-string route.
 
 ## Tasks

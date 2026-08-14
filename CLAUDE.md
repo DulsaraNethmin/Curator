@@ -15,11 +15,15 @@ dispatch has now run against a real qBittorrent 5.1.2 — a local container, not
 is built and verified locally**, including one real download hardlinked into the library; it has
 never run against the Pi, on purpose. **Phase 5 is built** — seven screens embedded in the binary,
 including the TMDB-first redesign of T27–T31, where the film comes from TMDB and releases hang off
-it ([D20](docs/decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it)). **Phase 6
-is in progress**: the torrent engine and a WireGuard tunnel move inside the binary
+it ([D20](docs/decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it)). **Phase 6 is
+built and verified locally**, tunnel included: the torrent engine and a WireGuard tunnel now live
+inside the binary
 ([D22](docs/decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend),
-[D27](docs/decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)). Tasks live
-in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
+[D27](docs/decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)). **Phase 7 is
+specified**: [`docs/phase-7.md`](docs/phase-7.md) makes settings writable, which is what a
+`docker run` with no `.env` needs and what a private key at rest forces
+([D28](docs/decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api)).
+Tasks live in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 
 ### Phase 4 writes to disk, and only ever locally
 
@@ -112,6 +116,19 @@ work and name it for the work — `phase-2-indexers`, not `wip`.
 
 **Do not push, and do not merge.** Both are Nethmin's, including the merge into `main` and anything
 that reaches `origin`. Leave the finished branch local and say it is ready.
+
+**Say what to merge, at the end of every task.** Not at the end of a phase — every task, as soon as
+its commit passes `make check`. Last line of the message, in this shape:
+
+```
+merge: phase-7-settings-that-write — 2 commits (caa24ae, <next>), main does not have them
+hold:  nothing else outstanding
+```
+
+Name the branch, count the commits `main` is missing, and say plainly whether it is **ready** or
+**waiting** — and on waiting, what for. `git log --oneline main..HEAD` is the answer and
+`git branch --no-merged main` is the one `make status` reports. It is the question that actually gets
+asked at the end of a long day, and it is not one to reconstruct from a scrollback.
 
 **One commit per task**, each of which **builds, vets, tests and cross-compiles on its own**, so a
 bisect lands on one task and not on a half-finished phase. That is `make check`, which runs the UI

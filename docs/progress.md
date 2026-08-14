@@ -20,7 +20,7 @@ tunnel included — a real NordLynx endpoint, and a torrent downloading through 
 | **4** | Import — completion watcher, hardlink, rename, Jellyfin refresh | **built** — T17–T21 done, verified locally 2026-08-12 against a stub and 2026-08-13 against a real download; never run against the Pi |
 | **5** | Interface — Next.js screens embedded via `embed.FS` | **built** — T22–T26, then T27–T31's TMDB-first redesign, verified locally 2026-08-13 |
 | **6** | Own the download — the torrent engine and a WireGuard tunnel move inside the binary | **built** — T32–T38 done, verified locally 2026-08-14; the tunnel's device code has never brought up a real peer |
-| 7 | Settings that write — writable config, secrets at rest, optional password | T39–T42 |
+| 7 | Settings that write — writable config, secrets at rest, optional password | **specified** 2026-08-14 — T39–T42 and T55, no code yet |
 | 8 | Watch it here — direct play, remux, Open in Jellyfin | T43–T46, blocked by nothing |
 | 9 | One command — the image, the release pipeline, minter on demand | T47–T51 |
 | 10 | Cutover — run alongside, confirm parity, remove the containers | back up the *arr configs first (T52) |
@@ -500,7 +500,7 @@ and cross-compiles on its own, checked in five detached worktrees.
 Two decisions were settled while specifying:
 [D20](decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it) (the film comes from
 TMDB, and the canonical title is not the query title) and
-[D21](decisions.md#d21--the-movie-page-is-movieid--because-the-ui-is-a-static-export) (the movie
+[D21](decisions.md#d21--the-movie-page-is-movieid-because-the-ui-is-a-static-export) (the movie
 page is `/movie/?id=`, forced by the static export).
 
 ### What the redesign verified, and how
@@ -643,6 +643,40 @@ phase 4 built. It fired against the new backend exactly as designed. The check w
   `QBIT_USER` set now starts the engine instead, and refuses to dispatch until `VPN_CONFIG` is set
   or `VPN_REQUIRED=false` is typed. Intended, and worth knowing before the first Download press.
 - **Nothing has run on the Pi**, on purpose. Phase 10, after T52 backs up the *arr configs.
+
+## Phase 7 tasks
+
+Specified 2026-08-14, no code yet. Spec in [`phase-7.md`](phase-7.md). Phases 1–6 are merged to
+`main` and pushed; this is on `phase-7-settings-that-write` and is not.
+
+| Task | Owns | Status |
+|---|---|---|
+| [T39](tasks/T39-settings-store.md) the settings store | `internal/settings/`, `internal/store/settings.go`, `migrate.go` | specified |
+| [T40](tasks/T40-settings-api.md) settings becomes read/write | `internal/api/settings.go`, wiring | specified |
+| [T41](tasks/T41-auth.md) optional authentication | `internal/api/auth.go`, wiring | specified |
+| [T42](tasks/T42-settings-screens.md) the Settings screens | `web/app/settings/`, `web/lib/api.ts` | specified |
+| [T55](tasks/T55-stall-reason.md) the stall reason reaches the screen | `torrent`, `store`, `download`, `api`, `web` | specified |
+
+Three decisions were written while specifying:
+[D25](decisions.md#d25--authentication-is-optional-and-off-by-default) (authentication is optional
+and off by default, which rewrites the roadmap's out-of-scope bullet that D17, D18 and D19 all
+cite), [D28](decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api)
+(settings are writable, secrets encrypted at rest and write-only across the API — D17's threat model
+survives, its environment-only conclusion does not) and
+[D29](decisions.md#d29--a-written-setting-applies-at-the-next-start-the-password-applies-at-once)
+(a written setting applies at the next start; the password applies at once).
+
+**T55 is numbered outside the plan on purpose.** The plan reserved T43–T54 for phases 8–10, so a
+task found afterwards takes the next free number rather than displacing one other documents cite. It
+is [T36](tasks/T36-resume-stall.md)'s deferred stall *reason*, which needs a column, which is what
+makes it the first passenger of the repo's first migration.
+
+**This phase needs a migration, and it is the first.** Five phases shipped without one on a real
+argument — `schema.sql` is all `IF NOT EXISTS` and every column phases 3–6 needed already existed.
+`downloads.reason` does not, and `CREATE TABLE IF NOT EXISTS` silently does nothing to a table that
+already exists. The mechanism arrives now rather than in phase 9 because from phase 9 there are
+databases this repo has never seen, and a mechanism introduced with one nullable column is cheaper
+than one introduced under pressure.
 
 ## Corrections made to the docs
 
