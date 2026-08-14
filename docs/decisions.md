@@ -594,6 +594,56 @@ reverted under pressure.
 
 ---
 
+## D25 — Authentication is optional, and off by default
+
+**Status:** decided, implemented in [T41](tasks/T41-auth.md) · **Rewrites:**
+[roadmap.md](roadmap.md#deliberately-out-of-scope)'s "Authentication — LAN-only, same posture as the
+stack it replaces" · **Cited by:** [D17](#d17--settings-is-read-only-and-the-settings-table-stays-unused),
+[D18](#d18--the-log-tail-is-readable-without-authentication-so-it-is-redacted-at-the-source),
+[D19](#d19--deleting-a-movie-removes-the-file-and-asks-qbittorrent-to-remove-its-own)
+
+One password, no usernames, no roles, in front of `/api/*`. It is **off unless somebody turns it
+on**, and nothing changes for anyone who does not.
+
+"LAN-only, so no authentication" was written when curator displayed a library. Three things have
+since moved to the other side of that endpoint: `DELETE /api/movies/{id}` removes files from disk
+([D19](#d19--deleting-a-movie-removes-the-file-and-asks-qbittorrent-to-remove-its-own)),
+`GET /api/logs` serves the process log to any browser on the network
+([D18](#d18--the-log-tail-is-readable-without-authentication-so-it-is-redacted-at-the-source)), and
+from phase 7 `PUT /api/settings` accepts a WireGuard private key. Each of those was decided
+defensibly on its own; the bullet they all cite is what stopped being true.
+
+**Off by default is not timidity, it is the only correct default.** Every install that exists is
+LAN-only and works, every `curl` in `docs/` is unauthenticated, and a default that flips on upgrade
+locks people out of their own library to protect them from their own household. The switch is one
+field on a screen; the decision to need it belongs to whoever runs it.
+
+**What it protects against, said exactly.** A browser on the network — a housemate, a guest, a
+device that should not be deleting films. **There is no TLS**, so the password crosses the LAN in
+clear on every Basic-auth request, and this is not protection against something reading the network.
+The UI says that where the password is set, not only here, because the person typing it is the one
+forming the belief.
+
+**The lockout escape hatch is not a feature, it is the precedence rule.**
+[D28](#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api) makes
+the environment beat the store for everything, so `AUTH_ENABLED=false` beats a stored `true` and
+`AUTH_PASSWORD` beats a stored hash. There is no rescue mode to build and no database to edit by
+hand: the recovery is one `-e`, and it is written next to the switch.
+
+**The alternatives.** Basic auth alone is three lines and no cookie, but the browser dialog cannot be
+logged out of and cannot be changed without clearing a cache — so Basic stays *available*, for
+`curl`, and the browser gets a signed cookie. Server-side sessions need a map to evict and lose
+everybody on restart, which [D29](#d29--a-written-setting-applies-at-the-next-start-the-password-applies-at-once)
+makes a routine event; an HMAC over an expiry, keyed partly by the password hash, needs no state and
+ends every session when the password changes. A reverse proxy with authentication in front is the
+right answer for anyone who already runs one and remains entirely available — it is not an answer
+for a product whose promise is one `docker run`.
+
+**What this is not.** Not users, not roles, not registration, not OAuth, not TLS, not a second
+credential for scripts. One household, one library, one password.
+
+---
+
 ## D27 — The VPN is mandatory, and curator owns the socket
 
 **Status:** decided, measured (T33) · **Forces:** [D22](#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)
@@ -665,3 +715,109 @@ the answer becomes a compose file rather than a `docker run`. A SOCKS5 proxy fit
 per-dialer shape in a handful of lines but is weaker in a way that matters: the peer traffic is
 proxied, not encrypted end to end, and DNS needs separate care. Both remain available; neither is
 the default.
+
+---
+
+## D28 — Settings are writable, secrets are encrypted at rest, and write-only across the API
+
+**Status:** decided · **Amends:** [D17](#d17--settings-is-read-only-and-the-settings-table-stays-unused) —
+its threat model survives untouched, its "configuration comes from the environment only" does not
+
+The `settings` table [T2](tasks/T2-store.md) created and nothing ever read becomes curator's second
+source of configuration. `GET /api/settings` still never returns a secret; `PUT /api/settings`
+accepts one.
+
+**What forced it.** [D27](#d27--the-vpn-is-mandatory-and-curator-owns-the-socket) put a WireGuard
+private key inside the binary — not a key curator checks, a key it *uses* on every boot. D17's
+argument was that configuration lives in the environment, so there is nothing to write and a screen
+that cannot write cannot leak. That holds for a laptop with a `.env`. It does not survive phase 9,
+whose entire promise is that a stranger runs one `docker run` and configures the rest in a browser,
+and the first thing they must configure is the tunnel.
+
+**D17's real point is untouched: no secret travels outward.** Not masked, not truncated, not its
+length, not a prefix — a masked secret still confirms an existence and a length to anyone on the
+LAN. Reads answer `configured: true` exactly as they always have. Only the *write* direction opens,
+which is the direction that was never the risk.
+
+**The environment wins, the store fills the rest, defaults fill what is left.** Every existing
+deployment keeps working and `docker run -e` stays a promise rather than a suggestion. The property
+that decided the order, though, is recovery: a bad stored value is always beatable by one `-e`, so
+there is no rescue mode, no offline editor, and no support answer that begins "open the database".
+[D25](#d25--authentication-is-optional-and-off-by-default)'s lockout escape is this rule and nothing
+else. Its one sharp edge — a stored value the environment silently shadows — is paid for by every
+setting reporting its **source**, and by the screen refusing to let you type into a field it would
+ignore.
+
+**Every stored setting has exactly one environment variable, and the key is its lower-case form.**
+`TMDB_API_KEY` ↔ `tmdb_api_key`, asserted in a test rather than remembered. Two ways to configure one
+service is already one more than ideal; two *vocabularies* would be the version of this that rots.
+
+**Encrypted, and honest about how much that buys.** AES-256-GCM, a fresh nonce per value, the
+setting's key as additional authenticated data so a ciphertext cannot be moved between rows, keyed
+by a `0600` file beside the database or `SECRET_KEY` inline. That file is in the same volume as the
+database, so **anything that copies the volume copies both**. What it defends against is narrower
+and entirely real: a `curator.db` pasted into an issue, a backup that globs `*.db`, a future handler
+that returns a settings row by accident, and anyone who can read the file without owning the
+process. It is not protection against someone who has the machine — they can read the key, and the
+plaintext is in the process's memory regardless.
+
+**Encrypt what must be used; hash what is only ever compared.** curator has to decrypt a VPN key
+because it has to bring up a tunnel with it. It never has to read a password back, so it must not be
+able to: `auth_password` is bcrypt, one-way, and the asymmetry is the design rather than an
+implementation detail.
+
+**A restored database without its key is the failure worth designing for.** GCM's tag makes a wrong
+key a detectable failure rather than plausible garbage, so those fields report themselves
+*unreadable* and ask to be re-entered, the process starts, and the integrations behave as
+unconfigured. A key is generated **only** when there is no ciphertext to fail against — silently
+re-keying over unreadable secrets turns a recoverable mistake into an invisible one.
+
+**What is deliberately not settable:** `DB_PATH`, `PORT`, `LOG_LEVEL`, `LOG_BUFFER_LINES` and the
+secret key itself. The rule is one sentence — **anything needed in order to reach the settings screen
+is not settable from the settings screen** — and it is also why the key that decrypts the store
+cannot live in the store.
+
+**The alternatives.** Staying environment-only is what exists and it cannot survive `docker run`
+with no `-e`. Plaintext in the database is what most self-hosted software does and would be one
+fewer moving part; it loses the four cases above, and "the database is the thing people copy" is
+exactly the failure mode. A key derived from the login password breaks when authentication is off,
+which is the default, and would re-encrypt everything on a password change. An external secret
+manager is out of proportion to one household — and `SECRET_KEY` inline is the seam that makes one a
+one-line integration if that ever changes.
+
+---
+
+## D29 — A written setting applies at the next start; the password applies at once
+
+**Status:** decided · **Follows from:**
+[D28](#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api)
+
+Saving writes to the database. It does not rebuild the running process. The screen says so, per
+field, and shows what is pending next to what is live.
+
+**Live reconfiguration is not a bigger feature, it is a different phase.** The two things a settings
+screen most obviously wants to change are the tunnel and the backend, and those are precisely the
+two phase 6 learned are order-sensitive to take down: `Engine.Close` must be cancel → `wg.Wait` →
+`client.Close` or it deadlocks, and the engine must close strictly before the tunnel or the uTP read
+loop reads from a device that is gone. Swapping a backend at runtime means rebuilding the
+dispatcher, the poller and the importer's client underneath live requests, and every one of those
+failure modes would arrive through a form. Phase 7 would stop being a settings phase and become a
+lifecycle rewrite wearing one.
+
+**Restart-to-apply is only acceptable because it is visible.** A saved value that differs from the
+running one is reported as `pending` by the API and shown by the screen beside the live value, with
+a banner naming what is waiting. An honest "restart curator" beats a half-applied configuration
+nobody can diff — and it is one command in the deployment this is being built for.
+
+**The password is the exception, and it is the reason there is an exception at all.** A password
+that takes effect at the next restart leaves you unprotected until then, which inverts the point of
+setting one. It is read per request through an atomic holder that the write path updates, so
+enabling authentication applies to the next request and changing it ends every existing session
+([D25](#d25--authentication-is-optional-and-off-by-default) signs the cookie with the password hash,
+so that last part costs nothing).
+
+**The alternative, and where it belongs.** A `POST /api/restart` that exits cleanly is trivial and
+correct *if something restarts the process* — true of `docker run --restart`, false of
+`go run ./cmd/curator`, which is how this is developed. It is worth reconsidering in phase 9, where
+the container has a supervisor by construction and the answer stops depending on how curator was
+launched.

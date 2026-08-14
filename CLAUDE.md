@@ -15,11 +15,15 @@ dispatch has now run against a real qBittorrent 5.1.2 — a local container, not
 is built and verified locally**, including one real download hardlinked into the library; it has
 never run against the Pi, on purpose. **Phase 5 is built** — seven screens embedded in the binary,
 including the TMDB-first redesign of T27–T31, where the film comes from TMDB and releases hang off
-it ([D20](docs/decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it)). **Phase 6
-is in progress**: the torrent engine and a WireGuard tunnel move inside the binary
+it ([D20](docs/decisions.md#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it)). **Phase 6 is
+built and verified locally**, tunnel included: the torrent engine and a WireGuard tunnel now live
+inside the binary
 ([D22](docs/decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend),
-[D27](docs/decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)). Tasks live
-in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
+[D27](docs/decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)). **Phase 7 is
+specified**: [`docs/phase-7.md`](docs/phase-7.md) makes settings writable, which is what a
+`docker run` with no `.env` needs and what a private key at rest forces
+([D28](docs/decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api)).
+Tasks live in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 
 ### Phase 4 writes to disk, and only ever locally
 
