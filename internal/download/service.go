@@ -46,7 +46,7 @@ type TorrentClient interface {
 type Store interface {
 	UpsertWantedMovie(ctx context.Context, title string, year int, tmdbID *int64) (store.Movie, error)
 	InsertDownload(ctx context.Context, d store.Download) (store.Download, error)
-	UpdateDownloadProgress(ctx context.Context, hash, state string, progress float64, completedAt *time.Time) error
+	UpdateDownloadProgress(ctx context.Context, hash, state string, progress float64, reason string, completedAt *time.Time) error
 	GetDownloadByHash(ctx context.Context, hash string) (store.Download, error)
 	ListDownloads(ctx context.Context) ([]store.Download, error)
 

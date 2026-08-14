@@ -77,3 +77,37 @@ Hermetic, on the two-engine harness T35 built:
 Then live: the dead-magnet case phase 5 recorded and never fixed — the GalaxyRG release advertising
 2,508 seeders whose magnet carries only dead trackers — sits in Activity saying **why** rather than
 sitting at `queued` for ever with nothing on screen to explain it.
+
+## Done, and what the live run found instead
+
+Verified live on 8097 against a scratch database, embedded backend, real NordLynx tunnel up,
+`TORRENT_STALL_AFTER=20s`, `DOWNLOAD_POLL_INTERVAL=5s`. A magnet nobody seeds was resumed from the
+table at boot, became `stalled` on the first tick past 20s and served
+`no peers have answered, so not even the metadata has arrived — nobody appears to be seeding this
+release` in `GET /api/downloads`, in the row on disk, and under the badge in Activity — while the
+`downloading` row beside it carried no `reason` key at all. The stall warning was logged **once**
+across roughly twelve poll ticks, which is the discipline T36 built and this task had to keep while
+making the reason available on every tick.
+
+**Outstanding, and not this task's: a `udp://` tracker in a resumed magnet panics the process.**
+The first live attempt used a magnet with one dead `udp://` tracker and never reached the listener:
+
+```
+panic: vpn: the tunnel has no udp6 address of its own to listen on; check the config's Address line
+  anacrolix/torrent.(*regularTrackerAnnounceDispatcher).initTrackerClient
+  engine.(*Engine).AddMagnet → download.(*Service).Resume → main.run
+```
+
+curator's own error, raised through anacrolix's `panicif` on a path that cannot return it, so it
+takes the process down at boot rather than failing one torrent. The NordLynx `.conf` has an IPv4
+`Address` only, so the tunnel has no udp6 address to offer, and the tracker announcer asks for one
+unconditionally. Dropping the tracker from the magnet — leaving it trackerless, which is the truer
+form of "nobody is seeding this" anyway — resumed cleanly and is how the run above was made.
+
+It belongs to phase 6's tunnel and engine rather than here: T55 owns a sentence reaching a screen,
+and this is a crash in the announce path that would be a commit of its own with a decision about
+what a v4-only tunnel should do with a udp6 announce. It is worth taking seriously — **every real
+indexer magnet carries `udp://` trackers**, so the case that crashed is the normal one and the case
+that worked is the synthetic one. Phase 6's live download predates it and did not hit it, so what
+is not yet known is whether it needs a resolvable tracker host, a particular anacrolix version, or
+the boot path specifically.

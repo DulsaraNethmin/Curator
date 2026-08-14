@@ -218,6 +218,11 @@ form.row input[name="title"] { flex: 1 1 20rem; }
 
 .muted { color: var(--muted); }
 .small { font-size: .85rem; }
+
+/* The stall reason, under its badge. It is a sentence rather than a word, so it
+   is given a width to wrap inside: left alone it stretches the State column
+   across the table and squeezes the release name it is explaining. */
+.reason { max-width: 24rem; margin-top: .3rem; line-height: 1.35; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
 
 .empty { padding: 2.5rem 1rem; text-align: center; color: var(--muted); }

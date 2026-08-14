@@ -75,3 +75,23 @@ func mapState(qbitState string) string {
 	}
 	return torrent.StateDownloading
 }
+
+// stalledReason is what this backend can honestly say about a stalled torrent,
+// and it is one sentence because one sentence is all `stalledDL` supports.
+//
+// qBittorrent's own definition of the state is "being downloaded, but no
+// connections were made", so saying that is translation rather than invention.
+// What it cannot say is the rest: GET /torrents/info carries no peer count, so
+// the embedded engine's distinction between nobody answering, peers that have
+// not sent the metadata and peers that will not send data is unavailable here.
+// Composing a richer sentence out of a state string would be this package
+// claiming to know something it read nowhere.
+//
+// Every other state returns "": a torrent that is fine has no reason, and a
+// reason that outlives the state it explains is worse than none.
+func stalledReason(state string) string {
+	if state != torrent.StateStalled {
+		return ""
+	}
+	return "no connections have been made — nobody appears to be seeding this release"
+}

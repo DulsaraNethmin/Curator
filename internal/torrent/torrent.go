@@ -8,9 +8,16 @@
 // translated on the way out: qBittorrent's 23 states, its lower-case hashes and
 // its second filesystem namespace never cross this boundary.
 //
-// The type carries six fields because six are read. qBittorrent decodes `size`
-// and `save_path` as well and nothing has ever looked at them, and a field
-// nobody reads is a field that can be wrong for a year without anyone noticing.
+// The type carries seven fields because seven are read. qBittorrent decodes
+// `size` and `save_path` as well and nothing has ever looked at them, and a
+// field nobody reads is a field that can be wrong for a year without anyone
+// noticing.
+//
+// The seventh is Reason, and T36 argued against it while there were six: the
+// reason a torrent is stalled is a fact only a backend has, and it went to the
+// log because carrying it any further needed a column. T55 added the column, so
+// the sentence now travels on the value that already crosses this boundary
+// rather than being re-derived by anyone downstream.
 //
 // This package is a leaf — stdlib only — so every other package can depend on
 // it and none of them pays for the dependency.
@@ -88,6 +95,21 @@ type Torrent struct {
 	// For a backend curator owns outright it is a constant rather than a
 	// filter, and that is a strengthening — see docs/decisions.md D22.
 	Category string
+
+	// Reason is why this torrent is getting nowhere, in prose, or empty.
+	//
+	// Empty means two things that need no distinguishing: this torrent is fine,
+	// or this backend cannot say. It is written by the backend because only the
+	// backend knows — the poller sees a percentage that did not move and cannot
+	// tell "nobody has this" from "nobody will send it", which is precisely the
+	// distinction worth showing.
+	//
+	// It is prose and not a code, because it is rendered verbatim: a code would
+	// need a translation table in the UI, which is a second vocabulary for the
+	// screen to drift out of step with. It accompanies StateStalled and nothing
+	// else, and it is written in the same tick as the state it explains — a
+	// reason that outlives its state is worse than none.
+	Reason string
 }
 
 // NormalizeHash puts an info hash in the case curator uses: upper, matching

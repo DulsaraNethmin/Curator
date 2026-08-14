@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -520,11 +521,30 @@ func TestStalledAfterNoProgress(t *testing.T) {
 	if first[0].State != torrent.StateQueued {
 		t.Fatalf("State = %q on the first look, want queued — nothing has had time to stall", first[0].State)
 	}
+	if first[0].Reason != "" {
+		t.Errorf("Reason = %q on a torrent that has not stalled, want empty", first[0].Reason)
+	}
 
 	at = at.Add(90 * time.Second)
 	stalled, _ := e.Torrents(context.Background(), "curator")
 	if stalled[0].State != torrent.StateStalled {
 		t.Errorf("State = %q after 90s with no progress, want stalled", stalled[0].State)
+	}
+	// T55: the sentence rides on the torrent rather than only reaching the log.
+	// Nobody was introduced to this client, so it is the no-peers case.
+	if stalled[0].Reason == "" {
+		t.Error("Reason is empty on a stalled torrent; the row has nothing to explain the badge with")
+	}
+	if !strings.Contains(stalled[0].Reason, "no peers") {
+		t.Errorf("Reason = %q, want the no-peers sentence — nobody was introduced to this client", stalled[0].Reason)
+	}
+
+	// Every tick, not only the first. The log line is written once and the
+	// reason is not: a row is rewritten on every poll, so a reason produced
+	// only alongside the warning would be missing from every write after it.
+	again, _ := e.Torrents(context.Background(), "curator")
+	if again[0].Reason != stalled[0].Reason {
+		t.Errorf("Reason = %q on the second stalled tick, want the same %q", again[0].Reason, stalled[0].Reason)
 	}
 
 	// A byte arriving clears it. Stalled is a description, not a verdict.
@@ -535,6 +555,44 @@ func TestStalledAfterNoProgress(t *testing.T) {
 	recovered, _ := e.Torrents(context.Background(), "curator")
 	if recovered[0].State == torrent.StateStalled {
 		t.Error("still stalled after progress moved; the state has to be able to recover")
+	}
+	if recovered[0].Reason != "" {
+		t.Errorf("Reason = %q after progress moved, want empty — a reason must not outlive its state",
+			recovered[0].Reason)
+	}
+}
+
+// The reason is prose and the distinction it draws is the point of it: "nobody
+// has this" and "somebody has it and will not send it" are different problems
+// and only one of them is fixed by picking another release.
+func TestStallReasonDistinguishesWhatIsWrong(t *testing.T) {
+	cases := []struct {
+		name       string
+		peers      int
+		noMetadata bool
+	}{
+		{"no peers, no metadata", 0, true},
+		{"no peers, metadata in hand", 0, false},
+		{"peers, no metadata", 3, true},
+		{"peers, metadata, nothing arriving", 3, false},
+	}
+
+	seen := map[string]string{}
+	for _, c := range cases {
+		got := stallReason(c.peers, c.noMetadata)
+		if got == "" {
+			t.Errorf("%s: reason is empty", c.name)
+			continue
+		}
+		// Rendered verbatim under a badge since T55, so it has to read as a
+		// sentence rather than as a code the screen has to translate.
+		if strings.ToUpper(got[:1]) == got[:1] && got[:1] != strings.ToLower(got[:1]) {
+			t.Errorf("%s: reason %q starts capitalised; it is a clause, not a heading", c.name, got)
+		}
+		if before, ok := seen[got]; ok {
+			t.Errorf("%s: reason %q is the same sentence as %q — the distinction is the whole point", c.name, got, before)
+		}
+		seen[got] = c.name
 	}
 }
 

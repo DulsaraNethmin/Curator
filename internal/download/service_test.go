@@ -91,6 +91,7 @@ type update struct {
 	hash        string
 	state       string
 	progress    float64
+	reason      string
 	completedAt *time.Time
 }
 
@@ -115,13 +116,13 @@ func (f *fakeStore) InsertDownload(_ context.Context, d store.Download) (store.D
 	return d, nil
 }
 
-func (f *fakeStore) UpdateDownloadProgress(_ context.Context, hash, state string, progress float64, completedAt *time.Time) error {
+func (f *fakeStore) UpdateDownloadProgress(_ context.Context, hash, state string, progress float64, reason string, completedAt *time.Time) error {
 	f.calls = append(f.calls, "update")
 	f.writeCount++
 	// Upper-cased exactly as internal/store does, so this fake cannot pass a test
 	// the real store would fail — qbit hands out lower-case hashes and the store
 	// stores upper-case ones.
-	f.updates = append(f.updates, update{strings.ToUpper(hash), state, progress, completedAt})
+	f.updates = append(f.updates, update{strings.ToUpper(hash), state, progress, reason, completedAt})
 	return f.updateErr
 }
 

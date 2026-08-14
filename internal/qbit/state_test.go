@@ -80,3 +80,30 @@ func TestMapStateNeverInventsFailed(t *testing.T) {
 		}
 	}
 }
+
+// T55: stalled is the one state this backend can say anything about, and it is
+// the only one that may carry a sentence. `stalledUP` in particular must not —
+// a finished torrent with no leechers is not a problem, it is a Tuesday, and a
+// reason on a completed row would render under a badge that is doing fine.
+func TestStalledReasonIsOnlyForStalled(t *testing.T) {
+	if got := stalledReason(torrent.StateStalled); got == "" {
+		t.Error("a stalled torrent has no sentence; the badge would be alone on screen again")
+	}
+	for _, state := range []string{
+		torrent.StateQueued, torrent.StateDownloading, torrent.StateCompleted, torrent.StateFailed,
+	} {
+		if got := stalledReason(state); got != "" {
+			t.Errorf("stalledReason(%q) = %q, want empty — only stalled has anything to explain", state, got)
+		}
+	}
+
+	// Reached through the mapping the wire actually goes through, so the two
+	// spellings cannot drift apart: whatever qBittorrent calls it, the sentence
+	// appears exactly when curator answered `stalled`.
+	if got := stalledReason(mapState("stalledDL")); got == "" {
+		t.Error("stalledDL produced no reason")
+	}
+	if got := stalledReason(mapState("stalledUP")); got != "" {
+		t.Errorf("stalledUP produced %q; it maps to completed and completed has no reason", got)
+	}
+}

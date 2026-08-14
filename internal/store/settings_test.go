@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -160,6 +161,11 @@ func TestMigrationAddsTheReasonColumnToAnOlderDatabase(t *testing.T) {
 	if !hasColumn(t, s, "downloads", "reason") {
 		t.Fatal("downloads.reason is missing after opening an older database")
 	}
+	// The column existing is not the claim worth making. T55 renders what this
+	// database serves, so the assertion is a reason written and read back on a
+	// row that predates the column — including the rows already in the table,
+	// which ALTER TABLE filled with NULL.
+	servesAReason(t, s)
 
 	// And again, because every start applies it: the second run must change
 	// nothing rather than fail on a duplicate column.
@@ -171,6 +177,7 @@ func TestMigrationAddsTheReasonColumnToAnOlderDatabase(t *testing.T) {
 	if !hasColumn(t, again, "downloads", "reason") {
 		t.Fatal("downloads.reason vanished on the second open")
 	}
+	servesAReason(t, again)
 }
 
 // The other direction: a database created today gets the column from
@@ -179,6 +186,44 @@ func TestAFreshDatabaseHasTheReasonColumn(t *testing.T) {
 	s := newTestStore(t)
 	if !hasColumn(t, s, "downloads", "reason") {
 		t.Fatal("downloads.reason is missing from a fresh database")
+	}
+	servesAReason(t, s)
+}
+
+// servesAReason is the end both paths have to reach: a download whose stall
+// reason can be written and read back. It is what makes the two migration tests
+// a claim about behaviour rather than about a pragma.
+//
+// The hash is per-call because one of the callers opens the same file twice and
+// torrent_hash is UNIQUE — the second store would otherwise find the first
+// one's row and pass without writing anything.
+func servesAReason(t *testing.T, s *Store) {
+	t.Helper()
+	ctx := context.Background()
+
+	m, err := s.UpsertWantedMovie(ctx, "Interstellar", 2014, nil)
+	if err != nil {
+		t.Fatalf("UpsertWantedMovie: %v", err)
+	}
+	hash := fmt.Sprintf("%040d", len(t.Name())+int(m.ID))
+	if _, err := s.InsertDownload(ctx, Download{
+		MovieID: m.ID, TorrentHash: hash, Indexer: "1337x",
+		ReleaseName: "Interstellar.2014.1080p.BluRay.x264-SPARKS",
+		Magnet:      "magnet:?xt=urn:btih:" + hash,
+	}); err != nil {
+		t.Fatalf("InsertDownload: %v", err)
+	}
+
+	const why = "no peers are connected — nobody appears to be seeding this release"
+	if err := s.UpdateDownloadProgress(ctx, hash, DownloadStalled, 0, why, nil); err != nil {
+		t.Fatalf("UpdateDownloadProgress: %v", err)
+	}
+	got, err := s.GetDownloadByHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("GetDownloadByHash: %v", err)
+	}
+	if got.Reason != why {
+		t.Errorf("Reason = %q, want %q — the column is there but the row does not serve it", got.Reason, why)
 	}
 }
 

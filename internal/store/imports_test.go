@@ -627,7 +627,7 @@ func TestLibraryByTMDBIDIgnoresAFailedDownload(t *testing.T) {
 		t.Fatalf("UpsertWantedMovie: %v", err)
 	}
 	dispatch(t, s, movie.ID, importHash)
-	if err := s.UpdateDownloadProgress(ctx, importHash, DownloadFailed, 0.3, nil); err != nil {
+	if err := s.UpdateDownloadProgress(ctx, importHash, DownloadFailed, 0.3, "", nil); err != nil {
 		t.Fatalf("UpdateDownloadProgress: %v", err)
 	}
 
