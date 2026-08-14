@@ -290,7 +290,32 @@ function Video({
       // second click and a fallback that never runs.
       preload="metadata"
       onError={() => void advance()}
-    />
+    >
+      {/*
+       * One <track> per sidecar the library actually holds, and nothing else:
+       * the CC button in the browser's own control bar is the whole UI, for the
+       * same reason `controls` is — it is keyboard-accessible, translated, and
+       * in the place every user already looks.
+       *
+       * **None of them is `default`.** A default track turns captions on for
+       * everybody the moment a film starts, which is a preference nobody
+       * expressed; the button is there for the people who want them.
+       *
+       * The list is empty for almost every film and draws nothing at all.
+       */}
+      {(urls.subtitles ?? []).map((track) => (
+        <track
+          key={track.url}
+          kind="subtitles"
+          src={track.url}
+          label={track.label}
+          // Omitted rather than empty when the file name declared no language:
+          // srclang is what a browser matches against the user's own language
+          // preference, and '' is a value it would try to match.
+          srcLang={track.language || undefined}
+        />
+      ))}
+    </video>
   );
 }
 

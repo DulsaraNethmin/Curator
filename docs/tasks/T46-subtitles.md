@@ -91,3 +91,83 @@ Then live:
 
 - re-import, or hand-link, the Backrooms subtitles that have been outstanding since phase 4, and
   watch the track appear in the player and in Jellyfin
+
+---
+
+## What the real files actually said
+
+**Built 2026-08-15.** Everything above holds. Four things came out of meeting the real release
+rather than a fixture, and two of them changed the code.
+
+### The fixture in "Verify" collides, and the collision rule is right
+
+`Movie.mkv`, `Movie.en.srt` and `Subs/2_English.srt` cannot produce two sidecars: both name the same
+language, the rule is "named off the feature", and both therefore want
+`Title (Year).en.srt`. **The naming is what earns this task its keep** — `2_English.srt` is
+associated with nothing until it is renamed, and that rename is the entire reason Jellyfin, Plex and
+VLC pick it up — so the collision is the correct outcome and the fixture is the thing that is wrong.
+The tests split it in two: `Movie.en.srt` + `Subs/2_French.srt` for "both land", and the file's own
+fixture verbatim for "first wins, second warns".
+
+### `hi` is both a flag and a language, and the real release ships both readings
+
+YTS's Backrooms release contains `Subs/SDH.eng.HI.srt`. `hi` is the hearing-impaired marker there —
+and it is also Hindi's ISO 639-1 code, which is how a Hindi subtitle is named everywhere. A table
+cannot settle this; the token in front of it can. `hi` is a **flag when a language precedes it**
+(skipping any flags in between, so `Movie.en.sdh.hi` works) and **the language otherwise**. It
+normalises to `sdh`, which is the spelling Jellyfin acts on.
+
+That is also why the flags are kept at all rather than dropped to a bare language: a film with
+foreign dialogue ships `English.srt` *and* `English.forced.srt`, and a rule carrying only the
+language would collide them and throw one away.
+
+### The language table is a closed set, and that is what makes the destination safe
+
+A sidecar's library name is the **feature's** stem, plus an ISO code out of curator's table, plus a
+flag out of another, plus a known extension. **No part of the filename a release group chose ever
+reaches the path.** `AssertInside` stays, because it is what keeps that a property rather than a
+habit — but the honest statement of the defence is the closed table, and the test asserts the
+property directly: a sidecar named `x..%2F..%2Fetc%2Fpasswd.en.srt` lands as `Title (Year).en.srt`
+and nothing appears outside the library.
+
+Its stated cost: `no`, `it` and `id` are also English words, so a sidecar whose name happens to
+*end* in one gets a wrong suffix. That mislabels a track in a menu. It never loses a file and never
+moves one, because the suffix is the only thing derived from it.
+
+### Measured, against the release that has been sitting in downloads since phase 4
+
+The real importer, run once against the real content path. All five landed, every inode equal to its
+source and every link count 2:
+
+```
+Backrooms.2026.1080p.WEBRip.x264.AAC5.1-[YTS.GG - YTS.BZ].srt  →  Backrooms (2026).srt
+Subs/English.srt                                               →  Backrooms (2026).en.srt
+Subs/SDH.eng.HI.srt                                            →  Backrooms (2026).en.sdh.srt
+Subs/Latin American.spa.srt                                    →  Backrooms (2026).es.srt
+Subs/Saudi Arabia.ara.srt                                      →  Backrooms (2026).ar.srt
+```
+
+No two collide, which is the only property that decides whether all five survive.
+
+**In a visible Chrome 151, against the embedded build**: five `<track>` elements, `text/vtt`, and
+**Chrome's own WebVTT parser accepted 1,826 cues** out of the converted `.en.sdh.srt` — the whole
+file, not a prefix. The caption rendered over the film at 30:06 of 1:50:28 on direct play. 119,695
+bytes on disk became 111,680 served, which is the cue numbers going away. Not one line in
+`/api/logs` from the subtitle path across the entire session.
+
+**Subtitles survive the fallback to remux**, observed rather than designed: the tracks come off the
+playback response and not out of the container, so the same five are attached when `<video src>`
+re-points at `/remux`.
+
+**VLC 3.0.23 on this Mac auto-detected all five from the renamed files** — `autodetected subtitle:
+Backrooms (2026).srt with priority 4`, the four language-suffixed ones at priority 3, all loaded as
+SPU streams. That is the "works in three players that are not curator" claim, measured in one of the
+three.
+
+### What could not be verified, and why
+
+**Jellyfin has not seen these files and cannot.** Jellyfin's library is the Pi's
+`/media/storage/media/movies`; curator's local library is this laptop's `~/curator-local/movies`, and
+the two are different disks. Checked read-only: **the Pi's library holds zero sidecar subtitles**, so
+there is nothing there to compare against either. Putting a file on the Pi is phase 10. VLC above is
+the substitute measurement, and it is the same convention.

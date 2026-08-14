@@ -182,8 +182,38 @@ export type PlaybackURLs = {
    */
   remux_url?: string;
 
+  /**
+   * One entry per subtitle file beside the film that a <track> can use, and
+   * `[]` — never absent — when there are none, which is the ordinary case.
+   *
+   * Optional in the TYPE only, because a page served by an older binary would
+   * have none of this and `subtitles.map` on undefined is a blank screen rather
+   * than a missing caption.
+   */
+  subtitles?: SubtitleTrack[];
+
   /** Absent with authentication off, because nothing was minted. */
   expires_at?: string;
+};
+
+/**
+ * SubtitleTrack is one `<track>` the player can offer.
+ *
+ * The URL is relative and same-origin, exactly like `stream_url`: a `<track>`
+ * sends the session cookie by itself and no credential goes near the DOM.
+ */
+export type SubtitleTrack = {
+  /** The file name in the library, which is also the last segment of `url`. */
+  name: string;
+  /** What the browser draws in its own captions menu. */
+  label: string;
+  /**
+   * An ISO 639-1 code for `srclang`, or `''` when the file name declared none.
+   * Empty rather than a guess — `srclang` is what a browser picks a default
+   * track with, and a wrong one is worse than none.
+   */
+  language: string;
+  url: string;
 };
 
 export type TMDBSearchResult = {

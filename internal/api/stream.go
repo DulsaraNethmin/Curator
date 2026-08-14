@@ -1,14 +1,18 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,9 +27,10 @@ import (
 // There is no logic here to isolate in a package of its own — the whole of it
 // is a lookup, a containment check, a file open and http.ServeContent, which
 // already does ranges, 206, 416, HEAD and conditional requests correctly. What
-// this file owns that is not free is three things: which file in the folder is
-// the film, what Content-Type to call it, and the URL to hand something that
-// cannot carry a cookie.
+// this file owns that is not free is four things: which file in the folder is
+// the film, what Content-Type to call it, the URL to hand something that cannot
+// carry a cookie, and — since T46 — the SubRip a `<track>` element will not take
+// becoming the WebVTT it will, on the way out and never on the way in.
 
 // ticketLifetime is how long a minted playback URL works for.
 //
@@ -113,6 +118,7 @@ func (s *Server) RegisterStream(mux *http.ServeMux) {
 	// for a byte of it.
 	mux.HandleFunc("GET /api/movies/{id}/stream", s.handleStream)
 	mux.HandleFunc("GET /api/movies/{id}/remux", s.handleRemux)
+	mux.HandleFunc("GET /api/movies/{id}/subtitles/{name}", s.handleSubtitle)
 	mux.HandleFunc("POST /api/movies/{id}/playback", s.handlePlayback)
 }
 
@@ -128,6 +134,16 @@ func streamPath(id int64) string {
 // one has a length, ranges and a 206, and the other has none of the three.
 func remuxPath(id int64) string {
 	return "/api/movies/" + strconv.FormatInt(id, 10) + "/remux"
+}
+
+// subtitlePath is where one of a film's sidecars is served from.
+//
+// The name is escaped because library names hold spaces and parentheses —
+// "Interstellar (2014).en.srt" — and an unescaped space is not a URL. It is
+// *decoded* again by the router before the handler compares it, so what is
+// matched against the disk is the name and not its encoding.
+func subtitlePath(id int64, name string) string {
+	return "/api/movies/" + strconv.FormatInt(id, 10) + "/subtitles/" + url.PathEscape(name)
 }
 
 // handleStream serves the film itself.
@@ -357,6 +373,312 @@ func seekOffset(raw string) (time.Duration, error) {
 	return time.Duration(seconds * float64(time.Second)), nil
 }
 
+// --- subtitles ---------------------------------------------------------------
+
+// trackFormats are the sidecar formats a <track> element can be given, and the
+// map's value says whether one has to be converted on the way out.
+//
+// `.ass` and `.ssa` are deliberately absent. They are a STYLED format —
+// positioning, fonts, colours, karaoke timing — and turning one into WebVTT
+// means either throwing all of that away or reimplementing it, which is a
+// subtitle renderer and not a route. They are still linked into the library, so
+// Jellyfin and VLC both render them properly; the browser is simply not offered
+// them. `.sub` is absent for a blunter reason: it is either MicroDVD, which is
+// frame-numbered and needs the film's frame rate to convert at all, or the index
+// half of a VobSub pair, which is a picture.
+var trackFormats = map[string]bool{
+	".srt": true,  // SubRip: converted below, because <track> takes WebVTT and nothing else
+	".vtt": false, // already what the element wants
+}
+
+// maxSubtitleBytes is the most this endpoint will read into memory.
+//
+// A three-hour film's subtitles are about 100 KB, so this is forty times the
+// largest real one. It exists because the file was named by a stranger and the
+// extension is the only thing that says it is text: without a cap, a `.srt` that
+// is actually a 12 GB video is an out-of-memory kill of the whole process on a
+// Pi, and the conversion below has to hold the file to see one line ahead.
+const maxSubtitleBytes = 4 << 20
+
+// utf8BOM is what a Windows subtitle editor writes at the front of a file.
+//
+// **It is the one encoding detail that actually breaks players.** A WebVTT file
+// must begin with the six bytes "WEBVTT"; a byte-order mark in front of them is
+// permitted by the spec but a mark left in the MIDDLE of the output — which is
+// what copying the SubRip through unchanged does, since curator writes the
+// header itself — lands inside the first cue and shows up as a stray glyph on
+// screen. It is stripped rather than tolerated.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// srtArrow separates a SubRip cue's two timestamps, and WebVTT's is spelled the
+// same — which is the whole reason the conversion is as small as it is.
+var srtArrow = []byte("-->")
+
+// srtCue matches a SubRip timing line, tolerantly, so that it can be rewritten
+// strictly.
+//
+// Tolerant on the way in because SubRip has no specification and files in the
+// wild vary: `,` or `.` before the milliseconds, one or two digits of hour,
+// missing spaces around the arrow. Strict on the way out because WebVTT does
+// have one, and a browser that cannot parse a timing line silently drops the
+// cue rather than reporting anything.
+//
+// The trailing group is WebVTT's cue settings, which SubRip files occasionally
+// carry as the old X1/X2/Y1/Y2 coordinates. They are passed through: a setting
+// a browser does not recognise is ignored, and dropping them would be a second
+// thing to be wrong about.
+var srtCue = regexp.MustCompile(`^\s*(\d{1,3}):([0-5]\d):([0-5]\d)[,.](\d{1,3})\s*-->\s*(\d{1,3}):([0-5]\d):([0-5]\d)[,.](\d{1,3})\s*(.*?)\s*$`)
+
+// srtIndex matches the cue number SubRip puts in front of every timing line and
+// WebVTT has no use for.
+var srtIndex = regexp.MustCompile(`^\s*\d+\s*$`)
+
+// subtitleTrack is one entry in the playback response's list.
+type subtitleTrack struct {
+	// Name is the file name in the library, and it is the last segment of URL.
+	// It is here as well as in the URL because it is the thing the handler
+	// matches against the disk, and a client that wants to say which track it
+	// means says it with this.
+	Name string `json:"name"`
+
+	// Label is what a player draws in its track menu.
+	Label string `json:"label"`
+
+	// Language is an ISO 639-1 code for <track srclang>, or "" when the file
+	// name carried nothing curator's table recognises. Empty rather than a
+	// guess: srclang is what a browser uses to pick a default track, and a
+	// wrong one is worse than none.
+	Language string `json:"language"`
+
+	// URL is relative and carries no ticket, exactly like stream_url and for the
+	// same reason — a <track> is a same-origin subresource with a cookie.
+	URL string `json:"url"`
+}
+
+// handleSubtitle serves one sidecar, converted if it has to be.
+//
+// **{name} is never joined onto a path.** It is compared against the names of
+// the files this film's folder actually holds, so the only strings that can
+// reach the filesystem are ones os.ReadDir produced. That is a stronger
+// guarantee than sanitising the parameter would be, and it is why there is no
+// sanitising here to review.
+func (s *Server) handleSubtitle(w http.ResponseWriter, r *http.Request) {
+	_, folder, ok := s.libraryFolder(w, r)
+	if !ok {
+		return
+	}
+
+	tracks, err := subtitleTracks(folder)
+	if err != nil {
+		s.log.Warn("subtitles: could not read the film's folder", "library_path", folder, "err", err)
+		s.fail(w, http.StatusNotFound, errors.New("this film has no subtitles"))
+		return
+	}
+
+	want := r.PathValue("name")
+	i := slices.IndexFunc(tracks, func(t library.Sidecar) bool { return t.Name == want })
+	if i < 0 {
+		// The ordinary miss: a page left open while the folder changed, or a
+		// name nobody has. Not logged — it is the client's stale list, not the
+		// server's problem, and this route is as reachable as the stream is.
+		s.fail(w, http.StatusNotFound, errors.New("this film has no subtitle by that name"))
+		return
+	}
+	track := tracks[i]
+
+	body, modTime, err := s.readSubtitle(track.Path)
+	if err != nil {
+		s.fail(w, http.StatusNotFound, errors.New("this film has no subtitle by that name"))
+		return
+	}
+	// The map's VALUE, where subtitleTracks above uses its membership: being in
+	// the table is "a <track> can use this", and being true is "not until it has
+	// been converted".
+	if convert := trackFormats[strings.ToLower(filepath.Ext(track.Name))]; convert {
+		body = subripToWebVTT(body)
+	}
+
+	// Explicit, and for the same reason the stream's is: measured,
+	// mime.TypeByExtension(".vtt") is "" even on this Mac with Apache's table
+	// loaded, and ".srt" is "application/x-subrip", which no browser renders as
+	// a text track. The charset is not decoration either — WebVTT is defined as
+	// UTF-8 and a browser will not guess.
+	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+
+	// ServeContent over the converted bytes rather than a bare Write: it gets
+	// Content-Length, HEAD and If-Modified-Since right, off the source file's
+	// own ModTime, which is the honest validator for output derived from it.
+	http.ServeContent(w, r, track.Name, modTime, bytes.NewReader(body))
+}
+
+// readSubtitle reads a sidecar whole, refusing one too large to be one.
+func (s *Server) readSubtitle(path string) ([]byte, time.Time, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		// It was there for ReadDir and gone by the open: a race with a delete.
+		s.log.Warn("subtitles: could not open a sidecar", "path", path, "err", err)
+		return nil, time.Time{}, err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		s.log.Warn("subtitles: could not stat a sidecar", "path", path, "err", err)
+		return nil, time.Time{}, err
+	}
+	if info.Size() > maxSubtitleBytes {
+		s.log.Warn("subtitles: refusing a sidecar far larger than any subtitle file",
+			"path", path, "size", info.Size(), "limit", maxSubtitleBytes)
+		return nil, time.Time{}, fmt.Errorf("subtitle %s is %d bytes", path, info.Size())
+	}
+
+	// Bounded by the limit and not by the size above it, because the two are read
+	// at different moments and a file that grows in between must not decide how
+	// much memory this takes.
+	body, err := io.ReadAll(io.LimitReader(file, maxSubtitleBytes))
+	if err != nil {
+		s.log.Warn("subtitles: could not read a sidecar", "path", path, "err", err)
+		return nil, time.Time{}, err
+	}
+	return body, info.ModTime(), nil
+}
+
+// subtitleTracks is the film's sidecars, narrowed to the ones a <track> can use.
+//
+// One function, used by both the playback list and the route that serves them,
+// so the endpoint can never hand out a file the list did not offer — and so the
+// `.ass` that is deliberately absent from the menu is absent from the URL space
+// as well, rather than being reachable by anybody who guesses its name.
+func subtitleTracks(folder string) ([]library.Sidecar, error) {
+	all, err := library.ListSidecars(folder)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]library.Sidecar, 0, len(all))
+	for _, sidecar := range all {
+		if _, usable := trackFormats[strings.ToLower(filepath.Ext(sidecar.Name))]; usable {
+			out = append(out, sidecar)
+		}
+	}
+	return out, nil
+}
+
+// flagLabels spell a sidecar's flags the way a person reads them. Two of the
+// three are initialisms and look like a typo in lower case, which is what a
+// track menu would otherwise show: "English (sdh)".
+var flagLabels = map[string]string{
+	"sdh":    "SDH",
+	"cc":     "CC",
+	"forced": "forced",
+}
+
+// subtitleLabel is what a player draws in its track menu.
+func subtitleLabel(sidecar library.Sidecar) string {
+	label := library.LanguageName(sidecar.Language)
+	if label == "" {
+		// A file whose name declared no language. "Subtitles" rather than the
+		// file name, which after an import is the film's own title and would
+		// read as a menu entry naming the film it is already inside.
+		label = "Subtitles"
+	}
+	if len(sidecar.Flags) == 0 {
+		return label
+	}
+
+	spelled := make([]string, 0, len(sidecar.Flags))
+	for _, flag := range sidecar.Flags {
+		if pretty, known := flagLabels[flag]; known {
+			flag = pretty
+		}
+		spelled = append(spelled, flag)
+	}
+	return label + " (" + strings.Join(spelled, ", ") + ")"
+}
+
+// subripToWebVTT is the conversion, and it happens HERE rather than at import.
+//
+// The file on disk stays the `.srt` the release shipped, because that is what
+// VLC and Jellyfin already want and it is the whole reason the importer bothers
+// to name it `Title (Year).en.srt` (docs/tasks/T46-subtitles.md). Converting on
+// the way in would produce a library that only curator can read.
+//
+// The conversion itself is genuinely small, which is why it is here and not
+// behind ffmpeg: a WEBVTT header, `,` → `.` in the timestamps, and the cue
+// numbers dropped. Cue text is passed through untouched — SubRip and WebVTT
+// share <b>, <i> and <u>, and a tag WebVTT does not know it ignores.
+//
+// **What this does not do, said out loud: it does not transcode the text.** A
+// SubRip written in Latin-1 or Windows-1252 — which plenty of older releases are
+// — comes out as the same bytes with a UTF-8 label on them, and the accented
+// characters are mojibake. Fixing it means guessing an encoding or taking a
+// dependency on golang.org/x/text, and neither is what "serve the subtitle that
+// is there" is worth today.
+func subripToWebVTT(srt []byte) []byte {
+	// The header curator writes, followed by the blank line the spec requires
+	// before the first cue.
+	out := bytes.NewBuffer(make([]byte, 0, len(srt)+16))
+	out.WriteString("WEBVTT\n\n")
+
+	lines := bytes.Split(bytes.TrimPrefix(srt, utf8BOM), []byte("\n"))
+	// Split leaves an empty element after a trailing newline, and every line
+	// below is written WITH one. Dropping it is the difference between copying
+	// a file and copying a file plus a blank line each time it is served.
+	if n := len(lines); n > 0 && len(lines[n-1]) == 0 {
+		lines = lines[:n-1]
+	}
+
+	for i, line := range lines {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+
+		switch {
+		case bytes.Contains(line, srtArrow):
+			out.Write(webVTTCue(line))
+		case srtIndex.Match(line) && i+1 < len(lines) && bytes.Contains(lines[i+1], srtArrow):
+			// A cue number: digits alone, immediately in front of a timing line.
+			// The lookahead is what keeps a line of DIALOGUE that happens to be
+			// a bare number — "1984" on its own — from being deleted as one.
+			continue
+		default:
+			out.Write(line)
+		}
+		out.WriteByte('\n')
+	}
+	return out.Bytes()
+}
+
+// webVTTCue rewrites one timing line strictly.
+func webVTTCue(line []byte) []byte {
+	match := srtCue.FindSubmatch(line)
+	if match == nil {
+		// Something with an arrow in it that is not a timing line curator
+		// recognises. A comma-to-dot substitution is the whole of what the
+		// conversion would have done anyway, so it is done and the line is left
+		// otherwise intact rather than dropped: a cue nobody can parse is
+		// visible in the file, and a cue that is gone is not.
+		return bytes.ReplaceAll(line, []byte(","), []byte("."))
+	}
+
+	// Padded, because WebVTT wants exactly three digits of milliseconds and at
+	// least two of hours, and SubRip in the wild supplies neither reliably.
+	cue := fmt.Sprintf("%s:%s:%s.%s --> %s:%s:%s.%s",
+		pad(match[1], 2), match[2], match[3], pad(match[4], 3),
+		pad(match[5], 2), match[6], match[7], pad(match[8], 3))
+	if settings := match[9]; len(settings) > 0 {
+		cue += " " + string(settings)
+	}
+	return []byte(cue)
+}
+
+// pad left-pads a digit field with zeros. A milliseconds field written with
+// fewer than three digits means its LEADING zeros are missing, not its trailing
+// ones — ",5" is five milliseconds, not five hundred.
+func pad(digits []byte, width int) string {
+	if len(digits) >= width {
+		return string(digits)
+	}
+	return strings.Repeat("0", width-len(digits)) + string(digits)
+}
+
 // playbackBody answers the UI's one question — how do I play this film — in one
 // round trip.
 type playbackBody struct {
@@ -385,6 +707,17 @@ type playbackBody struct {
 	// is minted for is VLC, and VLC has never needed an MKV rewritten.
 	RemuxURL string `json:"remux_url,omitempty"`
 
+	// Subtitles is one entry per sidecar in the film's folder that a <track>
+	// element can actually use, and it is `[]` rather than absent when there are
+	// none — an empty library is `[]` and never null everywhere else in this
+	// package, and a UI that has to branch on undefined before it can map over a
+	// list is a branch this could have spared it.
+	//
+	// It is on the playback response and not on the movie detail body because it
+	// is a fact about the DISK, read with a ReadDir, and the detail body is
+	// answered for every card on a browse screen.
+	Subtitles []subtitleTrack `json:"subtitles"`
+
 	// ExpiresAt is absent with authentication off, because nothing was minted.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
@@ -392,7 +725,7 @@ type playbackBody struct {
 // handlePlayback hands back the URLs this film can be played with, and mints a
 // ticket only if there is a password for one to stand in for.
 func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
-	movie, _, ok := s.libraryFolder(w, r)
+	movie, folder, ok := s.libraryFolder(w, r)
 	if !ok {
 		return
 	}
@@ -401,6 +734,25 @@ func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
 	body := playbackBody{StreamURL: path, ExternalURL: s.absolute(r, path)}
 	if s.remux != nil {
 		body.RemuxURL = remuxPath(movie.ID)
+	}
+
+	// A folder that cannot be read is NOT a refusal to play the film. The
+	// feature is the point and the subtitle is a courtesy, exactly as it is at
+	// import — and the stream endpoint is about to answer the same question for
+	// itself, with a 404 that says so properly. An empty list here and a Warn.
+	tracks, err := subtitleTracks(folder)
+	if err != nil {
+		s.log.Warn("playback: could not list this film's subtitles; offering none",
+			"library_path", folder, "err", err)
+	}
+	body.Subtitles = make([]subtitleTrack, 0, len(tracks))
+	for _, track := range tracks {
+		body.Subtitles = append(body.Subtitles, subtitleTrack{
+			Name:     track.Name,
+			Label:    subtitleLabel(track),
+			Language: track.Language,
+			URL:      subtitlePath(movie.ID, track.Name),
+		})
 	}
 
 	// With authentication off — the default — nothing is minted and the UI
