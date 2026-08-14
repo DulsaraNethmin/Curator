@@ -150,6 +150,11 @@ func (im *Importer) Import(ctx context.Context, t torrent.Torrent, d store.Downl
 			"hash", d.TorrentHash, "chose", feature.Path, "others", feature.Others)
 	}
 
+	// After the feature and before the row, so that a folder is never recorded
+	// as imported while it is still missing half of what came with it — and so
+	// that a failure here cannot reach the caller. See linkSidecars.
+	subtitles := im.linkSidecars(src, feature.Path, destDir, name)
+
 	// library_path is the FOLDER: it is the scanner's identity key, and a row
 	// holding the .mkv path is a row no future scan would match.
 	saved, err := im.store.MarkImported(ctx, d.TorrentHash, destDir, feature.Size, im.now().UTC())
@@ -165,8 +170,73 @@ func (im *Importer) Import(ctx context.Context, t torrent.Torrent, d store.Downl
 	im.mu.Unlock()
 
 	im.log.Info("imported", "hash", d.TorrentHash, "title", saved.Title, "year", saved.Year,
-		"library_path", destDir, "size", feature.Size)
+		"library_path", destDir, "size", feature.Size, "subtitles", subtitles)
 	return saved, nil
+}
+
+// linkSidecars carries the subtitles that came with the download into the
+// library beside the film, and returns how many landed.
+//
+// **Nothing in here can fail an import, and that is the whole of its error
+// handling.** The feature is the point and a subtitle is a courtesy: an import
+// that failed because of a bad `.srt` would leave a film out of the library over
+// a file nobody would miss, which is the worst trade available. So every failure
+// is a Warn and the film is imported regardless — which is why this returns a
+// count and no error, in the shape TryImport uses to say the same thing about a
+// tick.
+//
+// The rules are the feature's rules for the feature's reasons: library.Link, so
+// a hardlink and never a move, a copy over or a delete of the source
+// (docs/decisions.md D8); and library.AssertInside on the destination.
+//
+// **AssertInside is what makes the closed-table claim true rather than
+// assumed.** SidecarName builds the destination out of the feature's own name,
+// an ISO code from library's table and a known extension, so no part of the
+// filename a release group chose reaches the path — but that is a property of
+// the code as it stands today, and it is worth one syscall-free check to keep it
+// a property rather than a habit.
+func (im *Importer) linkSidecars(contentPath, featurePath, destDir, featureName string) int {
+	sidecars, err := library.FindSidecars(contentPath, featurePath)
+	if err != nil {
+		im.log.Warn("could not look for subtitles; the film is imported without them",
+			"content_path", contentPath, "err", err)
+		return 0
+	}
+
+	linked := 0
+	// The names taken so far, so that two sidecars normalising to one name do not
+	// race library.Link for it. Link would refuse the second anyway — a different
+	// file already there is never an overwrite — but it would refuse it as an
+	// error, and "two English subtitles arrived and one was kept" is not one.
+	taken := make(map[string]string, len(sidecars))
+
+	for _, src := range sidecars {
+		name, err := library.SidecarName(featureName, src)
+		if err != nil {
+			im.log.Warn("skipped a subtitle: its library name could not be built", "src", src, "err", err)
+			continue
+		}
+		if first, clash := taken[name]; clash {
+			im.log.Warn("two subtitles want the same name in the library; kept the first",
+				"name", name, "kept", first, "skipped", src)
+			continue
+		}
+
+		dest := filepath.Join(destDir, name)
+		if err := library.AssertInside(im.moviesRoot, dest); err != nil {
+			im.log.Warn("skipped a subtitle: its destination is outside the library", "src", src, "err", err)
+			continue
+		}
+		if err := library.Link(src, dest); err != nil {
+			im.log.Warn("could not link a subtitle; the film is imported without it",
+				"src", src, "dest", dest, "err", err)
+			continue
+		}
+
+		taken[name] = src
+		linked++
+	}
+	return linked
 }
 
 // TryImport is Import for the poll tick: it returns nothing at all.

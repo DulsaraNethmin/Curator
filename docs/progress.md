@@ -729,8 +729,8 @@ Specified 2026-08-14. Spec in [`phase-8.md`](phase-8.md).
 |---|---|---|
 | [T43](tasks/T43-stream.md) the stream endpoint | `internal/api/stream.go`, `internal/library/contain.go`, the ticket in `auth.go` | **built** 2026-08-14 |
 | [T44](tasks/T44-remux.md) remux | `internal/remux/`, the ffmpeg build | **built** 2026-08-14 |
-| [T45](tasks/T45-player.md) the player and the Jellyfin link | `web/app/movie/`, `internal/jellyfin` | specified |
-| [T46](tasks/T46-subtitles.md) the subtitle sidecar | `internal/importer`, `internal/api/stream.go` | specified |
+| [T45](tasks/T45-player.md) the player and the Jellyfin link | `web/app/movie/`, `internal/jellyfin` | **built** 2026-08-15 |
+| [T46](tasks/T46-subtitles.md) the subtitle sidecar | `internal/importer`, `internal/api/stream.go`, `internal/library/subtitles.go` | **built** 2026-08-15 |
 
 Two decisions were written while specifying:
 [D24](decisions.md#d24--playback-remuxes-and-never-transcodes) (playback remuxes and never
@@ -808,6 +808,69 @@ in Chrome 151, which is precisely why phase 8 refuses to keep a codec-support ma
 `<video>` pointed at an `.mkv` fired `loadstart, stalled` and then **nothing at all in 20 seconds — no
 `error` event** — so a fallback chain that waits on `error` alone can wait for ever.
 
+### T46, and the release that had been waiting since phase 4
+
+**The subtitles for Backrooms have been sitting in the downloads folder since phase 4 and are now in
+the library.** The importer hardlinked the feature and nothing else; it links the sidecars too, and
+one run of the real importer against the real content path placed all five, **every inode equal to
+its source and every link count 2** — the same proof phase 4 gave for the feature, because it is the
+same `library.Link` and [D8](decisions.md#d8--import-by-hardlink) binds it identically.
+
+```
+Backrooms.2026.1080p.WEBRip.x264.AAC5.1-[YTS.GG - YTS.BZ].srt  →  Backrooms (2026).srt
+Subs/English.srt                                               →  Backrooms (2026).en.srt
+Subs/SDH.eng.HI.srt                                            →  Backrooms (2026).en.sdh.srt
+Subs/Latin American.spa.srt                                    →  Backrooms (2026).es.srt
+Subs/Saudi Arabia.ara.srt                                      →  Backrooms (2026).ar.srt
+```
+
+**The rename is the feature, not a tidiness.** `Subs/2_English.srt` is associated with nothing until
+it is named off the film; once it is, three players that are not curator read it without being told.
+Measured in one of them: **VLC 3.0.23 auto-detected all five**, the exact-stem one at priority 4 and
+the four language-suffixed ones at priority 3, all loaded as SPU streams.
+
+**`hi` is both a flag and a language, and the real release ships both readings.** YTS's folder holds
+`Subs/SDH.eng.HI.srt`, where `hi` marks hearing-impaired — and `hi` is Hindi's ISO 639-1 code, which
+is how a Hindi subtitle is named everywhere. No table settles that; the token in front of it does.
+It is a flag when a language precedes it and the language otherwise, and it normalises to `sdh`.
+
+**The task file's own verify fixture collides**, and the collision is the right answer.
+`Movie.en.srt` beside `Subs/2_English.srt` both name English, so both want `Title (Year).en.srt` —
+the first wins and the second is a warning, exactly as the same task file's other bullet requires.
+Both behaviours have a test; the "two sidecars land" one uses a French second file.
+
+**The containment argument is a closed table, and that is worth stating precisely.** A sidecar's
+destination is the *feature's* stem plus an ISO code out of curator's table plus a flag out of
+another plus a known extension, so no part of a filename a release group chose reaches the path.
+`AssertInside` stays as the guard that keeps that true rather than as what the safety rests on, and
+the test asserts the property head-on: a sidecar named `x..%2F..%2Fetc%2Fpasswd.en.srt` lands as
+`Title (Year).en.srt` with nothing written outside the library.
+
+**Verified live on 8097, against the embedded build, in a visible Chrome 151.** Five `<track>`
+elements with the right labels and `srclang`s; `text/vtt; charset=utf-8`; **Chrome's own WebVTT
+parser accepted 1,826 cues** out of the converted `.en.sdh.srt` — the whole file, not a prefix — and
+the caption rendered over the film at 30:06 of 1:50:28 on direct play. 119,695 bytes on disk became
+111,680 served, which is the cue numbers going away. **The subtitle path wrote nothing to
+`/api/logs` across the whole session.**
+
+**Subtitles survive the fallback to remux**, observed rather than designed: the track list comes off
+the playback response and not out of the container, so the same five stay attached when
+`<video src>` re-points at `/remux`.
+
+**The visible-tab trap caught this task too, and it is worth repeating because it looks like a
+bug.** Play pressed while the tab was `hidden` ran the whole chain to the remux — Chrome throttled
+the direct-play preload, the player's 12-second cap fired, and the fallback did exactly what it
+should. The same click in a visible tab direct-plays a 6,628-second film with no banner. **A
+throttled preload is not a codec refusal**, and it still does not close
+"direct-fail-then-remux-succeeds in one run", which needs a browser that genuinely refuses a
+container.
+
+**What could not be verified, and why.** *Jellyfin has not seen these files and cannot.* Jellyfin's
+library is the Pi's `/media/storage/media/movies` and curator's local library is this laptop's
+`~/curator-local/movies` — different disks. Checked read-only: **the Pi's library holds zero sidecar
+subtitles**, so there is nothing there to compare against either. Putting a file on the Pi is phase
+10, after T52. VLC is the substitute measurement and it is the same convention.
+
 ## Corrections made to the docs
 
 Recorded so the reasoning is not lost.
@@ -817,3 +880,5 @@ Recorded so the reasoning is not lost.
 | Six → **seven** 2026 releases in the fixture | `CLAUDE.md`, `decisions.md` D9, `T4`, `T7` |
 | Phases 3–4 no longer blocked — `gluetun` and `qbittorrent` are healthy | `CLAUDE.md`, `roadmap.md` |
 | `.gitignore`'s unanchored `curator` also matched the `cmd/curator/` **directory**, silently excluding the command from git | `.gitignore` |
+| T45 was still listed as `specified` in the phase 8 table after it had been built and merged | `progress.md` |
+| T46's verify fixture — `Movie.en.srt` beside `Subs/2_English.srt` — produces one sidecar and not two, because both name English | `tasks/T46-subtitles.md` |

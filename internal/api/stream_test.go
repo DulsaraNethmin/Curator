@@ -1101,6 +1101,469 @@ func TestRemuxMissesMatchTheStreams(t *testing.T) {
 	}
 }
 
+// --- subtitles --------------------------------------------------------------
+
+// oneCue is a SubRip cue as a release actually ships one: a number, a comma
+// before the milliseconds, and CRLF line endings, because most .srt files on
+// disk came off a Windows editor.
+const oneCue = "1\r\n00:00:01,000 --> 00:00:02,000\r\nWe used to look up and wonder.\r\n\r\n"
+
+// sidecar writes a subtitle beside the film and returns the name it is at.
+func (f *streamFixture) sidecar(folder, name, body string) string {
+	f.t.Helper()
+	path := filepath.Join(f.root, folder, name)
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		f.t.Fatalf("write %s: %v", path, err)
+	}
+	return name
+}
+
+func subtitleOf(id int64, name string) string { return subtitlePath(id, name) }
+
+// The conversion this endpoint exists for, and every part of it that a browser
+// notices: the header, the dot, the missing cue number, and the type.
+func TestASubRipIsServedAsWebVTT(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	name := f.sidecar("Interstellar (2014)", "Interstellar (2014).en.srt", oneCue)
+
+	rec := serve(f.bare, get(subtitleOf(id, name)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	// Measured, and the reason the header is set explicitly: on this Mac with
+	// Apache's table loaded, mime.TypeByExtension(".vtt") is "" and ".srt" is
+	// "application/x-subrip", which no browser renders as a text track.
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/vtt") {
+		t.Errorf("Content-Type = %q, want text/vtt", got)
+	}
+
+	body := rec.Body.String()
+	if !strings.HasPrefix(body, "WEBVTT\n\n") {
+		t.Errorf("the body does not start with the WEBVTT header:\n%q", body)
+	}
+	if !strings.Contains(body, "00:00:01.000 --> 00:00:02.000") {
+		t.Errorf("the timestamps still have SubRip's comma:\n%s", body)
+	}
+	if strings.Contains(body, ",000") {
+		t.Errorf("a comma survived in a timestamp:\n%s", body)
+	}
+	// The cue number is dropped, and the text is not.
+	if strings.Contains(body, "\n1\n") {
+		t.Errorf("the cue number is still there:\n%s", body)
+	}
+	if !strings.Contains(body, "We used to look up and wonder.") {
+		t.Errorf("the cue text did not survive:\n%s", body)
+	}
+}
+
+// The one encoding detail that actually breaks players. curator writes the
+// WEBVTT header itself, so a BOM copied through unchanged lands in the MIDDLE of
+// the output and shows up as a stray glyph inside the first cue.
+func TestAByteOrderMarkNeverReachesTheOutput(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	name := f.sidecar("Interstellar (2014)", "Interstellar (2014).en.srt", "\uFEFF"+oneCue)
+
+	rec := serve(f.bare, get(subtitleOf(id, name)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("\uFEFF")) {
+		t.Errorf("the byte-order mark is still in the body:\n%q", rec.Body.String())
+	}
+	if !strings.HasPrefix(rec.Body.String(), "WEBVTT") {
+		t.Errorf("the body does not open with WEBVTT:\n%q", rec.Body.String())
+	}
+}
+
+// The conversion, away from the wire, over the shapes SubRip actually takes.
+// SubRip has no specification, so this is tolerant on the way in and strict on
+// the way out — a browser that cannot parse a timing line drops the cue and
+// reports nothing.
+func TestSubRipToWebVTT(t *testing.T) {
+	cases := []struct {
+		name string
+		srt  string
+		want string
+	}{
+		{
+			"the ordinary shape",
+			"1\n00:00:01,000 --> 00:00:02,000\nHello\n",
+			"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n",
+		},
+		{
+			"no spaces around the arrow",
+			"1\n00:00:01,000-->00:00:02,000\nHello\n",
+			"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n",
+		},
+		{
+			"one digit of hour and a short milliseconds field",
+			"1\n0:00:01,5 --> 0:00:02,50\nHello\n",
+			"WEBVTT\n\n00:00:01.005 --> 00:00:02.050\nHello\n",
+		},
+		{
+			"the old X1/X2 coordinates are passed through, not dropped",
+			"1\n00:00:01,000 --> 00:00:02,000 X1:100 X2:200\nHello\n",
+			"WEBVTT\n\n00:00:01.000 --> 00:00:02.000 X1:100 X2:200\nHello\n",
+		},
+		{
+			"markup SubRip and WebVTT share is left alone",
+			"1\n00:00:01,000 --> 00:00:02,000\n<i>Hello</i>\n",
+			"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<i>Hello</i>\n",
+		},
+		{
+			// The lookahead's whole purpose. A cue number is digits alone in
+			// front of a TIMING line; a line of dialogue that happens to be a
+			// bare number is not, and deleting it would silently lose a line.
+			"a line of dialogue that is only a number survives",
+			"1\n00:00:01,000 --> 00:00:02,000\n1984\n\n2\n00:00:03,000 --> 00:00:04,000\n2\n",
+			"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n1984\n\n00:00:03.000 --> 00:00:04.000\n2\n",
+		},
+		{
+			"CRLF becomes LF",
+			"1\r\n00:00:01,000 --> 00:00:02,000\r\nHello\r\n",
+			"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n",
+		},
+		{
+			// Nothing to convert is still a valid WebVTT file rather than an
+			// empty response, which a browser reports as a failed track.
+			"an empty file is still a WebVTT file",
+			"",
+			"WEBVTT\n\n",
+		},
+		{
+			// The file is not re-terminated on every serve. A converter that
+			// appended a line each time would grow the response by one byte per
+			// request against a cache, which is exactly the kind of thing that
+			// is never noticed.
+			"a file with no final newline gets exactly one",
+			"1\n00:00:01,000 --> 00:00:02,000\nHello",
+			"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n",
+		},
+	}
+
+	for _, c := range cases {
+		if got := string(subripToWebVTT([]byte(c.srt))); got != c.want {
+			t.Errorf("%s:\n got %q\nwant %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A .vtt is what the element wants already, so it is served untouched — and
+// specifically NOT run through the converter, which would put a second WEBVTT
+// header in front of the one it has.
+func TestAWebVTTIsServedUntouched(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	const body = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n"
+	name := f.sidecar("Interstellar (2014)", "Interstellar (2014).en.vtt", body)
+
+	rec := serve(f.bare, get(subtitleOf(id, name)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	if rec.Body.String() != body {
+		t.Errorf("body = %q, want it byte for byte", rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/vtt") {
+		t.Errorf("Content-Type = %q, want text/vtt", got)
+	}
+}
+
+// {name} is compared against what the folder holds and is NEVER joined onto a
+// path, so the only strings that reach the filesystem are ones os.ReadDir
+// produced. The assertion is that nothing outside the folder was opened, which
+// is asserted by putting a real file there to be found.
+func TestASubtitleNameIsMatchedAgainstTheFolderAndNeverJoined(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	f.sidecar("Interstellar (2014)", "Interstellar (2014).en.srt", oneCue)
+
+	// A file one level up, which is what a traversal would be reaching for. It
+	// is a real, readable, valid subtitle, so a handler that joined the
+	// parameter onto the folder would serve it and this test would see it.
+	secret := filepath.Join(f.root, "secrets.srt")
+	if err := os.WriteFile(secret, []byte("1\n00:00:01,000 --> 00:00:02,000\nTHE SECRET\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Names a client could actually ask for: escaped exactly as the URL builder
+	// escapes them, so what the handler compares is the name and not a spelling
+	// of it. Every one of these reaches the handler and every one is a 404.
+	for _, name := range []string{
+		"..%2Fsecrets.srt",
+		"secrets.srt",
+		"Interstellar (2014).mkv",    // a real file in the folder, and not a subtitle
+		"Interstellar (2014).EN.SRT", // the name is compared exactly, not folded
+		"Interstellar (2014).fr.srt", // a name nobody has
+	} {
+		rec := serve(f.bare, get(subtitleOf(id, name)))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%q: status = %d, want 404: %s", name, rec.Code, rec.Body)
+		}
+		if strings.Contains(rec.Body.String(), "THE SECRET") {
+			t.Fatalf("%q: a file outside the film's folder was served", name)
+		}
+	}
+
+	// A directory reference never reaches the handler at all: Go's ServeMux
+	// cleans the path and answers 301 to the cleaned one, which no longer
+	// matches this route. Note that ".." and "." survive url.PathEscape
+	// untouched — dots are unreserved — so escaping is NOT what stops them, and
+	// asserting a 404 here would be asserting the standard library's redirect
+	// rather than anything this code does. What stops them is the name match,
+	// which the block above is about.
+	for _, target := range []string{
+		"/api/movies/" + strconv.FormatInt(id, 10) + "/subtitles/../secrets.srt",
+		"/api/movies/" + strconv.FormatInt(id, 10) + "/subtitles/..",
+		"/api/movies/" + strconv.FormatInt(id, 10) + "/subtitles/.",
+		"/api/movies/" + strconv.FormatInt(id, 10) + "/subtitles//etc/passwd",
+	} {
+		rec := serve(f.bare, get(target))
+		if rec.Code == http.StatusOK {
+			t.Errorf("%q: status = 200", target)
+		}
+		if strings.Contains(rec.Body.String(), "THE SECRET") {
+			t.Fatalf("%q: a file outside the film's folder was served", target)
+		}
+	}
+
+	// And the one that is there still works, so the refusals above are not a
+	// route that never matches anything.
+	if rec := serve(f.bare, get(subtitleOf(id, "Interstellar (2014).en.srt"))); rec.Code != http.StatusOK {
+		t.Errorf("the real subtitle answered %d: %s", rec.Code, rec.Body)
+	}
+}
+
+// The URL is built with the name escaped, and every library name has a space and
+// two parentheses in it. A route that matched the escaping rather than the name
+// would 404 on every film curator has ever imported.
+func TestASubtitleURLSurvivesItsOwnEscaping(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	f.sidecar("Interstellar (2014)", "Interstellar (2014).en.srt", oneCue)
+
+	body := decodePlayback(t, playback(f.bare, id))
+	if len(body.Subtitles) != 1 {
+		t.Fatalf("subtitles = %+v, want one", body.Subtitles)
+	}
+	url := body.Subtitles[0].URL
+	if strings.Contains(url, " ") {
+		t.Errorf("url = %q, and a raw space is not a URL", url)
+	}
+	if rec := serve(f.bare, get(url)); rec.Code != http.StatusOK {
+		t.Errorf("the URL playback handed out answered %d: %s", rec.Code, rec.Body)
+	}
+}
+
+// --- what the player is offered ---------------------------------------------
+
+func TestPlaybackListsTheTracksAndLabelsThem(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	f.sidecar("Interstellar (2014)", "Interstellar (2014).en.srt", oneCue)
+	f.sidecar("Interstellar (2014)", "Interstellar (2014).en.forced.srt", oneCue)
+	f.sidecar("Interstellar (2014)", "Interstellar (2014).en.sdh.srt", oneCue)
+	f.sidecar("Interstellar (2014)", "Interstellar (2014).fr.vtt", "WEBVTT\n\n")
+	f.sidecar("Interstellar (2014)", "Interstellar (2014).srt", oneCue)
+
+	body := decodePlayback(t, playback(f.bare, id))
+
+	want := []subtitleTrack{
+		{Name: "Interstellar (2014).en.forced.srt", Label: "English (forced)", Language: "en"},
+		// An initialism, spelled the way a person reads it: "English (sdh)" in a
+		// track menu looks like a typo.
+		{Name: "Interstellar (2014).en.sdh.srt", Label: "English (SDH)", Language: "en"},
+		{Name: "Interstellar (2014).en.srt", Label: "English", Language: "en"},
+		{Name: "Interstellar (2014).fr.vtt", Label: "French", Language: "fr"},
+		// No language in the name is an empty srclang and not a guess: srclang
+		// is what a browser picks a default track with, and a wrong one is worse
+		// than none.
+		{Name: "Interstellar (2014).srt", Label: "Subtitles", Language: ""},
+	}
+	if len(body.Subtitles) != len(want) {
+		t.Fatalf("subtitles = %+v, want %d entries", body.Subtitles, len(want))
+	}
+	for i, w := range want {
+		got := body.Subtitles[i]
+		if got.Name != w.Name || got.Label != w.Label || got.Language != w.Language {
+			t.Errorf("entry %d = %+v, want %+v", i, got, w)
+		}
+		if got.URL != subtitleOf(id, w.Name) {
+			t.Errorf("%s: url = %q", w.Name, got.URL)
+		}
+	}
+}
+
+// .ass and .ssa are LINKED into the library — Jellyfin and VLC render them — and
+// are not offered to a browser, because converting a styled format to WebVTT
+// means throwing the styling away or reimplementing it. The endpoint agrees with
+// the list, so they are not reachable by guessing the name either.
+func TestAStyledSubtitleIsNotOfferedAndIsNotServed(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	for _, name := range []string{
+		"Interstellar (2014).en.ass",
+		"Interstellar (2014).fr.ssa",
+		"Interstellar (2014).de.sub",
+	} {
+		f.sidecar("Interstellar (2014)", name, "[Script Info]\n")
+	}
+
+	body := decodePlayback(t, playback(f.bare, id))
+	if len(body.Subtitles) != 0 {
+		t.Errorf("subtitles = %+v, want none — a styled format is not a <track>", body.Subtitles)
+	}
+
+	for _, name := range []string{"Interstellar (2014).en.ass", "Interstellar (2014).fr.ssa", "Interstellar (2014).de.sub"} {
+		if rec := serve(f.bare, get(subtitleOf(id, name))); rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404 — the route must agree with the list", name, rec.Code)
+		}
+	}
+}
+
+// The ordinary case, and it draws nothing. `[]` rather than absent, so the UI
+// has no branch on undefined before it can map over the list.
+func TestAFilmWithNoSubtitlesGetsAnEmptyArrayAndNotNull(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+
+	rec := playback(f.bare, id)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"subtitles":[]`) {
+		t.Errorf(`the body has no "subtitles":[] in it: %s`, rec.Body)
+	}
+}
+
+// A folder that cannot be listed must not refuse to play the film: the feature
+// is the point and the subtitle is a courtesy, exactly as it is at import.
+func TestAnUnlistableFolderStillPlaysTheFilm(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	// A row whose folder is not there at all. The stream endpoint answers its
+	// own 404 for this; playback must still hand back the URLs rather than
+	// failing on the subtitle listing.
+	id := f.row("Gone (2014)", filepath.Join(f.root, "Gone (2014)"))
+
+	body := decodePlayback(t, playback(f.bare, id))
+	if body.StreamURL == "" {
+		t.Error("playback refused a film because its subtitles could not be listed")
+	}
+	if len(body.Subtitles) != 0 {
+		t.Errorf("subtitles = %+v, want none", body.Subtitles)
+	}
+	if !strings.Contains(f.logged(), "could not list this film's subtitles") {
+		t.Errorf("the failure was not reported:\n%s", f.logged())
+	}
+}
+
+// The cap exists because the extension is the only thing that says the file is
+// text, and it was named by a stranger: without it, a `.srt` that is really a
+// 12 GB video is an out-of-memory kill of the whole process on a Pi.
+func TestASidecarTooLargeToBeASubtitleIsRefused(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	name := "Interstellar (2014).en.srt"
+	// Sparse, so the fixture costs nothing and the real cap is exercised.
+	f.feature(filepath.Join(f.root, "Interstellar (2014)", name), maxSubtitleBytes+1)
+
+	rec := serve(f.bare, get(subtitleOf(id, name)))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(f.logged(), "far larger than any subtitle") {
+		t.Errorf("the refusal is not in the log, which is where it gets diagnosed:\n%s", f.logged())
+	}
+}
+
+// The subtitle is behind the same password as the film. D31 has no exemption for
+// the stream and there is none for this either: a subtitle is served by the same
+// endpoint set and is as much of the film as its audio track.
+func TestASubtitleIsBehindTheSamePasswordAsTheStream(t *testing.T) {
+	f := newStreamFixture(t, Credential{Enabled: true, Hash: hashed(t, authPassword)})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	name := f.sidecar("Interstellar (2014)", "Interstellar (2014).en.srt", oneCue)
+	target := subtitleOf(id, name)
+
+	if rec := serve(f.guarded, get(target)); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no credential: status = %d, want 401", rec.Code)
+	}
+	if rec := serve(f.guarded, basic(target, authPassword)); rec.Code != http.StatusOK {
+		t.Errorf("Basic: status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	// And a ticket for the FILM is not a ticket for its subtitle: the path is in
+	// the signed message, which is the property that makes a ticket for one film
+	// not a ticket for the library.
+	value, _, ok := f.auth.Ticket(streamOf(id), ticketLifetime)
+	if !ok {
+		t.Fatal("no ticket was minted")
+	}
+	if rec := serve(f.guarded, get(target+"?"+ticketParam+"="+url.QueryEscape(value))); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a stream ticket opened the subtitle: status = %d, want 401", rec.Code)
+	}
+}
+
+// Players probe with HEAD, and ServeContent over the converted bytes is what
+// makes the length the CONVERTED one rather than the file's.
+func TestASubtitleAnswersHEADWithTheConvertedLength(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+	id := f.film("Interstellar (2014)", "Interstellar (2014).mkv")
+	name := f.sidecar("Interstellar (2014)", "Interstellar (2014).en.srt", oneCue)
+
+	converted := len(subripToWebVTT([]byte(oneCue)))
+	rec := serve(f.bare, httptest.NewRequest(http.MethodHead, subtitleOf(id, name), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Content-Length"); got != strconv.Itoa(converted) {
+		t.Errorf("Content-Length = %q, want the converted %d rather than the file's %d",
+			got, converted, len(oneCue))
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("HEAD returned %d bytes of body", rec.Body.Len())
+	}
+}
+
+// The same four misses the stream has, none of them a 500 — the subtitle route
+// resolves the film through exactly the same lookup.
+func TestSubtitleMissesMatchTheStreams(t *testing.T) {
+	f := newStreamFixture(t, Credential{})
+
+	elsewhere := filepath.Join(t.TempDir(), "Interstellar (2014)")
+	f.feature(filepath.Join(elsewhere, "Interstellar (2014).mkv"), featureSize)
+	outside := f.row("Interstellar (2014)", elsewhere)
+	if err := os.WriteFile(filepath.Join(elsewhere, "Interstellar (2014).en.srt"), []byte(oneCue), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		target string
+		want   int
+	}{
+		{"no such movie", subtitleOf(9999, "x.srt"), http.StatusNotFound},
+		{"the id is not a number", "/api/movies/seven/subtitles/x.srt", http.StatusBadRequest},
+		{"the folder has gone missing", subtitleOf(f.row("Gone (2014)", filepath.Join(f.root, "Gone (2014)")), "x.srt"), http.StatusNotFound},
+		{"a row pointing outside the library", subtitleOf(outside, "Interstellar (2014).en.srt"), http.StatusNotFound},
+	}
+	for _, c := range cases {
+		rec := serve(f.bare, get(c.target))
+		if rec.Code != c.want {
+			t.Errorf("%s: status = %d, want %d (%s)", c.name, rec.Code, c.want, rec.Body)
+		}
+	}
+
+	// The containment refusal is the operator's problem, so it is in the log
+	// with both paths — exactly as the stream's is.
+	if !strings.Contains(f.logged(), "outside the library root") {
+		t.Errorf("the containment refusal is not in the log:\n%s", f.logged())
+	}
+}
+
 // With no password there is nothing for a ticket to stand in for, so nothing is
 // minted — which is what makes the response above have one shape.
 func TestNoTicketIsMintedWithoutAPassword(t *testing.T) {

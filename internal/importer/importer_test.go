@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -213,6 +214,277 @@ func TestImportLeavesNoEmptyFolderWhenThereIsNothingToLink(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("the library holds %v; a failed import must create nothing", names(entries))
+	}
+}
+
+// --- the subtitle sidecars --------------------------------------------------
+
+// The two places release groups actually put them, in one import, named off the
+// feature so that Jellyfin, Plex and VLC all read them without being told.
+func TestImportLinksTheSidecarsBesideTheFeature(t *testing.T) {
+	h := newHarness(t)
+	content := h.download("Interstellar.2014.1080p.BluRay.x264-GROUP", "Interstellar.2014.1080p.mkv")
+	beside := writeSubtitle(t, content, "Interstellar.2014.1080p.en.srt")
+	inSubs := writeSubtitle(t, filepath.Join(content, "Subs"), "2_French.srt")
+	// Neither of these is a subtitle, and neither may be linked.
+	sparseFile(t, filepath.Join(content, "RARBG.txt"), 30)
+	sparseFile(t, filepath.Join(content, "Interstellar.nfo"), 30)
+
+	before := h.snapshotDownloads()
+
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	dir := filepath.Join(h.library, "Interstellar (2014)")
+	want := []string{
+		"Interstellar (2014).en.srt",
+		"Interstellar (2014).fr.srt",
+		"Interstellar (2014).mkv",
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the library folder: %v", err)
+	}
+	if got := names(entries); !equalStrings(got, want) {
+		t.Errorf("the library folder holds %v, want %v", got, want)
+	}
+
+	// The same proof phase 4 gave for the feature, because it is the same
+	// library.Link and D8 binds it identically: one inode, two names.
+	for src, dst := range map[string]string{
+		beside: filepath.Join(dir, "Interstellar (2014).en.srt"),
+		inSubs: filepath.Join(dir, "Interstellar (2014).fr.srt"),
+	} {
+		if !os.SameFile(statOf(t, src), statOf(t, dst)) {
+			t.Errorf("%s is a copy, not a hardlink", filepath.Base(dst))
+		}
+		if n := nlinkOf(t, dst); n != 2 {
+			t.Errorf("%s: link count = %d, want 2", filepath.Base(dst), n)
+		}
+	}
+
+	if !strings.Contains(h.logs.String(), "subtitles=2") {
+		t.Errorf("the import line does not say how many subtitles came across:\n%s", h.logs.String())
+	}
+	h.assertDownloadsIntact(before)
+}
+
+// The task file's own fixture — Movie.en.srt beside Subs/2_English.srt — and it
+// COLLIDES, because both name the same language and the naming rule is "off the
+// feature". First wins, second warns, nothing is overwritten.
+func TestTwoSubtitlesWantingOneNameKeepTheFirst(t *testing.T) {
+	h := newHarness(t)
+	content := h.download("release", "Movie.mkv")
+	first := writeSubtitle(t, content, "Movie.en.srt")
+	second := writeSubtitle(t, filepath.Join(content, "Subs"), "2_English.srt")
+
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	dst := filepath.Join(h.library, "Interstellar (2014)", "Interstellar (2014).en.srt")
+	if !os.SameFile(statOf(t, first), statOf(t, dst)) {
+		t.Error("the second subtitle overwrote the first")
+	}
+	if os.SameFile(statOf(t, second), statOf(t, dst)) {
+		t.Error("the second subtitle is what landed; the first must win")
+	}
+	if !strings.Contains(h.logs.String(), "kept the first") {
+		t.Errorf("the skipped subtitle was not reported:\n%s", h.logs.String())
+	}
+	if !strings.Contains(h.logs.String(), "subtitles=1") {
+		t.Errorf("the count does not reflect the skip:\n%s", h.logs.String())
+	}
+}
+
+// **The trade this whole path exists to avoid.** The feature is the point and
+// the subtitle is a courtesy: an import that failed over a bad .srt would leave
+// a film out of the library for a file nobody would miss.
+func TestASubtitleThatCannotBeLinkedStillLeavesTheFilmImported(t *testing.T) {
+	h := newHarness(t)
+	content := h.download("release", "Movie.mkv")
+	writeSubtitle(t, content, "Movie.en.srt")
+
+	// A different file already at the destination is the one thing library.Link
+	// refuses outright — it never overwrites, because the thing already there
+	// might be the good copy.
+	dir := filepath.Join(h.library, "Interstellar (2014)")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Interstellar (2014).en.srt"), []byte("someone else's"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := h.importer.Import(context.Background(), completed(content), h.dl)
+	if err != nil {
+		t.Fatalf("Import failed because of a subtitle: %v", err)
+	}
+	if got.Status != store.StatusImported {
+		t.Errorf("status = %q, want the film imported", got.Status)
+	}
+	if len(h.store.marked) != 1 {
+		t.Error("the film was not recorded")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Interstellar (2014).mkv")); err != nil {
+		t.Errorf("the feature is not in the library: %v", err)
+	}
+	if !strings.Contains(h.logs.String(), "could not link a subtitle") {
+		t.Errorf("the failure was not reported at all:\n%s", h.logs.String())
+	}
+	// And the file that was already there is untouched.
+	body, err := os.ReadFile(filepath.Join(dir, "Interstellar (2014).en.srt"))
+	if err != nil || string(body) != "someone else's" {
+		t.Errorf("the existing file was overwritten: %q, %v", body, err)
+	}
+}
+
+// A folder that cannot be read is the same trade: warn, and import the film.
+func TestAnUnreadableSubsFolderStillLeavesTheFilmImported(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 directory regardless")
+	}
+	h := newHarness(t)
+	content := h.download("release", "Movie.mkv")
+	subs := filepath.Join(content, "Subs")
+	writeSubtitle(t, subs, "2_English.srt")
+	if err := os.Chmod(subs, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(subs, 0o755) })
+
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err != nil {
+		t.Fatalf("Import failed because a Subs folder could not be read: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.library, "Interstellar (2014)", "Interstellar (2014).mkv")); err != nil {
+		t.Errorf("the feature is not in the library: %v", err)
+	}
+	if !strings.Contains(h.logs.String(), "could not look for subtitles") {
+		t.Errorf("the failure was not reported at all:\n%s", h.logs.String())
+	}
+}
+
+// A single-file torrent's content path is the file, and its directory is the
+// shared completed folder. Sweeping it would put another film's subtitles in
+// this film's library folder.
+func TestASingleFileImportDoesNotAdoptItsNeighboursSubtitles(t *testing.T) {
+	h := newHarness(t)
+	completedDir := filepath.Join(h.downloads, "complete", "curator")
+	file := filepath.Join(completedDir, "Interstellar.2014.mkv")
+	sparseFile(t, file, featureSize)
+	writeSubtitle(t, completedDir, "Some.Other.Film.en.srt")
+
+	if _, err := h.importer.Import(context.Background(), completed(file), h.dl); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	entries, err := os.ReadDir(filepath.Join(h.library, "Interstellar (2014)"))
+	if err != nil {
+		t.Fatalf("read the library folder: %v", err)
+	}
+	if got := names(entries); !equalStrings(got, []string{"Interstellar (2014).mkv"}) {
+		t.Errorf("the library folder holds %v, want only the feature", got)
+	}
+}
+
+// The property the AssertInside call in linkSidecars keeps true: a destination
+// is the FEATURE's name plus tokens out of closed tables, so a filename a
+// release group chose never reaches a path.
+func TestAHostileSubtitleNameLandsUnderTheFilmsOwnName(t *testing.T) {
+	h := newHarness(t)
+	content := h.download("release", "Movie.mkv")
+	// Not starting with a dot, on purpose: a name that did would be skipped as
+	// hidden before any of this, which would prove nothing.
+	writeSubtitle(t, content, "x..%2F..%2Fetc%2Fpasswd.en.srt")
+
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	dir := filepath.Join(h.library, "Interstellar (2014)")
+	if got := readNames(t, dir); !equalStrings(got, []string{"Interstellar (2014).en.srt", "Interstellar (2014).mkv"}) {
+		t.Errorf("the library folder holds %v", got)
+	}
+	// And nothing appeared beside the library root, which is where an escape
+	// with one fewer ".." would have landed.
+	if got := readNames(t, h.root); !equalStrings(got, []string{"downloads", "library"}) {
+		t.Errorf("something was written outside the library: %v", got)
+	}
+}
+
+// .ass and .ssa are LINKED. Whether a browser is offered them is internal/api's
+// decision, and the library must not be shaped by the player's limits — Jellyfin
+// and VLC render them properly.
+func TestAStyledSubtitleIsStillLinked(t *testing.T) {
+	h := newHarness(t)
+	content := h.download("release", "Movie.mkv")
+	writeSubtitle(t, content, "Movie.en.ass")
+	writeSubtitle(t, content, "Movie.fr.ssa")
+	writeSubtitle(t, content, "Movie.de.sub")
+	writeSubtitle(t, content, "Movie.es.vtt")
+
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	want := []string{
+		"Interstellar (2014).de.sub",
+		"Interstellar (2014).en.ass",
+		"Interstellar (2014).es.vtt",
+		"Interstellar (2014).fr.ssa",
+		"Interstellar (2014).mkv",
+	}
+	if got := readNames(t, filepath.Join(h.library, "Interstellar (2014)")); !equalStrings(got, want) {
+		t.Errorf("the library folder holds %v, want %v", got, want)
+	}
+}
+
+// The crashed-run retry path, for sidecars. D14 retries a failing import on
+// every tick, and a second pass finds its own links: library.Link treats a
+// destination that is already os.SameFile as success, so the count is the same
+// and the link count does not climb.
+func TestReImportingFindsItsOwnSidecarsAndDoesNotDuplicateThem(t *testing.T) {
+	h := newHarness(t)
+	content := h.download("release", "Movie.mkv")
+	writeSubtitle(t, content, "Movie.en.srt")
+	writeSubtitle(t, filepath.Join(content, "Subs"), "2_French.srt")
+	ctx := context.Background()
+
+	if _, err := h.importer.Import(ctx, completed(content), h.dl); err != nil {
+		t.Fatalf("first Import: %v", err)
+	}
+	if _, err := h.importer.Import(ctx, completed(content), h.dl); err != nil {
+		t.Fatalf("second Import: %v — this is the crashed-run retry path", err)
+	}
+
+	dir := filepath.Join(h.library, "Interstellar (2014)")
+	want := []string{"Interstellar (2014).en.srt", "Interstellar (2014).fr.srt", "Interstellar (2014).mkv"}
+	if got := readNames(t, dir); !equalStrings(got, want) {
+		t.Errorf("the library folder holds %v, want %v", got, want)
+	}
+	if n := nlinkOf(t, filepath.Join(dir, "Interstellar (2014).en.srt")); n != 2 {
+		t.Errorf("link count = %d after re-importing, want still 2", n)
+	}
+	if strings.Contains(h.logs.String(), "could not link a subtitle") {
+		t.Errorf("re-linking onto its own link was reported as a failure:\n%s", h.logs.String())
+	}
+	if got := strings.Count(h.logs.String(), "subtitles=2"); got != 2 {
+		t.Errorf("the count says %d imports linked two subtitles, want 2:\n%s", got, h.logs.String())
+	}
+}
+
+// A film with no subtitles is the ordinary case and must cost nothing and say
+// nothing.
+func TestAnImportWithNoSubtitlesIsSilent(t *testing.T) {
+	h := newHarness(t)
+	content := h.download("release", "Movie.mkv")
+
+	if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if strings.Contains(h.logs.String(), "subtitle") && !strings.Contains(h.logs.String(), "subtitles=0") {
+		t.Errorf("a film with no subtitles produced a subtitle line:\n%s", h.logs.String())
 	}
 }
 
@@ -647,4 +919,33 @@ func names(entries []os.DirEntry) []string {
 		out = append(out, e.Name())
 	}
 	return out
+}
+
+// readNames is names over a directory that has to be there. os.ReadDir sorts, so
+// the result is comparable against a written-out list.
+func readNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	return names(entries)
+}
+
+func equalStrings(got, want []string) bool { return slices.Equal(got, want) }
+
+// writeSubtitle creates a real (tiny) subtitle file, making its directory on the
+// way. Unlike the feature fixtures these are not sparse: subtitles have no size
+// floor, and a hardlink assertion wants an inode with something in it.
+func writeSubtitle(t *testing.T, dir, name string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	path := filepath.Join(dir, name)
+	body := "1\n00:00:01,000 --> 00:00:02,000\n" + name + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
 }

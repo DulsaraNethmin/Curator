@@ -36,8 +36,8 @@ and the movie screen already holds the id the stream URL needs.
 |---|---|---|---|
 | [T43](tasks/T43-stream.md) the stream endpoint | `internal/api/stream.go`, `internal/library/contain.go` | — | **built** |
 | [T44](tasks/T44-remux.md) remux | `internal/remux/`, the ffmpeg build | T43 | **built** — 2.2 MB |
-| [T45](tasks/T45-player.md) the player and the Jellyfin link | `web/app/movie/`, `internal/jellyfin` | T43, T44 | specified |
-| [T46](tasks/T46-subtitles.md) the subtitle sidecar | `internal/importer`, `internal/api/stream.go` | T43 | specified |
+| [T45](tasks/T45-player.md) the player and the Jellyfin link | `web/app/movie/`, `internal/jellyfin` | T43, T44 | **built** |
+| [T46](tasks/T46-subtitles.md) the subtitle sidecar | `internal/importer`, `internal/api/stream.go`, `internal/library/subtitles.go` | T43 | **built** |
 
 T46 depends on T43 rather than on nothing, as the plan had it: linking a `.srt` into the library is
 half of it, and the half that matters is serving it to a `<track>` element, which is the stream
@@ -330,6 +330,22 @@ process exits non-zero**, which is the one time anybody wants it.
 even here, and `.srt` is `application/x-subrip`, which no browser will render as a text track. The
 conversion is small — a `WEBVTT` header and `,` → `.` in the timestamps — and it happens **on serve**,
 not on import, so the file on disk stays the `.srt` that VLC and Jellyfin both already want.
+
+> **Built by T46, and it holds.** Chrome 151's own WebVTT parser accepted all 1,826 cues of a real
+> converted `.srt`, and VLC auto-detected all five renamed sidecars off the disk. Two things the
+> conversion needed that this paragraph does not say. The cue numbers have to go, and a cue number is
+> only recognisable as *digits alone immediately in front of a timing line* — a line of dialogue that
+> is a bare number is not one, and deleting it loses a line silently. And the timing line is rewritten
+> **strictly** rather than substituted: SubRip has no specification and files in the wild vary in the
+> spacing around the arrow and the width of the milliseconds field, while WebVTT does have one and a
+> browser drops a cue it cannot parse without reporting anything.
+
+**A sidecar's library name is built from a closed table, and that is the containment argument.**
+T46's destination is the *feature's* stem plus an ISO 639-1 code out of curator's own language table
+plus a flag out of another plus a known extension — so no part of the filename a release group chose
+reaches the path at all. `library.AssertInside` stays on that destination, but as the guard that
+keeps the property true rather than as the thing the safety rests on. The same distinction the
+containment check above already insists on: **be exact about what it buys.**
 
 **A remux carries every audio track and the browser takes the first.** `-c copy` copies all streams;
 `<video>` gives no way to choose. A film whose first track is a commentary or a foreign dub will play
