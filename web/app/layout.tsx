@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Nav } from '@/components/nav';
+import { Gate } from '@/components/gate';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -22,7 +23,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Nav />
           </div>
         </header>
-        <main className="shell">{children}</main>
+        {/* Gate stands between the shell and the page, not in front of the
+            whole document: the nav stays drawn while curator is locked, so the
+            URL a deep link asked for is still the URL in the bar when the
+            password is accepted. It renders the login form INSTEAD of children
+            rather than navigating anywhere — see components/gate.tsx. */}
+        <main className="shell">
+          <Gate>{children}</Gate>
+        </main>
       </body>
     </html>
   );

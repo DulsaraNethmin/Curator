@@ -156,7 +156,7 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 .linkbutton:hover:not(:disabled) { filter: brightness(1.15); }
 .linkbutton:disabled { color: var(--muted); text-decoration: none; }
 
-input, select {
+input, select, textarea {
   font: inherit;
   font-size: .92rem;
   padding: .45rem .6rem;
@@ -166,9 +166,21 @@ input, select {
   color: var(--text);
   min-width: 0;
 }
-input:focus, select:focus, button:focus-visible {
+input:focus, select:focus, textarea:focus, button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+/* A disabled field on the Settings screen is not a broken one — it is a value
+   the environment owns, and the note beside it says which variable. So it dims
+   rather than greys out: it has to stay readable, because reading it is the
+   entire reason it is drawn. */
+input:disabled, select:disabled, textarea:disabled {
+  background: var(--bg);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"] {
+  border-color: var(--error);
 }
 
 form.row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: 1.1rem; }
@@ -392,6 +404,67 @@ a.movie:hover .title { color: var(--accent); }
 .facts > div { display: flex; gap: .5rem; padding: .3rem 0; border-bottom: 1px solid var(--border); }
 .facts dt { color: var(--muted); flex: none; min-width: 8.5rem; }
 .facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* --- the settings form ------------------------------------------------------ */
+
+.section { padding: 0; margin-bottom: 1.1rem; }
+.section-head { padding: 1rem 1.1rem .2rem; }
+.section-head h2 { margin: 0 0 .25rem; }
+.section-head p { margin: 0; max-width: 52rem; }
+.section-warning { margin: .9rem 1.1rem 0; }
+
+.section-fields { padding: .4rem 1.1rem 0; }
+
+/* Label left, control right, and the label column wide enough for the longest
+   variable (QBIT_DOWNLOADS_PATH) so no name wraps mid-word. */
+.field {
+  display: grid;
+  grid-template-columns: 15rem 1fr;
+  gap: .35rem 1.25rem;
+  padding: .8rem 0;
+  border-bottom: 1px solid var(--border);
+  align-items: start;
+}
+.field:last-child { border-bottom: none; }
+.field-name label { display: block; font-weight: 550; overflow-wrap: anywhere; }
+.field-badges { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .35rem; }
+
+.field-control { display: flex; flex-direction: column; gap: .45rem; min-width: 0; }
+.field-control > input,
+.field-control > select,
+.field-control > textarea { width: 100%; max-width: 34rem; }
+.field-control textarea { resize: vertical; line-height: 1.45; }
+.field-control .check { display: flex; align-items: center; gap: .5rem; }
+.field-control .check input { width: auto; }
+
+.field-notes { display: flex; flex-direction: column; gap: .3rem; max-width: 46rem; }
+.field-notes p { margin: 0; }
+.field-error { color: var(--error); }
+
+.section-failure { margin: .4rem 1.1rem 0; }
+.section-save {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  flex-wrap: wrap;
+  padding: .85rem 1.1rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+h2.running { margin-top: 2.6rem; }
+
+@media (max-width: 46rem) {
+  .field { grid-template-columns: 1fr; gap: .5rem; }
+}
+
+/* --- the login gate --------------------------------------------------------- */
+
+.gate { max-width: 30rem; margin: 3rem auto 0; }
+.gate h1 { margin-top: 0; }
+.gate-form { display: flex; flex-direction: column; gap: .5rem; padding: 1.1rem; }
+.gate-form label { font-weight: 550; font-size: .9rem; }
+.gate-note { margin: .9rem 0 0; }
 
 /* --- logs ------------------------------------------------------------------ */
 

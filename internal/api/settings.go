@@ -186,6 +186,15 @@ type settingBody struct {
 	// is the second vocabulary this whole phase exists to avoid.
 	Env string `json:"env"`
 
+	// FileEnv is the second variable, for the one setting that has one. It is
+	// here for the same reason Env is, and it was missing: VPN_CONFIG_FILE is
+	// how a provider's .conf is actually supplied — it is what the developer's
+	// own .env sets — so a screen with only Env renders "set by VPN_CONFIG" at
+	// exactly the moment VPN_CONFIG_FILE is the variable to unset. envOwner()
+	// already names both in the 409 that arrives late; this is the same
+	// sentence arriving on time.
+	FileEnv string `json:"file_env,omitempty"`
+
 	Value      *string `json:"value,omitempty"`
 	Configured bool    `json:"configured"`
 	Source     string  `json:"source"`
@@ -459,6 +468,7 @@ func (s *Server) settingRows(ctx context.Context, set *Settings) ([]settingBody,
 			Options:    item.Options,
 			Secret:     item.Secret,
 			Env:        item.Env,
+			FileEnv:    item.FileEnv,
 			Configured: state.Configured,
 			Source:     string(state.Source),
 			// A value the environment owns is not editable here, and saying so

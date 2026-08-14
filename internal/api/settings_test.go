@@ -522,6 +522,18 @@ func TestSettingsReportsSourceAndEditability(t *testing.T) {
 	if got := field(t, byKey["library_movies"], "env"); got != `"LIBRARY_MOVIES"` {
 		t.Errorf("library_movies env = %s", got)
 	}
+
+	// And the second variable, for the one setting that has one. A screen that
+	// only knew Env would tell somebody running VPN_CONFIG_FILE to unset
+	// VPN_CONFIG — which is not set, and is not what is shadowing the field.
+	if got := field(t, byKey["vpn_config"], "file_env"); got != `"VPN_CONFIG_FILE"` {
+		t.Errorf("vpn_config file_env = %s", got)
+	}
+	if _, ok := byKey["library_movies"]["file_env"]; ok {
+		// omitempty, so a setting with one variable does not carry an empty
+		// second one for a screen to render as a blank "or".
+		t.Error("library_movies carries file_env; it has no second variable")
+	}
 }
 
 // pending is the honest half of "restart to apply".
