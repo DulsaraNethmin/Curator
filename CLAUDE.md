@@ -130,6 +130,31 @@ Name the branch, count the commits `main` is missing, and say plainly whether it
 `git branch --no-merged main` is the one `make status` reports. It is the question that actually gets
 asked at the end of a long day, and it is not one to reconstruct from a scrollback.
 
+**Then write the handoff, in the same message.** One task is one session: the next one starts in a
+fresh context that knows nothing, and what it is given is the difference between an hour of
+re-derivation and starting. Print it as a single copyable block, after the merge line, and write
+**what the repo cannot say for itself** — `make status` derives the phases, the tasks and the
+decision gaps, and repeating them wastes the only thing the block is for.
+
+The shape, in this order:
+
+1. **Where `main` is** — the SHA, whether it is clean and pushed, and any unmerged branch.
+2. **Read first, in this order** — `CLAUDE.md`, the plan, `docs/phase-N.md`, the task file, the
+   decisions that bind it. Name the files; do not summarise them.
+3. **What the last task shipped**, in a paragraph — and what it deliberately did not.
+4. **MEASURED — do not re-derive.** Numbers that were paid for: timings, sizes, exit addresses,
+   modes, what a live service actually answered. This is the most valuable section and the one that
+   is never reconstructable.
+5. **TRAPS found the hard way**, with the guard that now exists, so nobody removes it as dead code.
+6. **STILL OUTSTANDING** — the honest list, including the parts of a "done" task that are not.
+7. **NEXT** — the task, its file, and the one design question it will hit first.
+8. **ENVIRONMENT** — what is running, what is in `.env`, what must not be touched.
+9. **The git workflow**, in two lines: branch first, one commit per task, `make check` per commit,
+   no push, no merge, no `Co-Authored-By`.
+
+Written in the imperative, to the next session, not about it. A handoff that says "I implemented the
+registry" wastes a line that could have said "the registry holds no defaults, and here is why".
+
 **One commit per task**, each of which **builds, vets, tests and cross-compiles on its own**, so a
 bisect lands on one task and not on a half-finished phase. That is `make check`, which runs the UI
 export as well, because since phase 5 the binary embeds it:
