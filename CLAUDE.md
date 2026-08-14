@@ -117,6 +117,19 @@ work and name it for the work — `phase-2-indexers`, not `wip`.
 **Do not push, and do not merge.** Both are Nethmin's, including the merge into `main` and anything
 that reaches `origin`. Leave the finished branch local and say it is ready.
 
+**Say what to merge, at the end of every task.** Not at the end of a phase — every task, as soon as
+its commit passes `make check`. Last line of the message, in this shape:
+
+```
+merge: phase-7-settings-that-write — 2 commits (caa24ae, <next>), main does not have them
+hold:  nothing else outstanding
+```
+
+Name the branch, count the commits `main` is missing, and say plainly whether it is **ready** or
+**waiting** — and on waiting, what for. `git log --oneline main..HEAD` is the answer and
+`git branch --no-merged main` is the one `make status` reports. It is the question that actually gets
+asked at the end of a long day, and it is not one to reconstruct from a scrollback.
+
 **One commit per task**, each of which **builds, vets, tests and cross-compiles on its own**, so a
 bisect lands on one task and not on a half-finished phase. That is `make check`, which runs the UI
 export as well, because since phase 5 the binary embeds it:
