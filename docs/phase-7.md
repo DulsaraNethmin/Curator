@@ -218,6 +218,7 @@ Every row is stored, has one environment variable, and takes effect at the next 
 | Playback | `ffmpeg_path` · `FFMPEG_PATH` | path | **phase 8**; empty = look on `PATH`, not found = remux off |
 | Jellyfin | `jellyfin_url` · `JELLYFIN_URL` | url | |
 | | `jellyfin_api_key` · `JELLYFIN_API_KEY` | **secret** | |
+| | `jellyfin_public_url` · `JELLYFIN_PUBLIC_URL` | url | **phase 8**; empty = use `jellyfin_url` |
 | Access | `auth_enabled` · `AUTH_ENABLED` | bool | default `false`; **applies at once** |
 | | `auth_password` · `AUTH_PASSWORD` | **write-only, hashed** | applies at once |
 

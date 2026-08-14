@@ -217,11 +217,21 @@ func run() error {
 	// key the import still happens and only the "tell Jellyfin" step is skipped
 	// (decisions.md D15). Declared as the interface so the nil stays a nil
 	// interface rather than one holding a nil pointer.
-	var refresher importer.LibraryRefresher
+	// mediaServer is the same client the refresher is, kept so that phase 8's
+	// Open in Jellyfin link can use the one connection pool rather than opening
+	// a second. It is declared as the api interface for the same reason
+	// refresher is declared as the importer one: a nil must stay a nil
+	// interface and not one holding a nil pointer.
+	var (
+		refresher   importer.LibraryRefresher
+		mediaServer api.MediaServer
+	)
 	if cfg.JellyfinConfigured() {
-		refresher = jellyfin.New(cfg.JellyfinURL, cfg.JellyfinAPIKey, indexerHTTP)
+		client := jellyfin.New(cfg.JellyfinURL, cfg.JellyfinAPIKey, indexerHTTP)
+		refresher, mediaServer = client, client
 	} else {
-		log.Warn("JELLYFIN_API_KEY is unset: imports will happen, but Jellyfin will not be told to refresh")
+		log.Warn("JELLYFIN_API_KEY is unset: imports will happen, but Jellyfin will not be told to " +
+			"refresh, and a film's page will show no Open in Jellyfin link")
 	}
 
 	// The library root is the import destination as well as the scan source. An
@@ -297,7 +307,11 @@ func run() error {
 		WithTickets(auth).
 		// Nil when there is no ffmpeg, which is not a degraded mode: the stream
 		// endpoint is untouched and only the fallback is missing.
-		WithRemux(remuxer)
+		WithRemux(remuxer).
+		// The link a browser follows, which is NOT cfg.JellyfinURL whenever the
+		// two are in Docker together: curator reaches Jellyfin by a container
+		// name and a browser cannot resolve one (docs/phase-8.md).
+		WithJellyfin(mediaServer, cfg.JellyfinLink())
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
 	apiSrv.RegisterDownloads(mux)
@@ -598,6 +612,11 @@ func effective(cfg *config.Config) map[string]string {
 
 		"jellyfin_url":     cfg.JellyfinURL,
 		"jellyfin_api_key": cfg.JellyfinAPIKey,
+
+		// What was CONFIGURED, so empty is meaningful here too — "the browser
+		// reaches Jellyfin at jellyfin_url". Reporting cfg.JellyfinLink() would
+		// show a value nobody typed and make the field look already set.
+		"jellyfin_public_url": cfg.JellyfinPublicURL,
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/DulsaraNethmin/curator/internal/jellyfin"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
 )
@@ -29,6 +30,28 @@ type Browser interface {
 // WithBrowser attaches the catalogue and returns the server.
 func (s *Server) WithBrowser(b Browser) *Server {
 	s.browser = b
+	return s
+}
+
+// MediaServer is the Open in Jellyfin link, and it is deliberately one method.
+//
+// An interface here rather than *jellyfin.Client for the reason Browser is one:
+// the handler's behaviour when the lookup misses, when the key is revoked and
+// when the server is off is the interesting part, and all three are awkward to
+// produce from a real client. It is the fourth optional dependency with this
+// shape — a nil one means no link at all, which is the rule the rest of the UI
+// already follows for an unconfigured integration.
+type MediaServer interface {
+	// FindMovie answers the item for a TMDB id, or jellyfin.ErrNotFound.
+	FindMovie(ctx context.Context, tmdbID, year int) (jellyfin.Item, error)
+}
+
+// WithJellyfin attaches the media server the movie screen can link into, and
+// the base URL a BROWSER reaches it at — which is not the one curator uses when
+// the two are in Docker together (docs/phase-8.md, jellyfin_public_url).
+func (s *Server) WithJellyfin(m MediaServer, publicURL string) *Server {
+	s.jellyfin = m
+	s.jellyfinURL = publicURL
 	return s
 }
 
@@ -81,6 +104,20 @@ type movieDetailBody struct {
 	Studios          []string `json:"studios"`
 	Homepage         string   `json:"homepage"`
 	IMDBID           string   `json:"imdb_id"`
+
+	// JellyfinURL opens this film in Jellyfin, and it is ABSENT rather than
+	// empty in the two states that mean "there is no link": no Jellyfin
+	// configured, and a film curator does not have on disk. The UI draws
+	// nothing for an absent one — not a disabled button and not a tooltip
+	// explaining what you are missing, which is the rule the rest of the
+	// screens already follow for an unconfigured integration.
+	//
+	// It is a deep link to the item when the lookup found one and a link to a
+	// Jellyfin SEARCH for the title when it did not, and the UI is not told
+	// which. Both land somewhere useful, the difference is not one a user can
+	// act on, and a "we could not find it in Jellyfin" caption would be curator
+	// explaining its own plumbing.
+	JellyfinURL string `json:"jellyfin_url,omitempty"`
 }
 
 // discoverRow is one rail on the Discover screen.
@@ -231,6 +268,8 @@ func (s *Server) handleTMDBMovie(w http.ResponseWriter, r *http.Request) {
 		body.SpokenLanguages = []string{}
 	}
 
+	body.JellyfinURL = s.jellyfinLink(r.Context(), body)
+
 	s.respond(w, http.StatusOK, body)
 }
 
@@ -269,6 +308,48 @@ func toCard(m tmdb.Match, library map[int64]store.LibraryState) movieCard {
 	}
 	card.Library = body
 	return card
+}
+
+// jellyfinLink is the Open in Jellyfin URL for one film, or "" for no link.
+//
+// **It can never fail the page.** Every outcome except "found it" produces the
+// search link, which needs no network at all and cannot 404 — a revoked key, a
+// Jellyfin that is switched off, a film it has not indexed yet, and a film it
+// has never matched to TMDB all land on the same fallback. That is why this
+// returns a string and not an error: there is no failure here for a caller to
+// handle, only a better link and a worse one.
+//
+// **Only for a film curator has on disk.** Linking a film nobody owns into a
+// media server that certainly does not have it is a link to a search for
+// something that is not there. store.StatusImported is the test rather than
+// library != nil, because a wanted or downloading film is in the database and
+// not on the disk.
+func (s *Server) jellyfinLink(ctx context.Context, body movieDetailBody) string {
+	if s.jellyfin == nil || strings.TrimSpace(s.jellyfinURL) == "" {
+		return ""
+	}
+	if body.Library == nil || body.Library.State != store.StatusImported {
+		return ""
+	}
+
+	// The lookup carries its own deadline inside internal/jellyfin, because
+	// this one is in front of a person waiting for a page rather than behind a
+	// poller. Measured against the real 10.10.7 over a LAN: 5.5 ms.
+	item, err := s.jellyfin.FindMovie(ctx, body.TMDBID, body.Year)
+	if err == nil {
+		return jellyfin.WebItemURL(s.jellyfinURL, item)
+	}
+
+	// A miss is ordinary — Jellyfin scans on its own schedule, so a film
+	// imported a minute ago is legitimately not there yet — and it is not worth
+	// a line. Anything else is the operator's business: a revoked key and a
+	// Jellyfin that is off both silently downgrade the link, and "why is Open
+	// in Jellyfin always a search" is otherwise a question with no evidence.
+	if !errors.Is(err, jellyfin.ErrNotFound) {
+		s.log.Warn("jellyfin: could not look this film up, so the link is a search instead",
+			"tmdb_id", body.TMDBID, "err", err)
+	}
+	return jellyfin.WebSearchURL(s.jellyfinURL, body.Title)
 }
 
 // errTMDBUnconfigured is the no-key state, phrased the way ErrUnconfigured is

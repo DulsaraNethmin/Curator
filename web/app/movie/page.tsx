@@ -14,6 +14,7 @@ import {
 import { Empty, Failure, Working } from '@/components/states';
 import { LibraryBadge } from '@/components/movie-card';
 import { Releases } from '@/components/releases';
+import { Player } from '@/components/player';
 
 /**
  * The film's page: /movie/?id=299534.
@@ -146,14 +147,39 @@ function Movie() {
             {details.tagline && <p className="tagline">{details.tagline}</p>}
             {details.overview && <p className="overview">{details.overview}</p>}
 
-            {/* Nothing has touched an indexer up to this point, and nothing
-                will until this is pressed. That is what makes browsing free. */}
-            <button className="primary" onClick={findReleases} disabled={searching}>
-              {searching ? 'Searching…' : releases ? 'Search again' : 'Find releases'}
-            </button>
+            <div className="actions">
+              {/* Nothing has touched an indexer up to this point, and nothing
+                  will until this is pressed. That is what makes browsing free. */}
+              <button className="primary" onClick={findReleases} disabled={searching}>
+                {searching ? 'Searching…' : releases ? 'Search again' : 'Find releases'}
+              </button>
+
+              {/* Absent means there is nothing to draw — no Jellyfin
+                  configured, or a film curator does not have on disk. Not a
+                  disabled button and not a tooltip explaining what you are
+                  missing, which is the rule the rest of the UI follows. */}
+              {details.jellyfin_url && (
+                <a className="button" href={details.jellyfin_url} target="_blank" rel="noreferrer">
+                  Open in Jellyfin
+                </a>
+              )}
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Play appears ONLY for a film that is actually on disk — only imported
+          rows have a library_path, which is also why this can never reach a
+          partial download. The id it hands the player is library.movie_id,
+          curator's own movies.id, and NOT the TMDB id this page is addressed
+          by: they are different numbers and the wrong one is a 404 on a film
+          you can see (D21).
+
+          Below the hero rather than beside the poster, because what this
+          renders once it starts is a video and not a button. */}
+      {details.library?.state === 'imported' && (
+        <Player movieID={details.library.movie_id} title={details.title} />
+      )}
 
       <Facts details={details} />
 

@@ -86,6 +86,16 @@ type Server struct {
 	// POST .../playback omit remux_url and GET .../remux answer 404.
 	remux *remux.Remuxer
 
+	// jellyfin is the media server the movie screen links into, attached with
+	// WithJellyfin. Nil when JELLYFIN_API_KEY is unset, which is the state
+	// curator ships in, and it means the screen draws no link at all.
+	//
+	// jellyfinURL beside it is what a BROWSER can reach — jellyfin_public_url,
+	// falling back to jellyfin_url — and never the address curator itself uses,
+	// which inside Docker is a container name no browser can resolve.
+	jellyfin    MediaServer
+	jellyfinURL string
+
 	// tickets mints phase 8's playback credential, attached with WithTickets.
 	// Nil is the state every install without a password is in, and it is what
 	// makes POST .../playback answer with a plain URL.

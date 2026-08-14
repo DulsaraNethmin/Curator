@@ -955,3 +955,54 @@ precisely why the ticket is confined to the one case that has no other option.
 **With authentication off, which is the default, none of this exists.**
 `POST /api/movies/{id}/playback` answers with plain URLs and mints nothing, so the UI has one code
 path and every LAN install gets a Play button and never meets a ticket.
+
+---
+
+## D32 — The Jellyfin link is keyed on the TMDB id, not on the path
+
+**Status:** decided by measurement while building [T45](tasks/T45-player.md) · **Amends:**
+[D15](#d15--the-jellyfin-refresh-is-best-effort-and-its-key-is-optional)
+
+"Open in Jellyfin" needs Jellyfin's item id for a film curator has on disk. The obvious key is the
+path — curator knows where the file is, and Jellyfin reports a `Path` for every item. **That key
+does not work, and the reasons are structural rather than a version's bug.**
+
+**Measured against the real 10.10.7 at 192.168.1.26:8096, read-only, before any client was written.**
+`GET /Items?Recursive=true&IncludeItemTypes=Movie&Fields=Path` needs only `X-Emby-Token` and answers
+the whole library. Adding `Path=<the exact path Jellyfin itself reported>` answers the whole library
+too, and so does `Path=/nowhere/at/all.mkv`: **the parameter is dropped, not applied.** The same is
+true of `AnyProviderIdEquals=tmdb.210577` in either casing, with and without a `userId`. This is not
+an endpoint that filters badly — `years=2014` narrows 18 films to 1 and `searchTerm=Pulp` narrows
+them to 1 — it is two parameters that do not exist.
+
+**Even filtering client-side, the path is the wrong key.** Jellyfin's movies library location is
+`/movies`, its own bind mount; curator stores `/media/storage/media/movies/Title (Year)`. And
+Jellyfin's `Path` is the *file* while `library_path` is the *folder*, on purpose and for a reason
+that is not negotiable — the folder is the scanner's identity key. So the two strings disagree on
+the prefix and on what they point at, and they will disagree on every deployment where the two
+services see the disk through different mounts, which is the normal one rather than the exotic one.
+
+**So the key is the TMDB id, which both sides already have.** Every Jellyfin item carries
+`ProviderIds.Tmdb`, and the movie page is addressed by the TMDB id in the first place
+([D21](#d21--the-movie-page-is-movieid-because-the-ui-is-a-static-export)). It is exact, it survives
+a file being renamed or re-imported at a different quality, it is indifferent to how either side
+mounts the disk, and it steps around the ` - ` → `:` trap that a title match walks straight into —
+Jellyfin says `Spider-Man: No Way Home` and the folder on disk says `Spider-Man - No Way Home`.
+
+**`years=` is what keeps it one small request.** The whole library with `Fields=Path,ProviderIds` is
+21,386 bytes in 74 ms for 18 films, and that grows with the library; narrowed to the film's year it
+is 542 bytes in 5.5 ms and stays there. The narrowing is safe because both sides take the year from
+TMDB: all 18 of Jellyfin's `ProductionYear` values equal TMDB's `release_date` year, checked film by
+film against the live API rather than assumed.
+
+**Two honest edges.** A TMDB id is not unique in Jellyfin — `Iron Man` is in this library twice under
+`1726`, once under `/movies/` and once under `/media/downloads/complete/` — so the first match wins,
+because either lands on that film and a tie-break would be inventing a preference nobody expressed.
+And a film Jellyfin has not matched to TMDB has no `ProviderIds.Tmdb` at all, which is a miss; the
+fallback for every miss is the same, a link to a Jellyfin **search** for the title, which always
+lands somewhere useful and never 404s.
+
+**The narrowness rule survives, amended by exactly one method.** `internal/jellyfin` gains one
+read-only lookup and still cannot write, control playback, or read a user or a session — the
+household is watching that Jellyfin throughout this phase, and a method that does not exist cannot
+be called by mistake.

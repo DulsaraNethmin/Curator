@@ -116,9 +116,18 @@ than one film, it never expires, and it goes in the same recent-files list.
 
 ## No codec probe
 
-**The browser's `error` event is the codec authority.** Attempt direct play; on failure, attempt the
-remux; on failure, show the URL for VLC. curator never asks a file what is inside it in order to
-decide what to do with it.
+**The browser is the codec authority.** Attempt direct play; on failure, attempt the remux; on
+failure, show the URL for VLC. curator never asks a file what is inside it in order to decide what
+to do with it.
+
+> **Amended by T45, which drove this against a real Chrome 151.** This section originally said the
+> **`error` event** was the authority and that it "is never wrong". The rule below survives intact —
+> it came out of T45 stronger than it went in — but that *mechanism* is wrong and the wrong version
+> is dangerous, because it is the one a player gets built on. What the browser actually does is in
+> the traps section under "An `error` event is not the only way a source fails, and two of the three
+> ways are silent". In short: an unplayable file often fires **no error at all**, and
+> `canPlayType` was measured lying in **both** directions. The authority is whether a **picture**
+> appears, and that is what [T45](tasks/T45-player.md) waits for.
 
 This is a rule and not an optimisation, because the probe is the obvious next helpful thing and it is
 worth naming what it costs. It would mean running ffprobe on every play (or caching an answer that
@@ -126,10 +135,17 @@ goes stale when a file is replaced); it would mean maintaining a codec-support m
 per version, which is a table that is wrong the week it is written; and it would let curator's
 *opinion* about playability disagree with the browser sitting in front of the user, which is the one
 disagreement there is no way to resolve. The `error` event answers the actual question — can *this*
-browser play *this* file — for free, and it is never wrong.
+browser play *this* file — for free, and no table curator could keep can answer it.
 
-The trap it comes with is in the traps section: an `error` event does not say *why*, and a 401 looks
-exactly like an unsupported codec.
+**T45 measured the probe being wrong in both directions, which is the argument made twice over.**
+`canPlayType('video/x-matroska')` answers `"maybe"`, and `canPlayType('video/x-msvideo')` answers
+`""` — a flat no — for an AVI that **Chrome then played**. A probe that trusted the first would
+remux a file that plays; a probe that trusted the second would refuse one that works. The browser
+disagreeing with its own advertised capabilities is exactly the disagreement there is no way to
+resolve, and it is why nothing here asks.
+
+The traps it comes with are in the traps section: an `error` event does not say *why*, a 401 looks
+exactly like an unsupported codec — and an unplayable file frequently fires no `error` at all.
 
 ---
 
@@ -264,6 +280,35 @@ with `strconv.ParseInt`, so nothing traverses in from the request. What `AssertI
 `library_path` that points outside `LIBRARY_MOVIES`: a row written when the variable pointed
 somewhere else, a database restored beside a different library, a row edited by hand. That is a real
 failure and it is worth a 404 and a warning line; it is not the path-traversal defence it looks like.
+
+**An `error` event is not the only way a source fails, and two of the three ways are silent.**
+Measured by T45 in a real, visible Chrome 151 — the tab matters, because Chrome throttles media in a
+hidden one and an automated tab is hidden by default, which is what made an earlier reading of this
+inconclusive.
+
+1. **It can fire `error`.** The case this phase was designed around, and the least common of the
+   three in practice.
+2. **It can hang.** `loadstart`, then `stalled`, then nothing: no error, `networkState` 2,
+   `readyState` 0, indefinitely.
+3. **It can report success and play nothing.** Handed an MKV whose video is MPEG-4 Part 2 — or
+   ProRes, or FFV1, all three measured — Chrome fires `loadedmetadata`, `canplay` and `playing`,
+   reports `readyState` 4, and advances `currentTime` for ever, while `videoWidth` stays `0` and not
+   one frame is decoded. It plays the audio track and silently drops the video. **Nothing in the
+   event stream ever says so.** A player that waits for `error` waits for ever, and the user gets a
+   black rectangle making noise.
+
+So the test for a working source is a **picture** — `videoWidth > 0` — and not any event. The
+converse trap is just as real and cost a live regression: `loadedmetadata` also fires with
+`videoWidth` still `0` on a file that plays perfectly, filling it in a moment later. Deciding at
+either edge is wrong in one direction or the other, so T45 polls for a picture and gives a source
+that has announced metadata a **three-second** grace to produce one, under an absolute stall cap.
+
+**Probing the same URL a `<video>` is still streaming can queue behind it.** curator speaks HTTP/1.1
+with no TLS and no h2. Measured: the `HEAD` below took **20 seconds** instead of 4 ms, because it
+was ordered behind the element's own open `GET` on the same connection, and the whole fallback chain
+waited on it. The player aborts the failed source — `removeAttribute('src')` then `load()` — before
+it probes, which is also the only thing that stops a rejected film downloading in the background
+while the next one plays.
 
 **An `error` event does not say why, and a 401 looks exactly like a bad codec.** `MediaError.code`
 is `4` (`SRC_NOT_SUPPORTED`) for an unplayable container *and* for a response the element could not
