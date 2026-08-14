@@ -22,7 +22,9 @@ package secret
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -47,7 +49,13 @@ const keySize = 32
 var ErrNoKey = errors.New("secrets are stored but the key is missing")
 
 // Codec encrypts and decrypts one database's settings.
-type Codec struct{ aead cipher.AEAD }
+type Codec struct {
+	aead cipher.AEAD
+
+	// key is kept only so that Derive can answer. Nothing outside this package
+	// ever receives it.
+	key []byte
+}
 
 // New builds a codec from a raw 32-byte key.
 func New(key []byte) (*Codec, error) {
@@ -62,7 +70,24 @@ func New(key []byte) (*Codec, error) {
 	if err != nil {
 		return nil, fmt.Errorf("secret key: %w", err)
 	}
-	return &Codec{aead: aead}, nil
+	return &Codec{aead: aead, key: key}, nil
+}
+
+// Derive returns a subkey for another use of the same secret, one that cannot
+// decrypt anything this codec sealed.
+//
+// T41's signed session cookie is the caller: D25 keys it with "the secret T39
+// owns", and handing over that key itself would mean the authentication holder
+// could read a WireGuard config it has no business reading. HMAC-SHA256 under a
+// label is the cheapest thing that separates the two.
+//
+// It is DETERMINISTIC, which is the property the caller depends on rather than
+// an implementation detail: the same key file yields the same subkey, so a
+// cookie signed before a restart still verifies after one.
+func (c *Codec) Derive(label string) []byte {
+	mac := hmac.New(sha256.New, c.key)
+	mac.Write([]byte(label))
+	return mac.Sum(nil)
 }
 
 // Encrypt seals plaintext for the setting called name.

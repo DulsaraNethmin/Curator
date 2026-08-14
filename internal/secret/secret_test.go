@@ -226,3 +226,44 @@ func TestABadInlineKeyIsRefusedWithoutQuotingIt(t *testing.T) {
 		t.Fatal("a short key was accepted")
 	}
 }
+
+// Derive is what T41's cookie is signed with, and the two properties it is
+// depended on for are that it never changes and that it is not the key.
+func TestDeriveIsStableAndNotTheKey(t *testing.T) {
+	c := newTestCodec(t)
+
+	first := c.Derive("curator session v1") // internal/api.SessionLabel; this package must not import it
+	if len(first) != 32 {
+		t.Errorf("Derive returned %d bytes, want 32", len(first))
+	}
+
+	// Deterministic, which is not an implementation detail: it is what makes a
+	// cookie signed before a restart still verify after one, with no session
+	// table anywhere.
+	if !bytes.Equal(first, c.Derive("curator session v1")) {
+		t.Error("Derive is not deterministic: every restart would log everybody out")
+	}
+	if bytes.Equal(first, c.Derive("something else")) {
+		t.Error("two labels derived the same subkey")
+	}
+
+	// Not the key itself. A holder that could sign a cookie AND decrypt a
+	// WireGuard config would be the reason not to hand it anything at all.
+	key := make([]byte, keySize)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	if bytes.Equal(first, key) {
+		t.Error("Derive returned the key it was supposed to separate from")
+	}
+
+	// A different database's key gives a different subkey, which is what makes
+	// a session unforgeable by anyone who has not read the key file.
+	other, err := New(bytes.Repeat([]byte{7}, keySize))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if bytes.Equal(first, other.Derive("curator session v1")) {
+		t.Error("two different keys derived the same subkey")
+	}
+}

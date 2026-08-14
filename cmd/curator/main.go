@@ -231,13 +231,36 @@ func run() error {
 		WithImporter(imports).
 		WithGuard(guard)
 
-	// The read-only view phase 5 built, plus the two halves phase 7 adds: what
-	// every setting currently is, and where a change goes. Both are wiring and
-	// neither is a handler, which is why they are built here and passed in —
-	// internal/api still knows nothing about where a setting comes from.
+	// The password, read per request through one atomic holder. It is the one
+	// exception to "a written setting applies at the next start": a password
+	// that took effect after a restart would leave you unprotected until then,
+	// which inverts the point of setting one (docs/decisions.md D29). Attaching
+	// it to the settings view is what makes a write apply — T40 already calls
+	// Reload after a write that touched an Immediate setting.
+	//
+	// The session key is a subkey of the one that encrypts settings, so the
+	// cookie survives a restart without a session table, and the holder cannot
+	// decrypt a WireGuard config. A database restored without its key file has
+	// no codec, and the honest cost is that sessions then last until the
+	// process does.
+	var sessionKey []byte
+	if codec != nil {
+		sessionKey = codec.Derive(api.SessionLabel)
+	}
+	auth := api.NewAuth(sessionKey, authCredential(db, codec), log)
+	if err := auth.Reload(ctx); err != nil {
+		return err
+	}
+
+	// The read-only view phase 5 built, plus the three parts phase 7 adds: what
+	// every setting currently is, where a change goes, and the one change that
+	// does not wait for a restart. All three are wiring and none is a handler,
+	// which is why they are built here and passed in — internal/api still knows
+	// nothing about where a setting comes from.
 	view := settingsView(cfg, matcher, torrents, tunnel, indexerHTTP)
 	view.States = settingsStates(cfg, db, codec, log)
 	view.Writer = settingsWriter{db: db, codec: codec}
+	view.Access = auth
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
@@ -254,6 +277,7 @@ func run() error {
 	apiSrv.RegisterLogs(mux)
 	apiSrv.RegisterMovieDelete(mux)
 	apiSrv.RegisterBrowse(mux)
+	auth.Register(mux)
 
 	// The UI is mounted last and at "/", so it can never shadow an API pattern.
 	// Go 1.22 routing prefers the more specific pattern anyway, but the order is
@@ -287,8 +311,13 @@ func run() error {
 	}
 
 	srv := &http.Server{
-		Addr:              cfg.Addr(),
-		Handler:           mux,
+		Addr: cfg.Addr(),
+		// The whole mux, so the check runs BEFORE routing: a protected route
+		// with no credential answers 401 whether or not it exists, and nobody
+		// without the password can map the API by watching which one they get.
+		// /healthz and the static UI pass straight through — the middleware
+		// knows which paths it is in front of (docs/tasks/T41-auth.md).
+		Handler:           auth.Middleware(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -608,6 +637,51 @@ func settingsStates(cfg *config.Config, db *store.Store, codec *secret.Codec, lo
 			out[item.Key] = state
 		}
 		return out, nil
+	}
+}
+
+// authCredential reads the live authentication settings, per call.
+//
+// It is where the TWO comparison paths are decided, and they are two because of
+// the precedence rule rather than by choice: AUTH_PASSWORD in the environment
+// is what somebody typed, so it is compared in clear and is never hashed or
+// stored, while a password saved from the settings screen is already bcrypt by
+// the time settingsWriter has finished with it. internal/settings has decided
+// which of the two won before this function reads either — all this does is
+// name it, so the holder never has to guess whether a string is a hash.
+//
+// A stored auth_password is NOT encrypted and so is never unreadable: it is
+// hashed, which is D28's asymmetry — curator must be able to use a VPN key and
+// must never be able to read a password back.
+func authCredential(db *store.Store, codec *secret.Codec) api.CredentialSource {
+	enabledKey, passwordKey := settings.Key("AUTH_ENABLED"), settings.Key("AUTH_PASSWORD")
+
+	return func(ctx context.Context) (api.Credential, error) {
+		raw, err := db.Settings(ctx)
+		if err != nil {
+			return api.Credential{}, err
+		}
+		values, _ := secret.Reveal(codec, raw)
+		resolution, err := settings.Resolve(values)
+		if err != nil {
+			return api.Credential{}, err
+		}
+
+		// An unparseable stored value reads as off, which is the safe reading
+		// of a boolean that should not exist: every write through the API is
+		// checked by config.ParseBool before it lands, so this can only be a
+		// row written by hand.
+		enabled, _ := config.ParseBool(enabledKey, resolution.Values[enabledKey])
+		credential := api.Credential{Enabled: enabled}
+
+		switch password := resolution.Values[passwordKey]; {
+		case password == "":
+		case resolution.Sources[passwordKey] == settings.SourceEnv:
+			credential.Password = password
+		default:
+			credential.Hash = password
+		}
+		return credential, nil
 	}
 }
 
