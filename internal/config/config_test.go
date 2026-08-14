@@ -23,7 +23,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("QBIT_CATEGORY", "")
 	t.Setenv("DOWNLOAD_POLL_INTERVAL", "")
 
-	cfg, err := Load()
+	cfg, err := Load(nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestLoadDefaults(t *testing.T) {
 func TestQBittorrentBackendStillNeedsCredentials(t *testing.T) {
 	t.Setenv("TORRENT_BACKEND", "qbittorrent")
 
-	cfg, err := Load()
+	cfg, err := Load(nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestQBittorrentBackendStillNeedsCredentials(t *testing.T) {
 func TestUnknownBackendIsAStartupError(t *testing.T) {
 	t.Setenv("TORRENT_BACKEND", "transmission")
 
-	_, err := Load()
+	_, err := Load(nil)
 	if err == nil {
 		t.Fatal("Load accepted an unknown TORRENT_BACKEND")
 	}
@@ -118,7 +118,7 @@ func TestUnknownBackendIsAStartupError(t *testing.T) {
 func TestVPNRequiredCanBeTurnedOff(t *testing.T) {
 	t.Setenv("VPN_REQUIRED", "false")
 
-	cfg, err := Load()
+	cfg, err := Load(nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestVPNRequiredCanBeTurnedOff(t *testing.T) {
 	}
 
 	t.Setenv("VPN_REQUIRED", "perhaps")
-	if _, err := Load(); err == nil {
+	if _, err := Load(nil); err == nil {
 		t.Fatal("Load accepted VPN_REQUIRED=perhaps")
 	}
 }
@@ -135,7 +135,7 @@ func TestVPNRequiredCanBeTurnedOff(t *testing.T) {
 // A VPN_CONFIG_FILE that cannot be read is an error, not a silent "no VPN".
 func TestVPNConfigFileMustBeReadable(t *testing.T) {
 	t.Setenv("VPN_CONFIG_FILE", "/nowhere/wg0.conf")
-	if _, err := Load(); err == nil {
+	if _, err := Load(nil); err == nil {
 		t.Fatal("Load accepted an unreadable VPN_CONFIG_FILE")
 	}
 
@@ -144,7 +144,7 @@ func TestVPNConfigFileMustBeReadable(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	t.Setenv("VPN_CONFIG_FILE", path)
-	cfg, err := Load()
+	cfg, err := Load(nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestVPNConfigFileMustBeReadable(t *testing.T) {
 func TestDownloadsConfigured(t *testing.T) {
 	t.Setenv("QBIT_USER", "nethmin")
 	t.Setenv("QBIT_PASS", "secret")
-	cfg, err := Load()
+	cfg, err := Load(nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestLoadReadsEnvironment(t *testing.T) {
 	t.Setenv("QBIT_CATEGORY", "curator-test")
 	t.Setenv("DOWNLOAD_POLL_INTERVAL", "5s")
 
-	cfg, err := Load()
+	cfg, err := Load(nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestLoadReadsEnvironment(t *testing.T) {
 // An empty key is a normal state: the library still scans, only matching stops.
 func TestEmptyTMDBKeyIsNotAnError(t *testing.T) {
 	t.Setenv("TMDB_API_KEY", "")
-	cfg, err := Load()
+	cfg, err := Load(nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestLoadInvalid(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(tt.key, tt.value)
-			if _, err := Load(); err == nil {
+			if _, err := Load(nil); err == nil {
 				t.Fatalf("%s=%q: want error, got nil", tt.key, tt.value)
 			}
 		})
@@ -273,7 +273,7 @@ func TestImportDefaults(t *testing.T) {
 	t.Setenv("JELLYFIN_URL", "")
 	t.Setenv("JELLYFIN_API_KEY", "")
 
-	cfg, err := Load()
+	cfg, err := Load(nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestImportReadsEnvironment(t *testing.T) {
 	t.Setenv("JELLYFIN_URL", "http://jellyfin:8096")
 	t.Setenv("JELLYFIN_API_KEY", "abc123")
 
-	cfg, err := Load()
+	cfg, err := Load(nil)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -326,5 +326,145 @@ func TestImportReadsEnvironment(t *testing.T) {
 	}
 	if !cfg.JellyfinConfigured() {
 		t.Error("JellyfinConfigured() = false with a URL and a key")
+	}
+}
+
+// --- phase 7: the two-step start-up ---------------------------------------
+
+func TestBootstrapDefaults(t *testing.T) {
+	t.Setenv("DB_PATH", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_BUFFER_LINES", "")
+	t.Setenv("SECRET_KEY", "")
+	t.Setenv("SECRET_KEY_FILE", "")
+
+	boot, err := Bootstrap()
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if boot.DBPath != defaultDBPath {
+		t.Errorf("DBPath = %q, want %q", boot.DBPath, defaultDBPath)
+	}
+	if boot.LogLevel != slog.LevelInfo {
+		t.Errorf("LogLevel = %v, want info", boot.LogLevel)
+	}
+	if boot.LogBufferLines != defaultLogBufferLines {
+		t.Errorf("LogBufferLines = %d", boot.LogBufferLines)
+	}
+}
+
+// The key rides beside the database, so it lands in whatever volume the
+// database is in and survives the same restart.
+func TestBootstrapPutsTheKeyBesideTheDatabase(t *testing.T) {
+	t.Setenv("SECRET_KEY_FILE", "")
+	t.Setenv("DB_PATH", filepath.Join("/var", "lib", "curator", "curator.db"))
+
+	boot, err := Bootstrap()
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	want := filepath.Join("/var", "lib", "curator", "curator.key")
+	if boot.SecretKeyFile != want {
+		t.Errorf("SecretKeyFile = %q, want %q", boot.SecretKeyFile, want)
+	}
+
+	// And an explicit path wins, for anyone who wants the key out of the volume
+	// the database is backed up from.
+	t.Setenv("SECRET_KEY_FILE", "/run/secrets/curator")
+	boot, err = Bootstrap()
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if boot.SecretKeyFile != "/run/secrets/curator" {
+		t.Errorf("SecretKeyFile = %q", boot.SecretKeyFile)
+	}
+}
+
+// The contract of the argument: precedence is applied by internal/settings
+// before Load ever sees it, so a resolved value is the answer and the
+// environment is only the fall-back for callers that passed nil.
+func TestLoadReadsTheResolvedSettings(t *testing.T) {
+	t.Setenv("QBIT_USER", "")
+	t.Setenv("SEARCH_TIMEOUT", "")
+	t.Setenv("TORRENT_BACKEND", "")
+
+	cfg, err := Load(map[string]string{
+		"qbit_user":       "nethmin",
+		"search_timeout":  "45s",
+		"torrent_backend": "qbittorrent",
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.QBitUser != "nethmin" {
+		t.Errorf("QBitUser = %q", cfg.QBitUser)
+	}
+	if cfg.SearchTimeout != 45*time.Second {
+		t.Errorf("SearchTimeout = %v, want 45s", cfg.SearchTimeout)
+	}
+	if cfg.TorrentBackend != BackendQBittorrent {
+		t.Errorf("TorrentBackend = %q", cfg.TorrentBackend)
+	}
+}
+
+// Load(nil) is phases 1-6 exactly, which is what keeps every existing caller
+// and every existing test meaning what it meant.
+func TestLoadNilReadsTheEnvironmentAlone(t *testing.T) {
+	t.Setenv("QBIT_USER", "from-the-environment")
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.QBitUser != "from-the-environment" {
+		t.Errorf("QBitUser = %q", cfg.QBitUser)
+	}
+}
+
+// Anything needed in order to reach the settings screen is not settable from
+// the settings screen. internal/settings refuses to store these because they
+// are not in its registry; this is the same guarantee one layer down, so a row
+// written into the table by hand cannot move the database or silence the log.
+func TestLoadIgnoresSettingsThatTheEnvironmentOwnsAlone(t *testing.T) {
+	t.Setenv("PORT", "")
+	t.Setenv("DB_PATH", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_BUFFER_LINES", "")
+
+	cfg, err := Load(map[string]string{
+		"db_path":          "/tmp/somewhere-else.db",
+		"port":             "9999",
+		"log_level":        "error",
+		"log_buffer_lines": "1",
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DBPath != defaultDBPath {
+		t.Errorf("DBPath = %q: a stored row moved the database", cfg.DBPath)
+	}
+	if cfg.Port != defaultPort {
+		t.Errorf("Port = %d: a stored row moved the listener", cfg.Port)
+	}
+	if cfg.LogLevel != slog.LevelInfo {
+		t.Errorf("LogLevel = %v: a stored row changed the log level", cfg.LogLevel)
+	}
+	if cfg.LogBufferLines != defaultLogBufferLines {
+		t.Errorf("LogBufferLines = %d: a stored row shrank the log", cfg.LogBufferLines)
+	}
+}
+
+// The tunnel arrives as a file, as a variable, or now as a stored setting, and
+// the resolved value already accounts for the first two.
+func TestLoadTakesTheTunnelFromTheResolvedSettings(t *testing.T) {
+	t.Setenv("VPN_CONFIG", "")
+	t.Setenv("VPN_CONFIG_FILE", "")
+
+	cfg, err := Load(map[string]string{"vpn_config": "[Interface]\nPrivateKey = x\n"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.VPNConfigured() {
+		t.Error("VPNConfigured() = false with a stored tunnel")
 	}
 }
