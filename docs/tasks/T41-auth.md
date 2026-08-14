@@ -118,3 +118,69 @@ Then live, on the laptop:
 - turn it on from the UI, watch the browser be asked to log in **without a restart**
 - log in, restart curator, and confirm the session survives — the cookie is signed, not stored
 - `curl -u :thepassword localhost:8090/api/movies` works, and the same without `-u` is `401`
+
+## What it shipped, beyond the sketch above
+
+**The holder has two comparison paths, and the cookie needed an answer for both.** D25 signs the
+session with "the current password hash", which a stored `auth_password` has and an `AUTH_PASSWORD`
+in the environment does not — it is compared in clear and is never hashed or stored. Hashing it on
+the way in would have been the obvious fix and is the wrong one: bcrypt salts, so the hash of the
+same environment variable differs on every start, and every restart would end every session — the
+one thing step 4 says a signed cookie exists to avoid. So the signing key is mixed from **whichever
+credential this process holds**: the stored bcrypt string, or the environment's plaintext. Both are
+deterministic across a restart and both change when the password changes, which is the only property
+the design actually needs. `api.Credential` carries the two as separate fields so the holder never
+has to guess whether a string is a hash, and `cmd/curator`'s `authCredential` — which can see
+`Resolution.Sources` — is what decides which one is set.
+
+**The session key is a subkey, via a new `secret.Codec.Derive(label)`.** T39's key decrypts a
+WireGuard config; the authentication holder has no business being able to do that, so it gets
+`HMAC-SHA256(key, "curator session v1")` and the key itself never leaves `internal/secret`. Derive
+is deterministic on purpose and a test says so — that is what makes a cookie survive a restart with
+no session table. A database restored without its key file has no codec, so the holder generates a
+random key: logging in still works, and the honest cost is that sessions then last as long as the
+process.
+
+**`auth_enabled: true` with no password is NOT enforced.** T40 refuses the write that would create
+it, so it means a row edited by hand or an `-e AUTH_ENABLED=true` with the password forgotten.
+Enforcing it would answer 401 to every request including the screen that fixes it, for what is a
+typo; and nobody unauthenticated can cause it, because with authentication already on, the write
+that would clear the password is itself behind the password. It logs a warning naming both ways to
+fix it, and `GET /api/auth` reports `required: false` so the UI does not draw a login form nothing
+can satisfy.
+
+**Every password comparison serialises, not only the login endpoint's.** Step 7 names the login
+endpoint, but the cheaper place to hit the same bcrypt is `Authorization: Basic` against any
+protected route — an attacker would not use the form. One mutex covers both, held across the
+comparison and across the delay, so a correct password never sleeps and twenty wrong ones take
+twenty delays. The cost of the choice, stated: one `curl -u` request pays one bcrypt, and two
+concurrent ones are serial.
+
+**A request that presented nothing is not logged.** "Log every failure" would otherwise mean logging
+every request a browser makes before it logs in — several per page load, into the ring buffer
+`/api/logs` serves. A rejected credential (wrong password, expired or re-signed cookie) is logged
+with the remote address and a reason; an absent one is answered and not recorded.
+
+**No `WWW-Authenticate` header on the 401.** It would make browsers raise the native Basic dialog
+that D25 rejects for being impossible to log out of, and it buys nothing: `curl -u` sends the header
+preemptively rather than waiting for a challenge, which is what the live check confirmed.
+
+**No logout endpoint.** T42's `web/lib/api.ts` names `authStatus` and `login` and nothing else, and
+a cookie with `MaxAge` and no server state has nothing to invalidate that clearing it does not do.
+
+**Measured live**, on 8097 against a scratch database, with the UI still unbuilt (T42):
+
+- `PUT /api/settings {"auth_password": …, "auth_enabled": "true"}` → the **next** request to
+  `/api/movies` is 401. No restart. `/healthz` and `/` stay 200, and `/api/nonsense` is 401 exactly
+  as `/api/movies` is
+- `curl -u :password` and `curl -u anyone:password` are both 200; no `-u` is 401
+- logged in, killed the process, started it again: the same cookie jar is still 200 — the cookie is
+  signed, not stored
+- changed the password: the old cookie **and** the old password are 401 on the next request, with
+  nothing evicted anywhere
+- `AUTH_ENABLED=false` in the environment beat the stored `true` with the stored row untouched;
+  `AUTH_PASSWORD` beat the stored hash, and the screen was then refused (409) from writing one
+- the table holds `$2a$10$…`; `grep -c` of the password in `GET /api/settings` is 0, and of `$2a$`
+  is also 0 — the hash is not a value a screen may see either
+- the log tail holds two `auth failed` lines with `remote` and a reason, and `grep -c` of either
+  password attempted is 0

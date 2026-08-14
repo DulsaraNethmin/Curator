@@ -254,13 +254,23 @@ func (s *Server) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) respond(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("content-type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(body); err != nil {
+	if err := writeJSON(w, status, body); err != nil {
 		// The status line is already sent, so this cannot become an error
 		// response; log it rather than pretending the write succeeded.
 		s.log.Error("write response", "err", err)
 	}
+}
+
+// writeJSON writes one JSON body with a status.
+//
+// Package-level rather than a method because the authentication middleware runs
+// in front of the mux, with no Server to reach for — and a 401 that answered in
+// a different shape from every other error would be a second envelope for
+// clients to learn.
+func writeJSON(w http.ResponseWriter, status int, body any) error {
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(status)
+	return json.NewEncoder(w).Encode(body)
 }
 
 // fail writes {"error": "..."} with a real status code. minter once returned 200
