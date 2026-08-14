@@ -10,8 +10,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/DulsaraNethmin/curator/internal/api"
 	"github.com/DulsaraNethmin/curator/internal/config"
@@ -72,7 +75,7 @@ func run() error {
 	}
 	defer db.Close()
 
-	resolution, unreadable, err := resolveSettings(ctx, db, boot)
+	resolution, codec, unreadable, err := resolveSettings(ctx, db, boot)
 	if err != nil {
 		return err
 	}
@@ -131,15 +134,32 @@ func run() error {
 	// a Cloudflare challenge and cannot share a ten-second timeout.
 	indexerHTTP := &http.Client{Timeout: indexerHTTPTimeout}
 
+	// This is the line that honours the three indexer toggles, and until phase 7
+	// nothing did: they were stored settings with no reader, which is a switch
+	// that looks like it works. An indexer that is off is never constructed, so
+	// turning 1337x off is also what stops minter being launched for a service
+	// nobody asked for (docs/tasks/T40-settings-api.md step 9).
+	//
 	// 1337x is the only indexer wrapped in the cache: its pages cost ~9 s and a
 	// browser each, while YTS and TPB answer in under a second and would only be
 	// made stale by caching.
-	x1337 := indexer.NewCache(indexer.NewX1337(indexer.NewMinter(cfg.MinterURL)), cfg.SearchCacheTTL)
-	aggregator := indexer.NewAggregator(
-		[]indexer.Indexer{indexer.NewYTS(indexerHTTP), indexer.NewTPB(indexerHTTP), x1337},
-		cfg.SearchTimeout,
-		cfg.SearchCacheTTL,
-	)
+	var indexers []indexer.Indexer
+	if cfg.IndexerYTS {
+		indexers = append(indexers, indexer.NewYTS(indexerHTTP))
+	}
+	if cfg.IndexerTPB {
+		indexers = append(indexers, indexer.NewTPB(indexerHTTP))
+	}
+	if cfg.IndexerX1337 {
+		indexers = append(indexers, indexer.NewCache(indexer.NewX1337(indexer.NewMinter(cfg.MinterURL)), cfg.SearchCacheTTL))
+	}
+	if len(indexers) == 0 {
+		// Not a startup failure, the same posture as every other unconfigured
+		// integration: the library still scans and the screen that turns one
+		// back on is still reachable.
+		log.Warn("every indexer is disabled: search will find nothing until one is enabled in Settings")
+	}
+	aggregator := indexer.NewAggregator(indexers, cfg.SearchTimeout, cfg.SearchCacheTTL)
 
 	// The download backend, and the tunnel under it if there is one.
 	//
@@ -211,12 +231,20 @@ func run() error {
 		WithImporter(imports).
 		WithGuard(guard)
 
+	// The read-only view phase 5 built, plus the two halves phase 7 adds: what
+	// every setting currently is, and where a change goes. Both are wiring and
+	// neither is a handler, which is why they are built here and passed in —
+	// internal/api still knows nothing about where a setting comes from.
+	view := settingsView(cfg, matcher, torrents, tunnel, indexerHTTP)
+	view.States = settingsStates(cfg, db, codec, log)
+	view.Writer = settingsWriter{db: db, codec: codec}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	apiSrv := api.New(db, api.ScannerFunc(library.Scan), matcher, cfg.LibraryMovies, log).
 		WithSearch(aggregator).
 		WithDownloads(downloads).
-		WithSettings(settingsView(cfg, matcher, torrents, tunnel, indexerHTTP)).
+		WithSettings(view).
 		WithLogs(logBuffer).
 		WithBrowser(browser)
 	apiSrv.Register(mux)
@@ -298,10 +326,15 @@ func run() error {
 // values in again — while a malformed SECRET_KEY is a typo in something
 // somebody set deliberately, and starting with it ignored would encrypt the
 // next write under a key nobody meant.
-func resolveSettings(ctx context.Context, db *store.Store, boot config.Boot) (settings.Resolution, []string, error) {
+//
+// It also returns the codec, because the settings screen writes through the
+// same one: a secret typed into the form is encrypted with the key this call
+// found or generated, and a second Open on the write path could generate a
+// second key.
+func resolveSettings(ctx context.Context, db *store.Store, boot config.Boot) (settings.Resolution, *secret.Codec, []string, error) {
 	raw, err := db.Settings(ctx)
 	if err != nil {
-		return settings.Resolution{}, nil, err
+		return settings.Resolution{}, nil, nil, err
 	}
 
 	// A key is generated only when there is nothing it could orphan. With
@@ -310,12 +343,12 @@ func resolveSettings(ctx context.Context, db *store.Store, boot config.Boot) (se
 	// into invisible (docs/decisions.md D28).
 	codec, err := secret.Open(boot.SecretKey, boot.SecretKeyFile, !secret.AnyEncrypted(raw))
 	if err != nil && !errors.Is(err, secret.ErrNoKey) {
-		return settings.Resolution{}, nil, err
+		return settings.Resolution{}, nil, nil, err
 	}
 
 	values, unreadable := secret.Reveal(codec, raw)
 	resolution, err := settings.Resolve(values)
-	return resolution, unreadable, err
+	return resolution, codec, unreadable, err
 }
 
 // healthz is deliberately cheap: no database, no disk. It answers "is the process
@@ -358,10 +391,13 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 		Configured: cfg.VPNConfigured(),
 		Detail:     vpnDetail(cfg, tunnel),
 	}, {
+		// Only when 1337x is on. minter exists for that one indexer, so with it
+		// disabled there is nothing to be configured for and nothing to probe —
+		// probing anyway would launch a browser for a service nobody asked for.
 		Name:       "minter",
 		Env:        "MINTER_URL",
-		Configured: cfg.MinterURL != "",
-		Detail:     "1337x only; YTS and TPB need no browser",
+		Configured: cfg.IndexerX1337 && cfg.MinterURL != "",
+		Detail:     minterDetail(cfg),
 	}, {
 		Name:       "jellyfin",
 		Env:        "JELLYFIN_API_KEY",
@@ -403,7 +439,7 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 			return nil
 		}
 	}
-	if cfg.MinterURL != "" {
+	if cfg.IndexerX1337 && cfg.MinterURL != "" {
 		integrations[3].Probe = func(ctx context.Context) error {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.MinterURL, nil)
 			if err != nil {
@@ -436,6 +472,200 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 			"search_cache_ttl": cfg.SearchCacheTTL.String(),
 		},
 	}
+}
+
+// effective is what this process is actually running on, by setting key.
+//
+// A map literal, beside the paths and intervals ones above it, and deliberately
+// boring. It cannot drift from what curator is doing because it IS what curator
+// is doing — read straight off the *config.Config every other line in this file
+// was built from — which is why internal/settings' registry holds no defaults
+// of its own to disagree with it (docs/phase-7.md).
+//
+// The two Access settings are not here. They have no *config.Config field
+// because nothing at start-up uses them: the password applies on the next
+// request rather than at the next start (docs/decisions.md D29), so what is live
+// for those two is what is stored, and settingsStates reads them from the
+// resolution instead.
+func effective(cfg *config.Config) map[string]string {
+	return map[string]string{
+		"library_movies": cfg.LibraryMovies,
+		"tmdb_api_key":   cfg.TMDBAPIKey,
+
+		"torrent_backend":        cfg.TorrentBackend,
+		"downloads_dir":          cfg.DownloadsDir,
+		"torrent_max_conns":      number(cfg.TorrentMaxConns),
+		"torrent_port":           number(cfg.TorrentPort),
+		"torrent_stall_after":    cfg.TorrentStallAfter.String(),
+		"download_poll_interval": cfg.DownloadPollInterval.String(),
+
+		"qbit_url":            cfg.QBitURL,
+		"qbit_user":           cfg.QBitUser,
+		"qbit_pass":           cfg.QBitPass,
+		"qbit_category":       cfg.QBitCategory,
+		"downloads_path":      cfg.DownloadsPath,
+		"qbit_downloads_path": cfg.QBitDownloadsPath,
+
+		"vpn_config":       cfg.VPNConfig,
+		"vpn_required":     strconv.FormatBool(cfg.VPNRequired),
+		"vpn_ip_check_url": cfg.VPNIPCheckURL,
+
+		"indexer_yts":      strconv.FormatBool(cfg.IndexerYTS),
+		"indexer_tpb":      strconv.FormatBool(cfg.IndexerTPB),
+		"indexer_1337x":    strconv.FormatBool(cfg.IndexerX1337),
+		"minter_url":       cfg.MinterURL,
+		"search_timeout":   cfg.SearchTimeout.String(),
+		"search_cache_ttl": cfg.SearchCacheTTL.String(),
+
+		"jellyfin_url":     cfg.JellyfinURL,
+		"jellyfin_api_key": cfg.JellyfinAPIKey,
+	}
+}
+
+// number renders an int setting, with zero meaning unset rather than zero.
+//
+// TORRENT_MAX_CONNS is the case that decides this: config leaves it at 0 when
+// the variable is absent and internal/engine substitutes its own documented
+// default, so reporting "0" would name a value nothing is running on. An empty
+// string is the honest answer and the one the form wants — an empty box, with
+// source `default` beside it.
+func number(value int) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.Itoa(value)
+}
+
+// settingsStates reads what every setting currently is, per request.
+//
+// Per request, not once: a PUT changes the answer, and the GET a moment later
+// has to report what is now saved and waiting. It reads the table, decrypts,
+// resolves against the environment — which wins — and then answers the question
+// D29 makes the interesting one, "what would the next start use", by calling the
+// function that will actually run at the next start rather than a second one
+// that agrees with it today.
+//
+// No secret value leaves this closure. internal/api never receives one, which
+// is what makes "no secret in the response" a property of the wiring as well as
+// of the handler.
+func settingsStates(cfg *config.Config, db *store.Store, codec *secret.Codec, log *slog.Logger) func(context.Context) (map[string]api.SettingState, error) {
+	live := effective(cfg)
+
+	return func(ctx context.Context) (map[string]api.SettingState, error) {
+		raw, err := db.Settings(ctx)
+		if err != nil {
+			return nil, err
+		}
+		values, unreadable := secret.Reveal(codec, raw)
+		resolution, err := settings.Resolve(values)
+		if err != nil {
+			return nil, err
+		}
+
+		next := live
+		if loaded, err := config.Load(resolution.Values); err == nil {
+			next = effective(loaded)
+		} else {
+			// A stored value that will not load cannot be reported as pending,
+			// but it must not take the settings screen down with it — that is
+			// the screen it gets fixed from. It can only happen to a row written
+			// by hand, because every write through this API is validated by the
+			// parser that would reject it here.
+			log.Warn("the stored settings do not load; nothing is reported as pending", "err", err)
+		}
+
+		unreadableKeys := make(map[string]bool, len(unreadable))
+		for _, key := range unreadable {
+			unreadableKeys[key] = true
+		}
+
+		out := make(map[string]api.SettingState, len(raw))
+		for _, item := range settings.All() {
+			state := api.SettingState{
+				Source:     resolution.Sources[item.Key],
+				Configured: resolution.Values[item.Key] != "",
+				Unreadable: unreadableKeys[item.Key],
+			}
+
+			value, pending := live[item.Key], next[item.Key]
+			if item.Immediate {
+				// Applied on the next request, so what is stored is already
+				// live and there is never anything pending about it.
+				value, pending = resolution.Values[item.Key], resolution.Values[item.Key]
+			}
+			state.Value = value
+			if value != pending {
+				state.PendingChange = true
+				state.Pending = pending
+			}
+
+			if item.Secret {
+				// Stripped before they cross the boundary. The handler omits
+				// them again; this is the half that means a handler bug has
+				// nothing to leak (docs/decisions.md D17, D28).
+				state.Value, state.Pending = "", ""
+			}
+			out[item.Key] = state
+		}
+		return out, nil
+	}
+}
+
+// settingsWriter turns a validated settings change into rows.
+//
+// It is where D28's two asymmetries live: a secret is encrypted because curator
+// has to be able to *use* it, and the password is hashed because curator only
+// ever has to *compare* one. internal/api does neither and knows about neither —
+// it hands over plaintext, and this decides what actually reaches the table.
+type settingsWriter struct {
+	db *store.Store
+
+	// codec is nil only when the database holds ciphertext and its key is gone.
+	// Writing a secret then is refused rather than re-keyed: generating a key on
+	// top of values that were already there is what would turn "restored without
+	// the key file" from recoverable into invisible.
+	codec *secret.Codec
+}
+
+func (w settingsWriter) WriteSettings(ctx context.Context, set map[string]string, clear []string) error {
+	out := make(map[string]string, len(set))
+	for key, value := range set {
+		item, ok := settings.Get(key)
+		if !ok {
+			// The handler refuses these already; this is the second door on the
+			// same room, because a row nothing reads is a row nobody finds again.
+			return fmt.Errorf("%s: not a setting", key)
+		}
+
+		switch {
+		case item.Kind == settings.KindPassword:
+			// bcrypt, one-way, and the only thing in this file that is not
+			// reversible on purpose. T41 owns the comparison and the cost
+			// measurement on the Pi; storing it any other way would leave that
+			// task a migration to write.
+			hashed, err := bcrypt.GenerateFromPassword([]byte(value), bcrypt.DefaultCost)
+			if err != nil {
+				// Names the key and never the value: this is on its way to a log.
+				return fmt.Errorf("hash %s: %w", key, err)
+			}
+			out[key] = string(hashed)
+
+		case item.Secret:
+			if w.codec == nil {
+				return fmt.Errorf("%s: there is no secret key to encrypt it with — "+
+					"restore the key file beside the database, or set SECRET_KEY", key)
+			}
+			sealed, err := w.codec.Encrypt(key, value)
+			if err != nil {
+				return err
+			}
+			out[key] = sealed
+
+		default:
+			out[key] = value
+		}
+	}
+	return w.db.SetSettings(ctx, out, clear)
 }
 
 // startTunnel brings up the WireGuard device the engine will be bound to.
@@ -524,6 +754,13 @@ func detailIf(cond bool, detail string) string {
 		return detail
 	}
 	return ""
+}
+
+func minterDetail(cfg *config.Config) string {
+	if !cfg.IndexerX1337 {
+		return "not used: 1337x is disabled, and YTS and TPB need no browser"
+	}
+	return "1337x only; YTS and TPB need no browser"
 }
 
 func jellyfinDetail(configured bool) string {
