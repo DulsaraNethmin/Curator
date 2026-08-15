@@ -80,6 +80,10 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.alreadyHave(w, r, body.TMDBID) {
+		return
+	}
+
 	saved, err := s.dispatcher.Dispatch(r.Context(), download.Request{
 		ReleaseID: strings.TrimSpace(body.ReleaseID),
 		Title:     strings.TrimSpace(body.Title),
@@ -92,6 +96,56 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respond(w, http.StatusCreated, saved)
+}
+
+// alreadyHave refuses a dispatch for a film that is already in the library, and
+// writes the refusal itself. It reports whether it answered the request.
+//
+// It runs BEFORE the dispatcher, so a refusal costs nothing and leaves nothing
+// behind: no indexer is asked to resolve the release id and no torrent is added.
+//
+// **The gate is `imported`, and deliberately nothing else.** A film mid-download
+// is not "already downloaded", and leaving that path open is right on its own
+// merits — when a torrent stalls, searching for and dispatching a DIFFERENT
+// release is precisely what you want to do. A non-nil library_path is required
+// alongside the status so that a half-written row refuses nothing rather than
+// refusing wrongly.
+//
+// LibraryByTMDBID rather than a targeted lookup, and that is the point: it is the
+// same query behind "already in your library" on a poster, so the badge and the
+// server's refusal cannot drift apart. It costs one query with no placeholders on
+// a request that is about to launch a torrent.
+//
+// **The hole is deliberate and worth naming.** tmdb_id is optional on this body:
+// /search's release-name mode dispatches without one, so nothing here can fire
+// for it. With no TMDB id there is no reliable identity for a film, and matching
+// on title and year would be TMDB matching done in the wrong place — the same
+// line UpsertWantedMovie already draws.
+func (s *Server) alreadyHave(w http.ResponseWriter, r *http.Request, tmdbID *int64) bool {
+	if tmdbID == nil {
+		return false
+	}
+
+	library, err := s.store.LibraryByTMDBID(r.Context())
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return true
+	}
+
+	state, ok := library[*tmdbID]
+	if !ok || state.Status != store.StatusImported || state.LibraryPath == nil {
+		return false
+	}
+
+	// A request that deliberately did nothing has to say so somewhere a human
+	// looks, and /api/logs is a screen. Info, not Warn: nothing is wrong.
+	s.log.Info("refused a download: curator already has this film",
+		"tmdb_id", *tmdbID, "movie_id", state.MovieID, "library_path", *state.LibraryPath)
+	// 409 for the reason failDelete's ErrWrongCategory is one: the request is
+	// well-formed, curator is working, and the refusal is deliberate.
+	s.fail(w, http.StatusConflict, fmt.Errorf(
+		"curator already has this film, at %s — delete it first to replace it", *state.LibraryPath))
+	return true
 }
 
 // failDispatch maps a dispatch failure onto a status code that says whose problem

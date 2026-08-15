@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,8 +73,13 @@ func (f *fakeDispatcher) Import(_ context.Context, hash string) (store.Movie, er
 
 func newDownloadServer(t *testing.T, d Dispatcher) http.Handler {
 	t.Helper()
+	return newDownloadServerWithStore(t, d, newFakeStore())
+}
+
+func newDownloadServerWithStore(t *testing.T, d Dispatcher, st Store) http.Handler {
+	t.Helper()
 	mux := http.NewServeMux()
-	srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, quiet()).
+	srv := New(st, ScannerFunc(nil), nil, fixtureRoot, quiet()).
 		WithSearch(&fakeSearcher{}).
 		WithDownloads(d)
 	srv.Register(mux)
@@ -270,5 +276,108 @@ func TestEarlierPhasesSurviveDownloadRegistration(t *testing.T) {
 	}
 	if rec := do(t, h, http.MethodGet, "/api/movies/999"); rec.Code != http.StatusNotFound {
 		t.Errorf("/api/movies/999 = %d, want 404", rec.Code)
+	}
+}
+
+// --- refusing a film curator already has ------------------------------------
+
+// dispatchBodyWithTMDB is the movie page's dispatch: it carries the TMDB id,
+// which is what makes the check below possible at all.
+const dispatchBodyWithTMDB = `{"release_id":"3f2a9c1b7d4e5a60","title":"Interstellar","year":2014,"tmdb_id":157336}`
+
+func libraryStore(state store.LibraryState) *fakeStore {
+	st := newFakeStore()
+	st.library = map[int64]store.LibraryState{157336: state}
+	return st
+}
+
+func TestDispatchRefusesAFilmAlreadyInTheLibrary(t *testing.T) {
+	path := "/library/movies/Interstellar (2014)"
+	fake := &fakeDispatcher{saved: savedDownload()}
+	st := libraryStore(store.LibraryState{MovieID: 7, Status: store.StatusImported, LibraryPath: &path})
+
+	rec := post(t, newDownloadServerWithStore(t, fake, st), "/api/downloads", dispatchBodyWithTMDB)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	assertErrorBody(t, rec)
+	if !strings.Contains(rec.Body.String(), path) {
+		t.Errorf("body = %s, want it to name the path", rec.Body.String())
+	}
+	// The refusal has to cost nothing: no release resolved, no torrent added.
+	if fake.dispatches != 0 {
+		t.Errorf("dispatched %d times, want 0 — a refusal must leave nothing behind", fake.dispatches)
+	}
+}
+
+// The one an over-eager reading of "do not download what we already have" would
+// break. A film mid-download is not "already downloaded", and when a torrent
+// stalls, dispatching a different release is exactly what you want to do.
+func TestDispatchAllowsAFilmThatIsStillDownloading(t *testing.T) {
+	fake := &fakeDispatcher{saved: savedDownload()}
+	st := libraryStore(store.LibraryState{MovieID: 7, Status: store.StatusWanted, Downloading: true})
+
+	rec := post(t, newDownloadServerWithStore(t, fake, st), "/api/downloads", dispatchBodyWithTMDB)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — a stalled torrent has to be replaceable: %s", rec.Code, rec.Body.String())
+	}
+	if fake.dispatches != 1 {
+		t.Errorf("dispatched %d times, want 1", fake.dispatches)
+	}
+}
+
+func TestDispatchAllowsAWantedFilm(t *testing.T) {
+	fake := &fakeDispatcher{saved: savedDownload()}
+	st := libraryStore(store.LibraryState{MovieID: 7, Status: store.StatusWanted})
+
+	rec := post(t, newDownloadServerWithStore(t, fake, st), "/api/downloads", dispatchBodyWithTMDB)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Status and library_path agree in every row the importer writes. Requiring both
+// means a half-written row refuses nothing rather than refusing wrongly.
+func TestDispatchAllowsAnImportedRowWithNoLibraryPath(t *testing.T) {
+	fake := &fakeDispatcher{saved: savedDownload()}
+	st := libraryStore(store.LibraryState{MovieID: 7, Status: store.StatusImported}) // LibraryPath nil
+
+	rec := post(t, newDownloadServerWithStore(t, fake, st), "/api/downloads", dispatchBodyWithTMDB)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The deliberate hole, named so it is found by reading rather than by surprise:
+// /search's release-name mode dispatches with no tmdb_id, and there is no
+// reliable identity for a film without one.
+func TestDispatchWithNoTMDBIDIsNotRefused(t *testing.T) {
+	path := "/library/movies/Interstellar (2014)"
+	fake := &fakeDispatcher{saved: savedDownload()}
+	st := libraryStore(store.LibraryState{MovieID: 7, Status: store.StatusImported, LibraryPath: &path})
+
+	rec := post(t, newDownloadServerWithStore(t, fake, st), "/api/downloads", dispatchBody)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — nothing can be concluded without a tmdb_id: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDispatchLibraryLookupFailureIs500(t *testing.T) {
+	fake := &fakeDispatcher{saved: savedDownload()}
+	st := newFakeStore()
+	st.libraryErr = errors.New("database is locked")
+
+	rec := post(t, newDownloadServerWithStore(t, fake, st), "/api/downloads", dispatchBodyWithTMDB)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	if fake.dispatches != 0 {
+		t.Error("dispatched despite not knowing whether the film is already there")
 	}
 }

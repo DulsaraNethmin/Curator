@@ -368,7 +368,9 @@ export type AuthStatus = {
  *        the system whose correct fix is a user action
  *   503  the integration is unconfigured; say which variable to set
  *   502  a dependency is down; it is not our fault and not the user's
- *   409  the torrent has not finished
+ *   409  a deliberate refusal of a well-formed request: the torrent has not
+ *        finished, the torrent is not curator's to delete, or curator already
+ *        has this film in the library
  *   422  nothing importable, or a title that cannot be a folder name
  */
 export class ApiError extends Error {
