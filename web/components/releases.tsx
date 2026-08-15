@@ -207,9 +207,19 @@ export function Releases({
  * not an error page — but the failure has to be named. An aggregator that
  * silently hides a downed indexer is how somebody concludes a film does not
  * exist.
+ *
+ * **Two kinds of not-working, and they are separated here because they need
+ * different sentences.** An indexer that is *down* is something to retry or
+ * wait out. An indexer that is *unconfigured* never started at all — the
+ * companion service it needs is not running — and no amount of waiting fixes
+ * it; one line in a terminal does. Telling somebody 1337x is "down" when minter
+ * was never started sends them to look at the wrong thing entirely
+ * (docs/tasks/T49-minter-on-demand.md).
  */
 function Indexers({ result }: { result: SearchResult }) {
-  const failed = result.indexers.filter((i) => !i.ok);
+  const broken = result.indexers.filter((i) => !i.ok);
+  const unconfigured = broken.filter((i) => i.unconfigured);
+  const failed = broken.filter((i) => !i.unconfigured);
 
   return (
     <>
@@ -226,11 +236,26 @@ function Indexers({ result }: { result: SearchResult }) {
           <span key={indexer.name}>
             {i > 0 && ' · '}
             <span className={indexer.ok ? '' : 'badge bad'}>
-              {indexer.name} {indexer.ok ? indexer.count : 'failed'}
+              {indexer.name}{' '}
+              {indexer.ok ? indexer.count : indexer.unconfigured ? 'not set up' : 'failed'}
             </span>
           </span>
         ))}
       </p>
+
+      {unconfigured.length > 0 && (
+        <div className="banner warn">
+          <strong>
+            {unconfigured.map((i) => i.name).join(', ')}{' '}
+            {unconfigured.length === 1 ? 'is switched on but not set up' : 'are switched on but not set up'}{' '}
+            — these results are partial
+          </strong>
+          <span>
+            {unconfigured.length === 1 ? 'It needs' : 'They need'} a companion service that is not
+            running. Settings → Indexers has the one line to start it, and says whether it came up.
+          </span>
+        </div>
+      )}
 
       {failed.length > 0 && (
         <div className="banner warn">

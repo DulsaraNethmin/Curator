@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
@@ -230,6 +231,52 @@ func TestSearchEveryIndexerFailingIsStill200(t *testing.T) {
 		if ix.OK || ix.Error == "" {
 			t.Errorf("outcome %+v, want a failure carrying its cause", ix)
 		}
+	}
+}
+
+// An indexer whose companion service is not running is reported as
+// unconfigured, and the flag reaches the client rather than being inferred from
+// the error string (docs/tasks/T49-minter-on-demand.md). A screen matching on a
+// message is a screen that stops working the first time the message improves.
+func TestSearchReportsAnUnconfiguredIndexer(t *testing.T) {
+	fake := &fakeSearcher{result: indexer.SearchResult{
+		Releases: []indexer.Found{
+			searchFound("a", "Dune", "1080p", 500, "magnet:?xt=urn:btih:aa", "yts"),
+		},
+		Outcomes: []indexer.Outcome{
+			{Name: "yts", OK: true, Count: 1},
+			{Name: "1337x", OK: false, Unconfigured: true,
+				Error: "1337x search: calling minter at http://minter:8191 (is it running?): connection refused"},
+		},
+	}}
+
+	rec := do(t, newSearchServer(t, fake), http.MethodGet, "/api/search?title=Dune")
+	got := decodeSearch(t, rec)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	// The healthy indexer's release still comes back: an unconfigured source
+	// does not empty a good search, it only stops looking like one.
+	if len(got.Releases) != 1 {
+		t.Fatalf("releases = %d, want the 1 from yts", len(got.Releases))
+	}
+
+	byName := map[string]indexerBody{}
+	for _, ix := range got.Indexers {
+		byName[ix.Name] = ix
+	}
+	if ix := byName["1337x"]; ix.OK || !ix.Unconfigured {
+		t.Errorf("1337x outcome = %+v, want ok=false and unconfigured=true", ix)
+	}
+	if ix := byName["yts"]; !ix.OK || ix.Unconfigured {
+		t.Errorf("yts outcome = %+v, want ok=true and unconfigured=false", ix)
+	}
+
+	// omitempty, so the key is absent on every ordinary outcome rather than
+	// reading as a state each indexer has.
+	if strings.Count(rec.Body.String(), `"unconfigured"`) != 1 {
+		t.Errorf("body = %s, want exactly one unconfigured key", rec.Body.String())
 	}
 }
 

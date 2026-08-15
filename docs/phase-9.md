@@ -345,7 +345,37 @@ Jellyfin and **leaves curator running** rather than recreating it, so the pasted
 and safe to run against a live install.
 
 **`1337x` is a legal compose profile name** — it parses, checked, because profile names must start
-alphanumeric and a leading digit looked like a plausible way to lose an afternoon.
+alphanumeric and a leading digit looked like a plausible way to lose an afternoon. Measured end to
+end since: `docker compose config --services` lists `curator` alone, `--profile 1337x` lists
+`curator` and `minter`, and the pasted line starts minter and leaves curator running.
+
+**minter's root answers `307`, so "did anything answer" is not a probe.** Measured on
+`sha-adc1d6a`. The check before T49 was a `GET` of the base URL accepting any response at all,
+which that redirect passes — and so would a router's admin page or curator itself. `GET /health`
+answers `200` with `{"ok":true,"user_agent":"…Firefox/151.0","detail":{}}` — 119 bytes — and the
+user agent is the one field that proves this is minter's patched browser rather than something else
+on the port, which is [D2](decisions.md#d2--fetch-pages-through-the-browser-do-not-reuse-cookies)'s
+whole argument. `Probe` therefore reads `/health` and asserts `ok`, and a **non-200 is not reported
+as unreachable**: something is listening, and "run the compose command again" is the wrong
+instruction for a service that is already answering.
+
+**The probe must not go through `Fetch`, and the timeout is why.** minter's own client carries 240 s
+because it has to outlast a real browser clearing a challenge. A probe that inherited it would hang
+the Settings screen for four minutes against a dead address, and a probe that *rendered a page*
+would wake a Firefox — ~9 s, per poll — to answer "are you up". `Probe` is a separate method with
+the caller's context on it for exactly those two reasons.
+
+**A probe one second after a container restart can answer `unreachable` once.** Seen: curator
+restarted, answered `unreachable`, and answered `ready` on the next poll with nothing else changed.
+The screen polls rather than checking once, so it corrects itself in one interval — but a flow that
+checked a single time after a restart would report a healthy minter as missing.
+
+**`docker compose --profile 1337x up -d` is only additive if the environment matches.** compose's
+"leaves curator running rather than recreating it" holds when the second command is run with the
+same variables as the first. Run `CURATOR_PORT=8092 docker compose up -d` and then the bare profile
+line, and compose sees a changed port, recreates curator, and fails to bind the default — which
+reads as the profile command breaking the install. It is the pasted line's one sharp edge and it
+only bites people who moved the port.
 
 **A long-running dev server does not pick up a merge**, which is [T62](tasks/T62-make-restart.md)'s
 whole reason for existing and cost most of a session once already: 8090 served a `go run` binary from
@@ -374,6 +404,32 @@ That is the same shape, the same failure mode, and one fewer concept.
 longer takes, and the reasoning that killed it is recorded where it is now load-bearing, in
 [D34](decisions.md#d34--curator-provisions-a-jellyfin-it-brought-up-and-never-rewrites-one-somebody-is-already-watching)'s
 alternatives.
+
+### Two things that were wrong before T49 could be right — **built and measured 2026-08-15**
+
+Writing the probe found both, and neither was visible from the laptop this is developed on. Both
+are the same failure in different clothes: the flow tells you to run one line, you run it, and the
+screen still says no.
+
+**`1337x` was on by default, and it needed a container nobody had started.** Phase 7 defaulted all
+three indexers on so that an unset value meant what curator did before those variables existed —
+correct then, and wrong for a product a stranger installs with one command. Every fresh bundle
+would have reported an indexer it could not use on every search, for a feature nobody had asked
+for. It now defaults **off**, which is also what makes the screen's "switch it on and here is the
+line to run" a flow rather than an apology. YTS and TPB are plain JSON and keep the default they
+had. Nobody who set `INDEXER_1337X` explicitly, in either place, is affected.
+
+**Inside the bundle, curator looked for minter at `127.0.0.1:8191` — its own container.** The image
+defaults to the laptop address, which is right on a laptop, and `compose.yaml` set nothing. So the
+pasted line started minter, minter answered perfectly on the network, and curator reported it
+unreachable for ever. `compose.yaml` now sets `MINTER_URL: http://minter:8191`, and **that is not
+the same call as `JELLYFIN_URL`, which it still deliberately does not set.** The difference is which
+direction the value travels: curator *writes* `jellyfin_url` — T65 records where it provisioned one,
+T66 records one you typed — so an environment value would beat what the flow just stored
+([D28](decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api))
+and the screen would silently ignore its own result. Nothing writes `minter_url`. It is a fact about
+this network's topology, which is the compose file's to state, and the Settings row reads
+`environment` and is locked — which is the truth.
 
 ---
 

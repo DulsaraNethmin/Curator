@@ -579,6 +579,20 @@ h2.running { margin-top: 2.6rem; }
 .playback-form ol { margin: .5rem 0 0; padding-left: 1.2rem; }
 .playback-form li { margin-bottom: .25rem; }
 
+/* minter, inside the Indexers section (T49).
+   Indented and ruled off from the fields above it, because it is not one: the
+   toggle is what you control and whether minter is answering is a fact about
+   the world. Reusing .field would have put it in the grid and made it look like
+   a seventh setting. */
+.minter-status {
+  margin: .2rem 1.1rem 0;
+  padding: .9rem 0 .2rem;
+  border-top: 1px solid var(--border);
+}
+.minter-status h3 { margin: 0 0 .35rem; font-weight: 600; }
+.minter-status p { margin: 0 0 .7rem; }
+.minter-status .banner { margin-bottom: .3rem; }
+
 /* The pasted line. Selectable and wrapping: on a LAN address there is no
    secure context, so navigator.clipboard is undefined and selecting it by hand
    is the fallback the copy button falls back to. */

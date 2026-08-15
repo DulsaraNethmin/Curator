@@ -119,6 +119,10 @@ type Server struct {
 	// (docs/decisions.md D34).
 	jellyfinSetup *JellyfinSetup
 
+	// indexers is phase 9's Indexers screen, attached with WithIndexers. It
+	// holds minter's probe and nothing that can fetch a page through it.
+	indexers *IndexerSetup
+
 	// tickets mints phase 8's playback credential, attached with WithTickets.
 	// Nil is the state every install without a password is in, and it is what
 	// makes POST .../playback answer with a plain URL.

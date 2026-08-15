@@ -9,6 +9,7 @@ import {
   type JellyfinProvisioned,
   type SettingsResult,
 } from '@/lib/api';
+import { Copyable } from './copyable';
 
 /**
  * How do you want to watch?
@@ -327,55 +328,6 @@ function Command({ probe }: { probe: JellyfinProbe | null }) {
         </p>
       )}
     </>
-  );
-}
-
-/**
- * A command with a copy button that works without TLS.
- *
- * `navigator.clipboard` is undefined outside a secure context, and this product
- * is served over plain HTTP on a LAN address by design (D25) — so the copy
- * button is unavailable on exactly the install this screen was written for. It
- * falls back to selecting the text, which is one keystroke from the same
- * result, and says so rather than failing silently.
- */
-function Copyable({ text }: { text: string }) {
-  const [state, setState] = useState<'idle' | 'copied' | 'select'>('idle');
-  const box = useRef<HTMLElement>(null);
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(text);
-      setState('copied');
-    } catch {
-      // No clipboard, so select it instead and let the keyboard finish.
-      const node = box.current;
-      if (node) {
-        const range = document.createRange();
-        range.selectNodeContents(node);
-        const selection = window.getSelection();
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-      }
-      setState('select');
-    }
-  }
-
-  return (
-    <div className="row" style={{ alignItems: 'center', gap: '.75rem', flexWrap: 'wrap' }}>
-      <code className="mono command" ref={box}>
-        {text}
-      </code>
-      <button type="button" onClick={() => void copy()}>
-        Copy
-      </button>
-      {state === 'copied' && <span className="small muted">copied</span>}
-      {state === 'select' && (
-        <span className="small muted">
-          selected — press ⌘C or Ctrl+C. (Copying needs HTTPS, and this page is not served over it.)
-        </span>
-      )}
-    </div>
   );
 }
 

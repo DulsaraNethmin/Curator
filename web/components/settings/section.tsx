@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { ApiError, api, type Setting, type SettingsResult } from '@/lib/api';
-import { Field } from './field';
+import { Field, baseline } from './field';
 
 /**
  * One group of settings, with its own Save.
@@ -22,12 +22,28 @@ export function Section({
   title,
   blurb,
   warning,
+  extra,
   settings,
   onSaved,
 }: {
   title: string;
   blurb?: string;
   warning?: React.ReactNode;
+  /**
+   * Something to draw under the fields that is not a field.
+   *
+   * A function of the section's **effective** values — what the controls are
+   * showing right now, edits included — rather than a plain node, because the
+   * one caller needs exactly that: turning 1337x on has to show minter's
+   * command straight away, and the value that says so is the unsaved edit and
+   * not anything the server has been told about yet.
+   *
+   * It sits below the fields and above Save on purpose. It is not part of the
+   * transaction and never contributes to `changes`; it is the answer to "and is
+   * the thing this setting needs actually there?", which belongs beside the
+   * setting rather than in the table at the bottom of the page.
+   */
+  extra?: (values: Record<string, string>) => React.ReactNode;
   settings: Setting[];
   onSaved: (next: SettingsResult) => void;
 }) {
@@ -134,6 +150,12 @@ export function Section({
           />
         ))}
       </div>
+
+      {extra?.(
+        Object.fromEntries(
+          settings.map((setting) => [setting.key, edits[setting.key] ?? baseline(setting)]),
+        ),
+      )}
 
       {failure && (
         <div className="banner error section-failure" role="alert">

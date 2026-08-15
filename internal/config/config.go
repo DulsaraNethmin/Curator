@@ -369,11 +369,25 @@ func Load(resolved map[string]string) (*Config, error) {
 		// defaults to optional is a slogan (docs/decisions.md D27).
 		VPNRequired: true,
 
-		// Every indexer on by default: these three variables are new in phase 7,
-		// so an unset value has to mean what curator did before they existed.
+		// The two that need nothing are on by default; the one that needs a
+		// second container is not.
+		//
+		// All three were on in phase 7, so that an unset value meant what
+		// curator did before these variables existed. Phase 9 changes what the
+		// default has to be true of: the product is now a bundle a stranger
+		// installs with one command, and 1337x cannot work in that install
+		// until minter has been started by a second one
+		// (docs/tasks/T49-minter-on-demand.md, which forbids this being on by
+		// default in as many words). Leaving it on means every fresh install
+		// reports an indexer it cannot use on every search, forever, for a
+		// feature nobody asked for.
+		//
+		// YTS and TPB are plain JSON over the tunnel and need nothing, so they
+		// keep the default they had. Nobody who explicitly set INDEXER_1337X —
+		// in the environment or in the store — is affected either way.
 		IndexerYTS:   true,
 		IndexerTPB:   true,
-		IndexerX1337: true,
+		IndexerX1337: false,
 	}
 
 	// Parsed from the raw value rather than from a pre-lowered copy, so the

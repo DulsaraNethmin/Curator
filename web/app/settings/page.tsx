@@ -5,6 +5,8 @@ import { api, type Setting, type SettingsResult } from '@/lib/api';
 import { Failure, Working } from '@/components/states';
 import { Section } from '@/components/settings/section';
 import { Playback } from '@/components/settings/playback';
+import { MinterStatus } from '@/components/settings/minter';
+import { truthy } from '@/components/settings/field';
 
 /**
  * Settings, in two halves that answer two different questions.
@@ -80,6 +82,7 @@ export default function Settings() {
             title={groups[group]?.title ?? group}
             blurb={groups[group]?.blurb}
             warning={groups[group]?.warning}
+            extra={groups[group]?.extra}
             settings={fields}
             onSaved={setSettings}
           />
@@ -218,11 +221,23 @@ function groupsOf(rows: Setting[]): { group: string; settings: Setting[] }[] {
 }
 
 /**
- * Prose, and only prose. A group that is not here still renders — with its own
- * name as the heading — so this table is what a section *says*, never whether
- * it exists.
+ * Prose, and only prose — with one exception, and it is marked.
+ *
+ * A group that is not here still renders — with its own name as the heading —
+ * so this table is what a section *says*, never whether it exists.
  */
-const groups: Record<string, { title: string; blurb?: string; warning?: React.ReactNode }> = {
+const groups: Record<
+  string,
+  {
+    title: string;
+    blurb?: string;
+    warning?: React.ReactNode;
+    /** The exception. See the `indexers` entry: one group needs something under
+     * its fields that is not a field, and it needs to read the values the
+     * controls are showing rather than the ones the server was last told. */
+    extra?: (values: Record<string, string>) => React.ReactNode;
+  }
+> = {
   library: {
     title: 'Library',
     blurb: 'Where the films live on disk, and the key that gives them titles, posters and years.',
@@ -246,6 +261,10 @@ const groups: Record<string, { title: string; blurb?: string; warning?: React.Re
     title: 'Indexers',
     blurb:
       '1337x needs minter running to get past Cloudflare; YTS and TPB do not. A source that is off is not searched at all.',
+    // Read off the form rather than the response, so turning 1337x on shows the
+    // command it needs immediately — before the save, and long before the
+    // restart that actually enables the indexer (D29).
+    extra: (values) => <MinterStatus on={truthy(values.indexer_1337x ?? '')} />,
   },
   playback: {
     title: 'Playback',

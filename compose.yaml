@@ -79,6 +79,26 @@ services:
       LIBRARY_MOVIES: /media/movies
       DOWNLOADS_DIR: /media/downloads
 
+      # Where minter is ON THIS NETWORK, and the one address in this file that
+      # is not a restatement of an image default: the image defaults to
+      # 127.0.0.1:8191, which inside a container is the container itself.
+      # Without this line the profile below starts minter, minter answers
+      # perfectly, and curator reports it unreachable forever — the user having
+      # done exactly what they were told (docs/tasks/T49-minter-on-demand.md).
+      # Measured: `wget -qO- http://minter:8191/health` from a throwaway on this
+      # network answers {"ok":true,…}; the same request to 127.0.0.1 inside
+      # curator cannot.
+      #
+      # Set here while JELLYFIN_URL deliberately is NOT, and the difference is
+      # which direction the value travels. curator WRITES jellyfin_url — T65
+      # provisions a Jellyfin and records where it put it, T66 records one you
+      # typed — so an environment value would beat what the flow just stored
+      # (docs/decisions.md D28) and the screen would silently ignore its own
+      # result. Nothing writes minter_url: it is a fact about this network's
+      # topology, which is this file's to state. The Settings row reads
+      # `environment` and is locked, which is the truth.
+      MINTER_URL: http://minter:8191
+
     # ONE volume for media, with the two directories inside it. The importer
     # hardlinks and falls back to a copy on EXDEV (docs/decisions.md D8), so
     # downloads and library have to share a filesystem — two volumes would put

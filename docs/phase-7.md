@@ -211,7 +211,7 @@ Every row is stored, has one environment variable, and takes effect at the next 
 | | `vpn_ip_check_url` · `VPN_IP_CHECK_URL` | url | |
 | Indexers | `indexer_yts` · `INDEXER_YTS` | bool | **new** |
 | | `indexer_tpb` · `INDEXER_TPB` | bool | **new** |
-| | `indexer_1337x` · `INDEXER_1337X` | bool | **new**; phase 9's T49 hangs off it |
+| | `indexer_1337x` · `INDEXER_1337X` | bool | **new**; default `false` since T49 — the other two need nothing, this one needs a container |
 | | `minter_url` · `MINTER_URL` | url | |
 | | `search_timeout` · `SEARCH_TIMEOUT` | duration | |
 | | `search_cache_ttl` · `SEARCH_CACHE_TTL` | duration | |
