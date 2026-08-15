@@ -156,6 +156,76 @@ func TestAggregatorAllFailingIsStillASuccess(t *testing.T) {
 	}
 }
 
+// The task this whole distinction exists for: a 1337x search with no minter has
+// to be reported as unconfigured, not as a search that found nothing
+// (docs/tasks/T49-minter-on-demand.md). The two look identical to a user
+// otherwise, and one of them is fixed by a pasted line.
+func TestAggregatorUnreachableCompanionReportsUnconfigured(t *testing.T) {
+	yts := &aggStub{name: "yts", releases: []Release{aggRelease("yts", "A", 10, aggMagnet("a"))}}
+	// Wrapped the way X1337.SearchMovie wraps it, so this test fails if that
+	// wrapping ever stops carrying the sentinel through.
+	x := &aggStub{name: "1337x", err: fmt.Errorf("1337x search %q: %w", "interstellar 2014",
+		unreachable{errors.New("calling minter at http://minter:8191 (is it running?): connection refused")})}
+
+	got, err := newAggTest(t, 2*time.Second, yts, x).SearchMovie(context.Background(), "Interstellar", 2014)
+	if err != nil {
+		t.Fatalf("SearchMovie: %v", err)
+	}
+
+	// The healthy indexer's releases still come back. An unconfigured sibling
+	// must not empty a good search — that is the failure this reporting exists
+	// to make visible, not one to introduce.
+	if len(got.Releases) != 1 {
+		t.Fatalf("releases = %d, want the 1 from the healthy indexer", len(got.Releases))
+	}
+
+	byName := map[string]Outcome{}
+	for _, o := range got.Outcomes {
+		byName[o.Name] = o
+	}
+	if o := byName["1337x"]; o.OK || !o.Unconfigured {
+		t.Errorf("1337x outcome = %+v, want ok=false and unconfigured=true", o)
+	}
+	// And the reason survives: the screen shows a command, but the log and the
+	// banner still say what actually happened.
+	if !strings.Contains(byName["1337x"].Error, "connection refused") {
+		t.Errorf("outcome error = %q, want it to carry the cause", byName["1337x"].Error)
+	}
+	if o := byName["yts"]; !o.OK || o.Unconfigured {
+		t.Errorf("yts outcome = %+v, want ok=true and unconfigured=false", o)
+	}
+}
+
+// The other direction, and the one that would make the flag useless: a minter
+// that IS running and simply failed must not be reported as unconfigured, or the
+// screen offers a compose command for a container that is already up.
+func TestAggregatorOrdinaryFailureIsNotUnconfigured(t *testing.T) {
+	x := &aggStub{name: "1337x", err: errors.New("1337x search: minter returned 500: browser did not start")}
+
+	got, err := newAggTest(t, 2*time.Second, x).SearchMovie(context.Background(), "Interstellar", 2014)
+	if err != nil {
+		t.Fatalf("SearchMovie: %v", err)
+	}
+	if o := got.Outcomes[0]; o.OK || o.Unconfigured {
+		t.Errorf("outcome = %+v, want ok=false and unconfigured=false", o)
+	}
+}
+
+// An indexer that found nothing is a SUCCESS with a count of zero, and it must
+// never be confused with either of the two above. This is the third leg of the
+// same distinction and the one that is easiest to lose in a refactor.
+func TestAggregatorNoResultsIsNotAFailure(t *testing.T) {
+	got, err := newAggTest(t, 2*time.Second,
+		&aggStub{name: "1337x", releases: nil},
+	).SearchMovie(context.Background(), "Interstellar", 2014)
+	if err != nil {
+		t.Fatalf("SearchMovie: %v", err)
+	}
+	if o := got.Outcomes[0]; !o.OK || o.Count != 0 || o.Unconfigured || o.Error != "" {
+		t.Errorf("outcome = %+v, want ok=true, count=0, unconfigured=false and no error", o)
+	}
+}
+
 func TestAggregatorStragglerIsOmittedNotWaitedFor(t *testing.T) {
 	const timeout = 100 * time.Millisecond
 	slow := &aggStub{name: "1337x", delay: 5 * time.Second,

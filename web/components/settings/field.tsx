@@ -280,7 +280,7 @@ function placeholder(setting: Setting): string | undefined {
  * the way in and what reads it at the next start. A stored `1` or `True` is a
  * legal boolean that a stricter check here would draw as off.
  */
-function truthy(value: string): boolean {
+export function truthy(value: string): boolean {
   return ['1', 't', 'true'].includes(value.trim().toLowerCase());
 }
 

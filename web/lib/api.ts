@@ -80,6 +80,17 @@ export type IndexerStatus = {
   ok: boolean;
   count: number;
   error?: string;
+
+  /**
+   * The indexer never started, rather than tried and failed: the companion
+   * service it needs is not answering. Today that is 1337x and minter.
+   *
+   * A separate flag from `ok` because the two lead to different actions and
+   * only one of them is the user's — a failed indexer is something to retry, an
+   * unconfigured one is a container that was never started. Absent, not false,
+   * on every ordinary outcome.
+   */
+  unconfigured?: boolean;
 };
 
 export type SearchResult = {
@@ -391,6 +402,39 @@ export type JellyfinProbe = {
   detail?: string;
 };
 
+/**
+ * minter's three worlds.
+ *
+ * There is no `starting`, unlike Jellyfin's four: minter's port is not open
+ * until it is, so there is nothing to distinguish between "not up" and "coming
+ * up". Measured at 45 s from `up -d` to healthy, all of it with nothing
+ * listening.
+ */
+export type MinterProbeState = 'unreachable' | 'unhealthy' | 'ready';
+
+export type MinterProbe = {
+  state: MinterProbeState | string;
+  url: string;
+
+  /**
+   * Whether THIS PROCESS is searching 1337x — the running value, not the stored
+   * one. A setting applies at the next start (D29), so switching 1337x on and
+   * saving leaves curator running with it off, and this is the only place that
+   * fact is visible before somebody searches and finds nothing.
+   */
+  enabled: boolean;
+
+  /** The line the user pastes. It names compose.yaml's profile, so it is the
+   * server's to spell, not this screen's. */
+  command: string;
+
+  /** minter's patched Firefox, present only when it answered its own health
+   * check. It is the field that proves this is minter rather than something
+   * else on the port. */
+  user_agent?: string;
+  detail?: string;
+};
+
 export type JellyfinProvisioned = {
   username: string;
   url: string;
@@ -665,6 +709,16 @@ export const api = {
       // is a worse experience for no reason.
       url ? `/api/jellyfin/probe?url=${encodeURIComponent(url)}` : '/api/jellyfin/probe',
     ),
+
+  /**
+   * Is minter there, and is 1337x actually live in this process?
+   *
+   * Cheap and safe to call on a loop: it is one GET of minter's own /health,
+   * which is NOT a page fetch — the browser only wakes for a real search. The
+   * Indexers screen polls it beside the toggle, because whether minter is
+   * answering is a fact rather than something the user controls.
+   */
+  minterProbe: () => request<MinterProbe>('/api/indexers/minter/probe'),
 
   /**
    * Run Jellyfin's setup wizard and record the result.

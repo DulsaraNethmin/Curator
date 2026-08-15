@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,9 +12,15 @@ import (
 	"time"
 )
 
-// DefaultMinterURL matches minter's own default and the MINTER_URL default in
-// docs/architecture.md.
-const DefaultMinterURL = "http://localhost:8191"
+// DefaultMinterURL is the literal IPv4 address, not "localhost": minter binds
+// IPv4 only, so localhost resolves to ::1 first and the connection fails while
+// 127.0.0.1 works. Inside Docker the service name "minter" resolves correctly
+// and compose.yaml's 1337x profile is what puts it there.
+//
+// It matches internal/config's defaultMinterURL, and that agreement is the
+// point — a second spelling here is a default nothing outside this package
+// would ever be running on.
+const DefaultMinterURL = "http://127.0.0.1:8191"
 
 const (
 	// fetchTimeoutSeconds is what minter is told to spend driving the browser.
@@ -24,7 +31,25 @@ const (
 	// cleared non-interactive challenge measures ~9 s end to end; the ceiling is
 	// for the pathological case, not the normal one.
 	minterClientTimeout = 240 * time.Second
+
+	// healthPath is minter's own health endpoint, and it is the probe rather than
+	// the root for a measured reason: the root answers 307, so a probe that
+	// accepts "anything answered" also accepts a redirect from something that is
+	// not minter at all. /health answers 200 with {"ok":…}, which is a fact worth
+	// asserting.
+	healthPath = "/health"
 )
+
+// ErrUnreachable reports that nothing answered at minter's address — the
+// container is not up, the URL is wrong, or the network is.
+//
+// It is a sentinel because it is the one minter failure with a *product* answer
+// rather than a technical one: minter lives behind compose's 1337x profile
+// (docs/decisions.md D34, docs/phase-9.md), so "nothing answered" almost always
+// means the pasted `docker compose --profile 1337x up -d` has not been run. The
+// aggregator turns it into an indexer reporting itself unconfigured instead of
+// reporting no results, which is the whole of T49.
+var ErrUnreachable = errors.New("minter could not be reached")
 
 // Page is minter's POST /fetch response: a page already rendered by a real
 // browser, with any Cloudflare challenge cleared.
@@ -61,6 +86,90 @@ func NewMinter(baseURL string) *Minter {
 	}
 }
 
+// URL is where this client looks for minter, after the default has been applied
+// and any trailing slash trimmed.
+//
+// It exists so a probe can name the address it failed to reach without the
+// caller keeping a second copy of the string it passed in — which is how a
+// screen ends up telling somebody to check a URL other than the one that was
+// actually used.
+func (m *Minter) URL() string { return m.baseURL }
+
+// Health is what GET /health answers.
+//
+// Measured against minter sha-adc1d6a on 2026-08-15: 200 with
+// {"ok":true,"user_agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0)
+// Gecko/20100101 Firefox/151.0","detail":{}}. The user agent is reported
+// because it is the one field that proves this is minter's patched Firefox
+// rather than something else answering on the port — D2's whole argument is
+// that no other fingerprint substitutes for it.
+type Health struct {
+	OK        bool
+	UserAgent string
+}
+
+// Probe asks minter whether it is there, and it must stay cheap: the Settings
+// screen calls it on a loop while a container starts.
+//
+// It deliberately does NOT go through Fetch. A probe that rendered a page would
+// wake a real Firefox to answer "are you up", which is ~9 s and a browser for a
+// question /health answers in milliseconds — and it would do it every time
+// somebody left the Settings tab open.
+//
+// The context bounds it. m.http's own timeout is 240 s, sized for a browser
+// clearing a challenge, so a probe that relied on it would hang a screen for
+// four minutes against an address nothing is listening on.
+func (m *Minter) Probe(ctx context.Context) (Health, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+healthPath, nil)
+	if err != nil {
+		return Health{}, fmt.Errorf("build minter health request for %s: %w", m.baseURL, err)
+	}
+	req.Header.Set("accept", "application/json")
+
+	resp, err := m.http.Do(req)
+	if err != nil {
+		return Health{}, unreachable{fmt.Errorf("calling minter at %s: %w", m.baseURL, err)}
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxHealthBody))
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		return Health{}, fmt.Errorf("read minter health from %s: %w", m.baseURL, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Not ErrUnreachable: something IS listening, and telling the user to
+		// run the compose command again is the wrong instruction for a service
+		// that is answering. The root's own 307 lands here, which is exactly the
+		// case a "did anything answer" probe used to pass.
+		return Health{}, fmt.Errorf("minter at %s answered %d %s to %s: %s",
+			m.baseURL, resp.StatusCode, http.StatusText(resp.StatusCode), healthPath,
+			strings.TrimSpace(string(raw)))
+	}
+
+	var out struct {
+		OK        bool   `json:"ok"`
+		UserAgent string `json:"user_agent"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return Health{}, fmt.Errorf("decode minter health from %s: %w", m.baseURL, err)
+	}
+	return Health{OK: out.OK, UserAgent: out.UserAgent}, nil
+}
+
+// maxHealthBody caps what a probe will read. /health is 119 bytes; the cap is
+// for whatever is on the port when it is not minter.
+const maxHealthBody = 8 << 10
+
+// unreachable carries ErrUnreachable alongside the transport error rather than
+// instead of it, so that both errors.Is(err, ErrUnreachable) and
+// errors.Is(err, context.DeadlineExceeded) answer truthfully. It is the same
+// shape internal/jellyfin uses, for the same reason.
+type unreachable struct{ err error }
+
+func (u unreachable) Error() string   { return u.err.Error() }
+func (u unreachable) Unwrap() []error { return []error{u.err, ErrUnreachable} }
+
 // Fetch renders target through minter's browser and returns the resulting page.
 func (m *Minter) Fetch(ctx context.Context, target string) (*Page, error) {
 	// A map of string and int cannot fail to marshal.
@@ -74,7 +183,12 @@ func (m *Minter) Fetch(ctx context.Context, target string) (*Page, error) {
 
 	resp, err := m.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("calling minter at %s (is it running?): %w", m.baseURL, err)
+		// ErrUnreachable rather than a bare wrap, so that a 1337x search failing
+		// because minter is not up is distinguishable from one failing because
+		// Cloudflare won: the first is an indexer reporting itself unconfigured
+		// with a command to run, the second is a real failure. Both used to
+		// arrive here as the same opaque string.
+		return nil, unreachable{fmt.Errorf("calling minter at %s (is it running?): %w", m.baseURL, err)}
 	}
 	defer resp.Body.Close()
 

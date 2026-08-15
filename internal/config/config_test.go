@@ -469,9 +469,14 @@ func TestLoadTakesTheTunnelFromTheResolvedSettings(t *testing.T) {
 	}
 }
 
-// The three toggles are new in phase 7, so an unset value has to mean what
-// curator did before they existed — otherwise upgrading turns search off.
-func TestIndexersAreOnUnlessTurnedOff(t *testing.T) {
+// The indexers that need nothing are on unless turned off; the one that needs a
+// second container is off unless turned on.
+//
+// The asymmetry is phase 9's (docs/tasks/T49-minter-on-demand.md). A fresh
+// bundle that shipped with 1337x on would report an indexer it cannot use on
+// every search until somebody ran a command they were never shown, which is the
+// exact failure the rest of that task removes.
+func TestIndexersNeedingNothingAreOnAndX1337IsNot(t *testing.T) {
 	for _, key := range []string{"INDEXER_YTS", "INDEXER_TPB", "INDEXER_1337X"} {
 		t.Setenv(key, "")
 	}
@@ -480,9 +485,22 @@ func TestIndexersAreOnUnlessTurnedOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.IndexerYTS || !cfg.IndexerTPB || !cfg.IndexerX1337 {
-		t.Errorf("an unset toggle disabled an indexer: yts=%v tpb=%v 1337x=%v",
-			cfg.IndexerYTS, cfg.IndexerTPB, cfg.IndexerX1337)
+	if !cfg.IndexerYTS || !cfg.IndexerTPB {
+		t.Errorf("an unset toggle disabled an indexer that needs nothing: yts=%v tpb=%v",
+			cfg.IndexerYTS, cfg.IndexerTPB)
+	}
+	if cfg.IndexerX1337 {
+		t.Error("1337x defaults to on: a fresh install would search an indexer whose companion container has never been started")
+	}
+
+	// Explicitly asked for, in the store, is what turns it on — and it is the
+	// path the Settings screen takes.
+	on, err := Load(map[string]string{"indexer_1337x": "true"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !on.IndexerX1337 {
+		t.Error("a stored indexer_1337x=true did not turn 1337x on")
 	}
 
 	off, err := Load(map[string]string{"indexer_1337x": "false"})

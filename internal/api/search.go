@@ -69,6 +69,12 @@ type indexerBody struct {
 	OK    bool   `json:"ok"`
 	Count int    `json:"count"`
 	Error string `json:"error,omitempty"`
+
+	// Unconfigured separates the indexer that never started from the one that
+	// tried and failed, because they are two different instructions: wait, or
+	// run one line. It is `omitempty` because false is the ordinary case and a
+	// key on every outcome would read as a state every indexer has.
+	Unconfigured bool `json:"unconfigured,omitempty"`
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +126,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	for _, o := range result.Outcomes {
 		out.Indexers = append(out.Indexers, indexerBody{
 			Name: o.Name, OK: o.OK, Count: o.Count, Error: o.Error,
+			Unconfigured: o.Unconfigured,
 		})
 	}
 

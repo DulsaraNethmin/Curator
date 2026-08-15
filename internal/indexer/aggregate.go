@@ -53,6 +53,22 @@ type Outcome struct {
 	OK    bool
 	Count int
 	Error string
+
+	// Unconfigured says the indexer did not fail so much as never start: the
+	// companion service it needs is not answering. Today that is 1337x and
+	// minter, which lives behind compose's 1337x profile.
+	//
+	// It is a separate field from OK because the two lead to different actions
+	// and only one of them is the user's. A failed indexer is something to
+	// retry or wait out; an unconfigured one is a container that was never
+	// started, and the answer is one pasted line
+	// (docs/tasks/T49-minter-on-demand.md). Folding it into Error would leave
+	// the screen matching on a message, which is how this stops being true.
+	//
+	// An indexer that is switched OFF never appears here at all — it is not
+	// constructed, so it runs no search and files no outcome. This field is
+	// only ever about one that is on and cannot work.
+	Unconfigured bool
 }
 
 // SearchResult is one whole search: the merged, ranked releases and what each
@@ -180,7 +196,14 @@ func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (S
 		case !s.reported:
 			out.Outcomes[i] = Outcome{Name: name, OK: false, Error: fmt.Sprintf("timed out after %s", a.timeout)}
 		case s.err != nil:
-			out.Outcomes[i] = Outcome{Name: name, OK: false, Error: s.err.Error()}
+			// errors.Is rather than a type switch on the indexer: 1337x is the
+			// only one needing a companion service today, and keying on the
+			// sentinel means the second one to need one gets this for free
+			// instead of adding a name to a list here.
+			out.Outcomes[i] = Outcome{
+				Name: name, OK: false, Error: s.err.Error(),
+				Unconfigured: errors.Is(s.err, ErrUnreachable),
+			}
 		default:
 			out.Outcomes[i] = Outcome{Name: name, OK: true, Count: len(s.releases)}
 			for _, r := range s.releases {

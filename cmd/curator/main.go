@@ -195,6 +195,15 @@ func run() error {
 	// 1337x is the only indexer wrapped in the cache: its pages cost ~9 s and a
 	// browser each, while YTS and TPB answer in under a second and would only be
 	// made stale by caching.
+	// Built whether or not 1337x is on, and that is the point rather than an
+	// oversight. Constructing one starts nothing — it is a struct and an
+	// http.Client, and the browser only wakes for a Fetch — while the Settings
+	// screen has to be able to probe minter on an install where 1337x has just
+	// been switched on and NOT yet restarted, which is every install that has
+	// just switched it on (docs/decisions.md D29). A probe that existed only
+	// when the toggle was already live would go dark exactly when it is needed.
+	minterClient := indexer.NewMinter(cfg.MinterURL)
+
 	var indexers []indexer.Indexer
 	if cfg.IndexerYTS {
 		indexers = append(indexers, indexer.NewYTS(indexerHTTP))
@@ -203,7 +212,7 @@ func run() error {
 		indexers = append(indexers, indexer.NewTPB(indexerHTTP))
 	}
 	if cfg.IndexerX1337 {
-		indexers = append(indexers, indexer.NewCache(indexer.NewX1337(indexer.NewMinter(cfg.MinterURL)), cfg.SearchCacheTTL))
+		indexers = append(indexers, indexer.NewCache(indexer.NewX1337(minterClient), cfg.SearchCacheTTL))
 	}
 	if len(indexers) == 0 {
 		// Not a startup failure, the same posture as every other unconfigured
@@ -336,7 +345,7 @@ func run() error {
 	// does not wait for a restart. All three are wiring and none is a handler,
 	// which is why they are built here and passed in — internal/api still knows
 	// nothing about where a setting comes from.
-	view := settingsView(cfg, matcher, torrents, tunnel, indexerHTTP, ffmpegPath)
+	view := settingsView(cfg, matcher, torrents, tunnel, minterClient, ffmpegPath)
 	view.States = settingsStates(cfg, db, codec, log)
 	view.Writer = settingsWriter{db: db, codec: codec}
 	view.Access = auth
@@ -382,6 +391,13 @@ func run() error {
 			Reader: func(baseURL, apiKey string) api.MediaServer {
 				return jellyfin.New(baseURL, apiKey, indexerHTTP)
 			},
+		}).
+		// Phase 9's other companion service, and the same shape: a probe, a
+		// pasted line, and an indexer that reports itself unconfigured until
+		// something answers (docs/tasks/T49-minter-on-demand.md).
+		WithIndexers(api.IndexerSetup{
+			Minter: minterClient,
+			X1337:  cfg.IndexerX1337,
 		})
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
@@ -392,6 +408,7 @@ func run() error {
 	apiSrv.RegisterBrowse(mux)
 	apiSrv.RegisterStream(mux)
 	apiSrv.RegisterJellyfin(mux)
+	apiSrv.RegisterIndexers(mux)
 	auth.Register(mux)
 
 	// The UI is mounted last and at "/", so it can never shadow an API pattern.
@@ -514,7 +531,7 @@ func healthz(w http.ResponseWriter, _ *http.Request) {
 // ffmpeg is the resolved binary or "" — the answer remux.Find already gave at
 // start-up, passed in rather than looked up again, so this screen cannot
 // disagree with the process about whether there is a fallback.
-func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.TorrentClient, tunnel *vpn.Tunnel, httpClient *http.Client, ffmpeg string) api.Settings {
+func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.TorrentClient, tunnel *vpn.Tunnel, minterClient *indexer.Minter, ffmpeg string) api.Settings {
 	integrations := []api.Integration{{
 		Name:       "tmdb",
 		Env:        "TMDB_API_KEY",
@@ -599,19 +616,24 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 			return nil
 		}
 	}
-	if cfg.IndexerX1337 && cfg.MinterURL != "" {
+	if minterClient != nil && cfg.IndexerX1337 && cfg.MinterURL != "" {
+		// minter's own /health, through the same method the Indexers screen
+		// polls, so the two cannot disagree about whether it is up. It used to
+		// be a GET of the root accepting any answer — which the root's measured
+		// 307 passes, and so would anything else on the port.
+		//
+		// Still gated on the toggle, unlike the Indexers screen's probe: this
+		// table is "what is this process running", and minter is not part of
+		// what it is running when 1337x is off. The screen that helps you turn
+		// it on is the one that has to answer regardless.
 		integrations[3].Probe = func(ctx context.Context) error {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.MinterURL, nil)
+			health, err := minterClient.Probe(ctx)
 			if err != nil {
 				return err
 			}
-			resp, err := httpClient.Do(req)
-			if err != nil {
-				return err
+			if !health.OK {
+				return fmt.Errorf("minter answered but reports it is not ready")
 			}
-			defer resp.Body.Close()
-			// Any answer proves the process is listening. minter's root is not a
-			// documented health endpoint, so its status is not worth asserting.
 			return nil
 		}
 	}
