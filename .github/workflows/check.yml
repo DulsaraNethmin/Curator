@@ -1,0 +1,95 @@
+# The gate this repository already has, run somewhere nobody has to remember to
+# type it. Until now `make check` has only ever run where somebody did.
+#
+# The job is `make check` and nothing else — npm export, go build, go vet,
+# go test -race, arm64 cross-compile (docs/tasks/T48-release-pipeline.md). CI
+# does not get its own definition of what "checked" means: a second definition
+# drifts, and the copy that drifts is the one nobody runs on a laptop. So there
+# is no -short here, no extra linter and no coverage gate. Setting up Go and
+# Node is the whole of CI's contribution; the Makefile does the rest.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # release.yml calls this before it publishes anything, so a tagged image and
+  # the gate cannot disagree. One definition of the gate, two callers.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A second push to the same ref makes the first run's answer irrelevant. This
+# repository is private, so Actions minutes are metered rather than free, and a
+# superseded run is the cheapest thing to stop paying for.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Measured in a clean worktree on a 10-core laptop: `npm ci` 2.6 s and
+    # `make check` 48 s, so ~51 s of actual work. A private repo's runner has 2
+    # cores and `go test -race` is the half that scales worst, so budget several
+    # times that. This is a runaway backstop, not a target — if it ever fires,
+    # read the log rather than raising it.
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # go.mod's `go` directive is the single copy of the Go version, the same
+      # way cmd/curator/version.go is the single copy of curator's. setup-go
+      # caches the module and build caches keyed on go.sum without being asked,
+      # which is the caching T48 item 5 wants.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # And the Dockerfile's ARG is the single copy of the Node version. Read
+      # rather than repeated: writing 22.21.1 a second time here is how the
+      # image and CI end up building the UI with two toolchains while everyone
+      # believes they build it with one. minter carried a version string in
+      # three places and they drifted (cmd/curator/version.go says so).
+      - name: the Node version the image builds with
+        id: node
+        run: |
+          set -eu
+          version="$(sed -n 's/^ARG NODE_VERSION=//p' Dockerfile)"
+          [ -n "$version" ] || { echo "no ARG NODE_VERSION in Dockerfile"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Node $version, from the Dockerfile"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # `npm ci`, not `install`, for the reason the Dockerfile's `ui` stage
+      # gives: it installs the lockfile exactly and fails if package.json
+      # disagrees. make's `ui` target runs `npm run build` and assumes
+      # node_modules is already there — true on a laptop, false in a fresh
+      # checkout, and that gap is the whole of what "setting up Node" means.
+      - run: npm --prefix web ci
+
+      # Every TestLive* skips here, and it skips on the "nothing configured"
+      # branch rather than on -short: a fresh checkout has no .env (it is
+      # gitignored) and no secrets are set, so JELLYFIN_API_KEY, TMDB_API_KEY,
+      # VPN_CONFIG_FILE, QBIT_USER and CURATOR_LIVE_TORRENT are all absent.
+      # Measured, not assumed — this sequence was run in a clean `git worktree`,
+      # which is exactly what a runner checks out, and all ten of them took the
+      # skip: four in internal/jellyfin, two in internal/tmdb, two in
+      # internal/engine, one each in internal/vpn and internal/qbit. Nothing
+      # reached 192.168.1.26, which CI could not route to anyway.
+      #
+      # This is also why the gate is run verbatim instead of with -short: the
+      # skips do not need it, and adding it here would be the second definition
+      # of the gate that the header refuses.
+      #
+      # `make live` is the opposite of this and is deliberately not run: it
+      # brings up a real WireGuard tunnel against a real NordVPN endpoint with
+      # credentials from .env, and CI has no business holding those.
+      - run: make check

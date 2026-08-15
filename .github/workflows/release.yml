@@ -1,0 +1,180 @@
+# A tag produces the multi-arch image compose.yaml names, and nothing else does.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# A tag is a decision and a push is a Tuesday, so this runs on `v*` and never on
+# a branch (docs/tasks/T48-release-pipeline.md). Nothing here merges, tags or
+# bumps anything: those are Nethmin's, here as everywhere.
+#
+# ---------------------------------------------------------------------------
+# ONE MANUAL STEP, ONCE, AND THE QUICKSTART DOES NOT WORK WITHOUT IT.
+#
+# This repository is private, so the package this pushes is created PRIVATE, and
+# a stranger running the quickstart gets `unauthorized` rather than curator. The
+# fix is a one-time visibility change that no workflow can make for itself:
+#
+#   github.com/users/DulsaraNethmin/packages/container/curator/settings
+#     → Danger Zone → Change visibility → Public
+#
+# It only exists after the first successful run of this workflow, so the order
+# is: push a tag, let this finish, then flip it. T51's quickstart
+# (`docker compose up -d` against ghcr.io/dulsaranethmin/curator:latest) is
+# blocked until that is done, and the symptom if it is forgotten is a 401 on
+# somebody else's machine that looks nothing like a permissions setting.
+# ---------------------------------------------------------------------------
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # The same gate main gets, before anything is published. A tag can point at
+  # any commit, so "main was green when it was pushed" is not the same claim.
+  # The cost is a few minutes in front of a build measured in tens; the thing it
+  # buys is that `latest` cannot be a commit that fails vet or the race
+  # detector, on an image whose whole promise is that a stranger can run it.
+  check:
+    uses: ./.github/workflows/check.yml
+
+  image:
+    needs: check
+    runs-on: ubuntu-latest
+    # Cold, both platforms, no layer cache. The arm64 half of ffmpeg is a C
+    # build under QEMU and is the long pole — see the note on the build step.
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # cmd/curator/version.go is the repo's single copy of the version string,
+      # and this is what keeps that true once a second place — the tag — exists.
+      # Tagging v0.2.0 while the constant still reads 0.1.0 would publish an
+      # image that reports the wrong version of itself, from a binary that is
+      # otherwise perfect. Cheaper to refuse here than to explain later.
+      - name: the tag and cmd/curator/version.go must agree
+        id: version
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+
+          declared="$(sed -n 's/^const Version = "\(.*\)"$/\1/p' cmd/curator/version.go)"
+          [ -n "$declared" ] || { echo "cmd/curator/version.go has no 'const Version = \"...\"' line"; exit 1; }
+
+          if [ "$version" != "$declared" ]; then
+            echo "the tag says '$version', cmd/curator/version.go says '$declared'."
+            echo "Edit the constant and re-tag: an image may not disagree with the binary in it."
+            exit 1
+          fi
+
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "tag '$tag' is not vMAJOR.MINOR.PATCH"; exit 1 ;;
+          esac
+
+          # The image name is written out rather than derived from the
+          # github.repository context, which would need lowercasing (the repo is
+          # `Curator`, the image is `curator`) and would silently follow a repo
+          # rename. compose.yaml names this exact string, and a published image
+          # name is a contract with everyone who has already downloaded that
+          # file — not a function of what the repo is called this month.
+          # (Expressions interpolate inside a run: block even in a comment, so
+          # naming that context here would have substituted it into this line.)
+          image=ghcr.io/dulsaranethmin/curator
+
+          # A prerelease gets its own tag and nothing else: `latest` and the
+          # major.minor line are what compose.yaml and upgraders follow, and
+          # moving them to an -rc is how a release candidate reaches people who
+          # never asked for one.
+          case "$version" in
+            *-*)
+              echo "prerelease $version: publishing that tag alone, not ${version%.*} and not latest"
+              tags="$image:$version"
+              ;;
+            *)
+              tags="$(printf '%s\n%s\n%s' "$image:$version" "$image:${version%.*}" "$image:latest")"
+              ;;
+          esac
+
+          {
+            echo "version=$version"
+            echo "tags<<TAGS"
+            printf '%s\n' "$tags"
+            echo "TAGS"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "publishing:"
+          printf '%s\n' "$tags"
+
+      # arm64 on an amd64 runner. Measured on a 10-core arm64 laptop, which has
+      # the same problem in the other direction and no Rosetta in the builder
+      # (checked: no /run/rosetta in an amd64 container, so this is QEMU, the
+      # same mechanism the runner uses): the ffmpeg stage is 24.4 s native and
+      # 98.8 s emulated, a 4.05x multiplier on an identical cold build. That
+      # number is why this is one runner with QEMU rather than a matrix of
+      # native builders merged into a manifest list — 4x on the one C stage is
+      # affordable, and free arm64 runners are public-repo-only anyway.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # No docker/metadata-action, on purpose. It generates
+      # org.opencontainers.image.title, .description and .source and passes them
+      # as --label, and a --label overrides the Dockerfile's LABEL for any key it
+      # names: the title would become "Curator" and the description whatever
+      # GitHub's repo blurb says. The Dockerfile's `source` label is load-bearing
+      # beyond documentation — it is what links this package to the repository,
+      # which is what lets GITHUB_TOKEN push to it at all. So only the two labels
+      # the Dockerfile explicitly left for this workflow are passed.
+      #
+      # Measured rather than assumed, by running this exact build to an OCI
+      # archive: with only these two --labels, the image config carries all five
+      # — the Dockerfile's title=curator, description and source intact, plus
+      # version and revision. Overriding by key, not wholesale.
+      #
+      # No cache-from/cache-to either. type=gha is evicted after 7 days of no
+      # access and releases are rarer than that, so it would miss on nearly
+      # every run while looking like it does something. If release time ever
+      # matters, type=registry with a :buildcache tag is the one that persists.
+      - name: build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.version.outputs.tags }}
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      # T48's Verify asks for `docker manifest inspect` to show both platforms.
+      # Asserted here rather than left for somebody to remember: a manifest list
+      # that lost an architecture is a pull that fails on half the machines in
+      # the world, and it fails for them and not for us.
+      #
+      # buildx attaches provenance attestations to a multi-platform push, so the
+      # listing also carries `unknown/unknown` entries — measured: the same build
+      # to an OCI archive produced four manifests, linux/amd64, linux/arm64 and
+      # two unknown/unknown. Those two are the attestations, not a broken build,
+      # which is why this greps for the platforms it wants rather than counting.
+      - name: both platforms are in the published manifest
+        run: |
+          set -eu
+          ref="ghcr.io/dulsaranethmin/curator:${{ steps.version.outputs.version }}"
+          inspect="$(docker buildx imagetools inspect "$ref")"
+          printf '%s\n' "$inspect"
+          for platform in linux/amd64 linux/arm64; do
+            printf '%s\n' "$inspect" | grep -q "$platform" || {
+              echo "$platform is missing from $ref"; exit 1; }
+          done
+          echo "both platforms present in $ref"
