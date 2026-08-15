@@ -381,6 +381,157 @@ func TestLiveProvision(t *testing.T) {
 	}
 }
 
+// TestLiveAdopt runs the adopt branch against a throwaway whose wizard is
+// ALREADY complete, which is the only honest way to test it without touching a
+// server somebody is watching.
+//
+// It is off unless JELLYFIN_ADOPT_URL names one, and it refuses the configured
+// Jellyfin and the Pi for the same reason TestLiveProvision does — more so, in
+// fact: this branch exists precisely for servers in use, so the temptation to
+// point it at a real one is the failure mode.
+//
+// Set one up with T64's own sequence and then reuse it:
+//
+//	docker run -d --name adopt-me -p 8097:8096 jellyfin/jellyfin:10.10.7
+//	JELLYFIN_PROVISION_URL=http://127.0.0.1:8097 go test ./internal/jellyfin/ -run TestLiveProvision
+//	JELLYFIN_ADOPT_URL=http://127.0.0.1:8097 \
+//	  JELLYFIN_ADOPT_USER=curator-live-test JELLYFIN_ADOPT_PASSWORD=provision-me-please \
+//	  go test ./internal/jellyfin/ -run TestLiveAdopt -v
+//
+// **The assertion this test exists for is the last one**: the credentials that
+// worked before adoption still work after it. Everything else here is a feature
+// working; that one is a household not being locked out of their media server.
+func TestLiveAdopt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Jellyfin adoption in -short mode")
+	}
+	target := strings.TrimSpace(os.Getenv("JELLYFIN_ADOPT_URL"))
+	if target == "" {
+		t.Skip("no JELLYFIN_ADOPT_URL; skipping live adoption (it needs a throwaway container)")
+	}
+	user := strings.TrimSpace(os.Getenv("JELLYFIN_ADOPT_USER"))
+	password := os.Getenv("JELLYFIN_ADOPT_PASSWORD")
+	if user == "" || password == "" {
+		t.Fatal("JELLYFIN_ADOPT_URL is set without JELLYFIN_ADOPT_USER and JELLYFIN_ADOPT_PASSWORD")
+	}
+
+	configured, _ := liveConfig(t)
+	if sameServer(target, configured) {
+		t.Fatalf("JELLYFIN_ADOPT_URL is %s, which is the configured JELLYFIN_URL. "+
+			"This test mints a key and may add a library; point it at a throwaway container.", target)
+	}
+	if strings.Contains(target, "192.168.1.26") {
+		t.Fatalf("JELLYFIN_ADOPT_URL is %s, which is the Pi. Nothing on the Pi changes before phase 10.", target)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	p := NewProvisioner(target, "0.1.0", nil, logger)
+
+	status, err := p.Status(ctx)
+	if err != nil {
+		t.Fatalf("live status: %v", err)
+	}
+	if !status.WizardCompleted {
+		t.Fatalf("%s has not finished its wizard, so this would not be adoption. "+
+			"Run TestLiveProvision against it first.", target)
+	}
+
+	// Every startup endpoint, refused, against a real server that really would
+	// have accepted them. This is the measurement D34 is built on: Jellyfin
+	// itself answers 204 to POST /Startup/User here and renames the admin.
+	for name, call := range map[string]func() error{
+		"Configure":          func() error { return p.Configure(ctx, StartupConfiguration{}) },
+		"CreateAdmin":        func() error { return p.CreateAdmin(ctx, "attacker", "x") },
+		"EnableRemoteAccess": func() error { return p.EnableRemoteAccess(ctx) },
+		"CompleteSetup":      func() error { return p.CompleteSetup(ctx) },
+	} {
+		if err := call(); !errors.Is(err, ErrAlreadyConfigured) {
+			t.Fatalf("%s against a configured server gave %v, want ErrAlreadyConfigured", name, err)
+		}
+	}
+
+	session, err := p.Authenticate(ctx, user, password)
+	if err != nil {
+		t.Fatalf("Authenticate as the account that already exists: %v", err)
+	}
+	if _, err := p.Authenticate(ctx, user, "not-the-password"); !errors.Is(err, ErrBadCredentials) {
+		t.Errorf("a wrong password gave %v, want ErrBadCredentials — this is the branch where a "+
+			"real person's typo arrives", err)
+	}
+
+	before, err := p.Libraries(ctx, session)
+	if err != nil {
+		t.Fatalf("Libraries: %v", err)
+	}
+	t.Logf("that server holds %d libraries: %v", len(before), libraryNames(before))
+
+	// The path question, against a real filesystem. "/" is the control: a server
+	// that 404s it has no such endpoint and every answer here is unknown.
+	for _, tc := range []struct {
+		path string
+		want PathAnswer
+	}{
+		{"/", PathPresent},
+		{"/media", PathPresent},
+		{"/no/such/path/on/any/jellyfin", PathAbsent},
+	} {
+		got, err := p.PathExists(ctx, session, tc.path)
+		if err != nil {
+			t.Fatalf("PathExists(%s): %v", tc.path, err)
+		}
+		if got != tc.want {
+			t.Errorf("PathExists(%s) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+
+	key, err := p.MintKey(ctx, session, KeyAppName, AdoptConfigured)
+	if err != nil {
+		t.Fatalf("MintKey with the adopt opt-in: %v", err)
+	}
+	if key == "" {
+		t.Fatal("MintKey returned an empty key with no error")
+	}
+	// Curator's own read, with the key that was just minted — the check that
+	// separates a working setup screen from a broken Open in Jellyfin link.
+	if _, err := New(target, key, nil).FindMovie(ctx, 999999999, 2026); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FindMovie with the adopted key: %v, want ErrNotFound", err)
+	}
+
+	// Adding a library is additive and does not disturb the ones already there.
+	if path := strings.TrimSpace(os.Getenv("JELLYFIN_ADOPT_PATH")); path != "" {
+		if err := p.AddLibrary(ctx, session, "curator", path, AdoptConfigured); err != nil {
+			t.Fatalf("AddLibrary(%s) with the adopt opt-in: %v", path, err)
+		}
+		after, err := p.Libraries(ctx, session)
+		if err != nil {
+			t.Fatalf("Libraries after adding one: %v", err)
+		}
+		if len(after) != len(before)+1 {
+			t.Errorf("libraries went from %v to %v; adding one may not disturb the others",
+				libraryNames(before), libraryNames(after))
+		}
+	}
+
+	// **The single check this task exists for.** Everything above can work and
+	// still leave somebody locked out of their own media server.
+	if _, err := p.Authenticate(ctx, user, password); err != nil {
+		t.Fatalf("the credentials that existed before adoption no longer work: %v — "+
+			"this is exactly the damage D34's guard exists to prevent", err)
+	}
+	t.Log("the admin account that existed before adoption still signs in")
+}
+
+func libraryNames(libraries []Library) []string {
+	out := make([]string, 0, len(libraries))
+	for _, library := range libraries {
+		out = append(out, library.Name)
+	}
+	return out
+}
+
 // sameServer compares two base URLs the way a careless copy-paste would differ:
 // a trailing slash, a case difference in the scheme or host.
 func sameServer(a, b string) bool {

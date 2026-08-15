@@ -374,6 +374,14 @@ func run() error {
 			New: func(baseURL string) api.Provisioner {
 				return jellyfin.NewProvisioner(baseURL, Version, indexerHTTP, log)
 			},
+			// The READ-ONLY client, built fresh for the key adoption just
+			// minted — not mediaServer above, which holds whatever key this
+			// process started with and is nil on an install that has none. It
+			// is how adoption finishes by proving the new key with the call
+			// that will use it (docs/tasks/T66-adopt-jellyfin.md).
+			Reader: func(baseURL, apiKey string) api.MediaServer {
+				return jellyfin.New(baseURL, apiKey, indexerHTTP)
+			},
 		})
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)

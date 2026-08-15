@@ -49,6 +49,10 @@ type fakeJellyfin struct {
 	keys            []map[string]any
 	folders         []map[string]any
 	minted          int
+	// paths is what exists on this server's own filesystem, which is a
+	// different question from what its libraries point at — and the difference
+	// is exactly T66's third case.
+	paths map[string]bool
 	// override replaces the answer for one "METHOD /path", which is how the
 	// degrade paths are tested without a second fake.
 	override map[string]http.HandlerFunc
@@ -56,7 +60,9 @@ type fakeJellyfin struct {
 
 func newFakeJellyfin(t *testing.T) *fakeJellyfin {
 	t.Helper()
-	f := &fakeJellyfin{override: map[string]http.HandlerFunc{}}
+	// "/" exists on every filesystem, which is the fact PathExists leans on to
+	// tell a missing path from a missing endpoint.
+	f := &fakeJellyfin{override: map[string]http.HandlerFunc{}, paths: map[string]bool{"/": true}}
 	f.http = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.http.Close)
 	return f
@@ -179,6 +185,38 @@ func (f *fakeJellyfin) serve(w http.ResponseWriter, r *http.Request) {
 			"Id":          0,
 		})
 		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+
+	case "POST " + pathValidatePath:
+		// Measured on 10.10.7: 204 when the path is there, 404 when it is not,
+		// 401 unauthenticated. The 404 body is ASP.NET's stock problem+json —
+		// byte-for-byte what a route that did not exist would answer — which is
+		// the whole reason PathExists asks about "/" before believing one.
+		if r.Header.Get(tokenHeader) == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var sent struct {
+			Path             string `json:"Path"`
+			ValidateWritable bool   `json:"ValidateWritable"`
+		}
+		_ = json.Unmarshal(body, &sent)
+		if sent.ValidateWritable {
+			// Never sent by this package: the writable branch writes a probe
+			// file into somebody else's library. Answered as a failure so a
+			// change that started sending it fails here rather than on a NAS.
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		f.mu.Lock()
+		_, present := f.paths[trimPath(sent.Path)]
+		f.mu.Unlock()
+		if !present {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(
+				`{"type":"https://tools.ietf.org/html/rfc9110#section-15.5.5","title":"Not Found","status":404}`))
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 
 	case "GET " + pathAuthKeys:
@@ -571,6 +609,51 @@ func TestAddLibraryFailsWhenTheListingDoesNotContainThePath(t *testing.T) {
 	}
 }
 
+// Measured on a real 10.10.7: POST /Library/VirtualFolders answered 404 and had
+// created the library anyway. Jellyfin builds the folder and then refreshes it,
+// and an exception in the refresh becomes the response status while the folder
+// stays — so a status is a hint and the listing is the fact, in both directions.
+//
+// Reporting the failure without looking is worse than a wrong error message
+// here: the obvious response to "that did not work" is to press the button
+// again, and that is how a server ends up holding Movies, Movies2 and Movies3
+// all pointing at one directory. Seen, on this laptop, three deep.
+func TestAddLibraryBelievesTheListingRatherThanAFailedStatus(t *testing.T) {
+	fake := newFakeJellyfin(t)
+	fake.answer("POST "+pathVirtualFolders, func(w http.ResponseWriter, r *http.Request) {
+		// Created, and then answered as though it were not.
+		fake.mu.Lock()
+		fake.folders = append(fake.folders, map[string]any{
+			"Name": r.URL.Query().Get("name"), "Locations": []any{"/media/movies"},
+		})
+		fake.mu.Unlock()
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("Error processing request."))
+	})
+
+	if err := fake.provisioner().AddLibrary(
+		context.Background(), Session{Token: "t"}, "Movies", "/media/movies", OnlyIfUnconfigured,
+	); err != nil {
+		t.Errorf("AddLibrary: %v — the listing says the library is there", err)
+	}
+}
+
+// And the other half: a status that failed and a listing that agrees it failed
+// is still a failure, so the check above cannot be a way of never reporting one.
+func TestAddLibraryStillFailsWhenTheLibraryReallyIsNotThere(t *testing.T) {
+	fake := newFakeJellyfin(t)
+	fake.answer("POST "+pathVirtualFolders, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("Error processing request."))
+	})
+
+	err := fake.provisioner().AddLibrary(
+		context.Background(), Session{Token: "t"}, "Movies", "/media/movies", OnlyIfUnconfigured)
+	if !errors.Is(err, ErrUnexpectedResponse) {
+		t.Errorf("err = %v, want ErrUnexpectedResponse so the screen degrades to instructions", err)
+	}
+}
+
 // A trailing slash on one side of the comparison is not a missing library.
 func TestAddLibraryAcceptsATrailingSlashInTheListing(t *testing.T) {
 	fake := newFakeJellyfin(t)
@@ -580,6 +663,148 @@ func TestAddLibraryAcceptsATrailingSlashInTheListing(t *testing.T) {
 
 	if err := fake.provisioner().AddLibrary(context.Background(), Session{Token: "t"}, "Movies", "/media/movies", OnlyIfUnconfigured); err != nil {
 		t.Errorf("AddLibrary: %v", err)
+	}
+}
+
+// --- what the adopt branch reads (T66) --------------------------------------
+
+// A real server has Movies, Shows, Music and a folder somebody made in 2019.
+// Libraries returns all of them: a caller that assumed one would describe the
+// wrong server on every install this branch exists for.
+func TestLibrariesReturnsEveryLibraryAndAssumesNothingAboutOne(t *testing.T) {
+	fake := newFakeJellyfin(t)
+	fake.complete(true)
+	fake.answer("GET "+pathVirtualFolders, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, []map[string]any{
+			{"Name": "Movies", "Locations": []string{"/movies"}},
+			{"Name": "Shows", "Locations": []string{"/tv"}},
+			{"Name": "Music", "Locations": []string{"/music", "/music-2"}},
+			{"Name": "old stuff", "Locations": []string{}},
+		})
+	})
+
+	got, err := fake.provisioner().Libraries(context.Background(), Session{Token: "t"})
+	if err != nil {
+		t.Fatalf("Libraries: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d libraries, want 4 — every one of them", len(got))
+	}
+	if got[2].Name != "Music" || len(got[2].Locations) != 2 {
+		t.Errorf("a library with two locations came back as %+v", got[2])
+	}
+	// A read, against a configured server, with no consent argument anywhere:
+	// looking changes nothing and must not need permission.
+	for _, r := range fake.requests() {
+		if r.Method != http.MethodGet {
+			t.Errorf("Libraries sent a %s", r.route())
+		}
+	}
+}
+
+// Covers is the hint, and its edges are where a wrong answer would be
+// confidently wrong.
+func TestCoversTakesAParentDirectoryAndNotAPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		location string
+		path     string
+		want     bool
+	}{
+		{"the same path", "/media/movies", "/media/movies", true},
+		{"a trailing slash on the server's side", "/media/movies/", "/media/movies", true},
+		{"a trailing slash on curator's side", "/media/movies", "/media/movies/", true},
+		{"a parent, because jellyfin scans recursively", "/media", "/media/movies", true},
+		{"the root", "/", "/media/movies", true},
+		// The one a plain HasPrefix gets wrong, and it is not hypothetical:
+		// /media/mov and /media/movies are the kind of pair a NAS has.
+		{"a prefix that is not a parent", "/media/mov", "/media/movies", false},
+		{"a child is not a cover", "/media/movies/kids", "/media/movies", false},
+		{"a different mount", "/movies", "/media/storage/media/movies", false},
+		{"nothing at all", "", "/media/movies", false},
+		{"no path to look for", "/media/movies", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			library := Library{Name: "Movies", Locations: []string{tc.location}}
+			if got := library.Covers(tc.path); got != tc.want {
+				t.Errorf("Library{%q}.Covers(%q) = %v, want %v", tc.location, tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// PathExists separates "no library covers it, offer to add one" from "that
+// server cannot see this path at all", which is the difference between a button
+// and a sentence.
+func TestPathExistsAnswersFromTheServersOwnFilesystem(t *testing.T) {
+	fake := newFakeJellyfin(t)
+	fake.complete(true)
+	fake.paths["/media/movies"] = true
+	p := fake.provisioner()
+	ctx := context.Background()
+
+	if got, err := p.PathExists(ctx, Session{Token: "t"}, "/media/movies"); err != nil || got != PathPresent {
+		t.Errorf("PathExists(existing) = %v, %v; want present", got, err)
+	}
+	if got, err := p.PathExists(ctx, Session{Token: "t"}, "/media/storage/media/movies"); err != nil || got != PathAbsent {
+		t.Errorf("PathExists(missing) = %v, %v; want absent", got, err)
+	}
+
+	// ValidateWritable is never sent true — the true branch writes a probe file
+	// into somebody else's library, and the fake answers 403 to one so that a
+	// change which started sending it fails here rather than on a NAS.
+	for _, r := range fake.requests() {
+		if r.Path != pathValidatePath {
+			continue
+		}
+		if strings.Contains(string(r.Body), `"ValidateWritable":true`) {
+			t.Errorf("asked jellyfin to prove a path is writable: %s", r.Body)
+		}
+	}
+}
+
+// The measurement this method is built around: Jellyfin's "that path is not
+// there" 404 is byte-for-byte ASP.NET's "that route is not there" 404, so a
+// version without the endpoint would otherwise read as a server that cannot see
+// the path — a confident wrong sentence in the one branch that must not produce
+// one.
+func TestPathExistsWillNotCallAMissingEndpointAMissingPath(t *testing.T) {
+	fake := newFakeJellyfin(t)
+	fake.complete(true)
+	fake.answer("POST "+pathValidatePath, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	got, err := fake.provisioner().PathExists(context.Background(), Session{Token: "t"}, "/media/movies")
+	if err != nil {
+		t.Fatalf("PathExists: %v — a server that cannot answer is not a failed adoption", err)
+	}
+	if got != PathUnknown {
+		t.Errorf("PathExists = %v, want unknown: this server 404s a path that cannot be missing", got)
+	}
+	// Asked about "/" as well, which is the whole mechanism.
+	var asked []string
+	for _, r := range fake.requests() {
+		if r.Path == pathValidatePath {
+			asked = append(asked, string(r.Body))
+		}
+	}
+	if len(asked) != 2 {
+		t.Errorf("sent %d path checks (%v), want the path and then the root", len(asked), asked)
+	}
+}
+
+// A rejected token is the caller's to report, not this method's to swallow.
+func TestPathExistsReportsARejectedToken(t *testing.T) {
+	fake := newFakeJellyfin(t)
+	fake.complete(true)
+
+	got, err := fake.provisioner().PathExists(context.Background(), Session{}, "/media/movies")
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("err = %v, want ErrUnauthorized", err)
+	}
+	if got != PathUnknown {
+		t.Errorf("PathExists = %v, want unknown alongside the error", got)
 	}
 }
 

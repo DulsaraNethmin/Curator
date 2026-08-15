@@ -400,6 +400,38 @@ export type JellyfinProvisioned = {
 };
 
 /**
+ * What curator found out about its own library path on a server it does not
+ * own, and the screen offers a button on exactly one of the four.
+ *
+ * `unseen` and `unknown` are both "curator will not add a library here", and
+ * they are two states because they are two sentences: one is a server that said
+ * it cannot see that path, and one is a server that would not say. Neither is
+ * proof of a problem — Jellyfin reports the path it sees through its own mount
+ * and curator reports its own, and D32 recorded that those disagree on every
+ * deployment where the two reach the disk differently.
+ */
+export type JellyfinLibraryState = 'covered' | 'addable' | 'unseen' | 'unknown';
+
+export type JellyfinAdopted = {
+  username: string;
+  url: string;
+  public_url: string;
+  library_path: string;
+  version: string;
+  library: {
+    state: JellyfinLibraryState | string;
+    detail: string;
+    names: string[];
+    added: boolean;
+  };
+  check: {
+    film?: string;
+    found: boolean;
+    detail: string;
+  };
+};
+
+/**
  * A provisioning failure, read off ApiError.body.
  *
  * `instructions` is the phase's required fallback rather than decoration: the
@@ -625,7 +657,14 @@ export const api = {
    * while a container starts, which is minutes on a first run — 202 MB of
    * layers to pull before a 14-27 second cold start.
    */
-  jellyfinProbe: () => request<JellyfinProbe>('/api/jellyfin/probe'),
+  jellyfinProbe: (url?: string) =>
+    request<JellyfinProbe>(
+      // A url is T66's branch: the adopt form asks for an address and probes it
+      // before it asks for anything else, because an unreachable one is a typo
+      // or a firewall and finding that out after somebody has typed a password
+      // is a worse experience for no reason.
+      url ? `/api/jellyfin/probe?url=${encodeURIComponent(url)}` : '/api/jellyfin/probe',
+    ),
 
   /**
    * Run Jellyfin's setup wizard and record the result.
@@ -636,6 +675,31 @@ export const api = {
    */
   jellyfinProvision: (body: { username: string; password: string; public_url: string }) =>
     request<JellyfinProvisioned>('/api/jellyfin/provision', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * Connect to a Jellyfin somebody already runs, and change nothing about it.
+   *
+   * Never touches that server's wizard — curator refuses every startup endpoint
+   * against a configured server, which is what stops a household being locked
+   * out of what they are watching (D34). It signs in, mints its own key, and
+   * reads two things.
+   *
+   * `add_library` is the one write, and it is opt-in per call: this is safe to
+   * send twice, once to find out what is there and once to accept the offer.
+   * The second call reuses the key the first one minted rather than making a
+   * second.
+   */
+  jellyfinAdopt: (body: {
+    url: string;
+    username: string;
+    password: string;
+    public_url: string;
+    add_library: boolean;
+  }) =>
+    request<JellyfinAdopted>('/api/jellyfin/adopt', {
       method: 'POST',
       body: JSON.stringify(body),
     }),

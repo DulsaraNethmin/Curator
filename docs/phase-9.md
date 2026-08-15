@@ -298,6 +298,26 @@ missing, which is the worst possible message: it is the one thing they will rety
 all** until a refresh materialised it. Create with `refreshLibrary=true` and verify by re-reading
 `Locations`, not by the call returning `204`.
 
+**And the reverse: `POST /Library/VirtualFolders` answered `404` and created the library anyway.**
+Measured on 10.10.7 while T66 was being written. Jellyfin builds the folder, then refreshes it, and
+an exception thrown *during the refresh* becomes the response status while the folder stays — the
+log says `Error refreshing owned items for /config/root/default/<name>` and the caller sees
+`404 Error processing request.` So **the status is a hint and the listing is the fact, in both
+directions**, which is why `AddLibrary` re-reads before reporting a failure as well as before
+reporting a success. Getting this wrong is worse than a wrong error message: the obvious response to
+*"that did not work"* is to press the button again, and that is how a server ends up holding
+`Movies`, `Movies2` and `Movies3` all pointing at one directory. Seen, three deep, on this laptop.
+The trigger was `DELETE /Library/VirtualFolders`, which removes the directory and leaves the
+in-memory tree pointing at it until a restart — **curator never deletes a library**, so it can only
+arrive on a server somebody else has tidied, which is exactly the adopt branch.
+
+**`POST /Environment/ValidatePath` is how curator asks whether a server can see a path**, and its
+`404` needs a control. `{"Path":…,"ValidateWritable":false}` answers `204` when the path is there and
+`404` when it is not — but that `404` is ASP.NET's stock `problem+json`, byte-for-byte what a route
+that does not exist would answer, so a Jellyfin without the endpoint would read as a Jellyfin that
+cannot see the path. `PathExists` therefore asks about `"/"` before believing a miss. `ValidateWritable`
+stays `false`: the other branch writes a probe file into somebody else's library.
+
 **`EnableInternetProviders: false` in that listing is a red herring — do not "fix" it.** The
 response says `false` and `options.xml` on disk omits the field entirely with `<TypeOptions />`
 empty, which means *defaults apply*. Metadata fetching ran anyway, which is how `ProviderIds.Tmdb`
