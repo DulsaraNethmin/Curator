@@ -183,7 +183,13 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
   border-color: var(--error);
 }
 
-form.row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin-bottom: 1.1rem; }
+/* Controls in a line. Declared on the class rather than on `form.row`, which is
+   how it was written and how three `<div className="row">` call sites — the
+   Playback choices, the Jellyfin ending and Copyable — ended up passing an
+   inline `gap` to something that was not a flex container at all, and drawing
+   their buttons against each other. */
+.row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+form.row { margin-bottom: 1.1rem; }
 form.row input[name="title"] { flex: 1 1 20rem; }
 
 /* --- status --------------------------------------------------------------- */
@@ -578,6 +584,22 @@ h2.running { margin-top: 2.6rem; }
 .playback-form button { align-self: flex-start; }
 .playback-form ol { margin: .5rem 0 0; padding-left: 1.2rem; }
 .playback-form li { margin-bottom: .25rem; }
+
+/* The first run (T50).
+   The steps that write a setting are <Section>s and are already styled; this is
+   for the ones that are not — a path that is shown rather than typed, and the
+   two boxes of a password that is not a registry field on this page. Same
+   padding as .playback-ask so a page alternating between the three does not
+   step in and out. */
+.firstrun-step { padding: 1.1rem; }
+.firstrun-step h2 { margin: 0 0 .35rem; }
+.firstrun-step p { margin: 0 0 .7rem; max-width: 46rem; }
+.firstrun-step p:last-child { margin-bottom: 0; }
+.firstrun-step > .banner { margin: .9rem 0; }
+
+.firstrun-password { display: flex; flex-direction: column; gap: .5rem; margin-top: .9rem; }
+.firstrun-password input { max-width: 22rem; }
+.firstrun-password p { margin: 0; }
 
 /* minter, inside the Indexers section (T49).
    Indented and ruled off from the fields above it, because it is not one: the
