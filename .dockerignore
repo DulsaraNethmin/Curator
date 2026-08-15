@@ -1,0 +1,56 @@
+# What the image build is allowed to see.
+#
+# An allowlist, not a list of things to forget. The denylist version of this file
+# is correct on the day it is written and wrong the first time somebody adds a
+# directory: `web/node_modules` alone is 460 MB, `.git` is the whole history, and
+# a local library or a `curator.db` carrying an encrypted WireGuard key would
+# otherwise be uploaded to the daemon on every build and land in a layer.
+#
+# So: exclude everything, then name the five things three build stages read.
+# Adding a source directory to this repo means adding a line here, which is the
+# failure mode we want — a build that cannot find a file, rather than a build
+# that quietly ships one.
+
+*
+
+!cmd
+!internal
+!web
+!go.mod
+!go.sum
+
+# The `ffmpeg` stage runs this one file, and nothing else in scripts/ is part of
+# an image build (docs/tasks/T47-image.md). scripts/build-ffmpeg.sh reads it out
+# of the same context, so the path is load-bearing in two places.
+!scripts
+scripts/*
+!scripts/ffmpeg.sh
+
+# The 460 MB, and the two generated trees beside it. The `ui` stage runs
+# `npm ci` from the lockfile, so a local node_modules is not only large, it is
+# the wrong one — it was installed for darwin/arm64.
+web/node_modules
+web/.next
+web/out
+
+# The UI export is NOT copied in from the working tree: the `ui` stage builds it
+# and the `build` stage takes it from there. Shipping whatever happened to be in
+# dist/ is how an image gets a UI three commits older than its binary, and the
+# symptom is a screen that is merely missing a button (docs/decisions.md D16).
+internal/web/dist
+
+# Fixtures. 29 folders the parser meets in tests and nothing in the image reads.
+testdata
+internal/*/testdata
+
+# Anything a `go run` in the working tree leaves behind. The database and its key
+# are the ones that matter: DB_PATH defaults to ./curator.db, the key is written
+# beside it, and together they are the settings store with the WireGuard private
+# key in it (docs/decisions.md D28).
+*.db
+*.db-shm
+*.db-wal
+curator.key
+.env
+.env.*
+downloads

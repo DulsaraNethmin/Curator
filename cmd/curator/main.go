@@ -48,10 +48,61 @@ const shutdownTimeout = 15 * time.Second
 const indexerHTTPTimeout = 15 * time.Second
 
 func main() {
+	// The image's HEALTHCHECK, and the one argument curator takes. A `FROM
+	// scratch` image has no shell and no curl, so the only thing that can make an
+	// HTTP request inside it is curator itself (docs/tasks/T47-image.md). Handled
+	// before run() because it must open no database, read no settings and write
+	// no log — it runs every thirty seconds beside a server holding both.
+	if len(os.Args) > 1 && (os.Args[1] == "-healthcheck" || os.Args[1] == "--healthcheck") {
+		if err := healthcheck(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("curator exited", "err", err)
 		os.Exit(1)
 	}
+}
+
+// healthcheckTimeout bounds the probe. It is well under the HEALTHCHECK's own
+// --timeout so that a slow answer is reported as a failed check by curator
+// rather than as a killed process by Docker, which says nothing in the log.
+const healthcheckTimeout = 2 * time.Second
+
+// healthcheck asks the running curator whether it is up, and is what
+// `curator -healthcheck` does.
+//
+// 127.0.0.1 rather than the address the server bound: this only ever runs inside
+// the same container, and a health check that reached across a network would be
+// testing the network. The port comes from config.Port so that it is read out of
+// the same variable the server read it from, rather than guessed.
+func healthcheck() error {
+	port, err := config.Port()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), healthcheckTimeout)
+	defer cancel()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", port)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("healthcheck: %w", err)
+	}
+	defer resp.Body.Close()
+	// /healthz is outside the authentication middleware on purpose (D25, T41), so
+	// a 401 here would be a regression in the middleware rather than a missing
+	// credential — and either way it is not healthy.
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthcheck: %s answered %s", url, resp.Status)
+	}
+	return nil
 }
 
 func run() error {

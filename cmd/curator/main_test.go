@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"net/http"
 	"path/filepath"
+	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"github.com/DulsaraNethmin/curator/internal/api"
@@ -137,5 +142,84 @@ func TestAuthCredentialIsOffWithNothingConfigured(t *testing.T) {
 	}
 	if (got != api.Credential{}) {
 		t.Errorf("an empty settings table = %+v, want authentication off with no credential", got)
+	}
+}
+
+// The image's HEALTHCHECK is `curator -healthcheck` in the same binary, because
+// a FROM scratch image has no shell and no curl (docs/tasks/T47-image.md). The
+// property being tested is that it finds the port the server bound rather than
+// assuming 8090: PORT is read from the environment alone (D28), so a check that
+// hard-coded the default would report a working curator on any other port as
+// unhealthy — and compose would then refuse to start whatever waited on it.
+func TestHealthcheckReadsThePortTheServerBound(t *testing.T) {
+	clearSettingsEnv(t)
+
+	// A real listener rather than httptest's, because the port has to be known
+	// before the check runs and PORT is what carries it.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Atomic because the handler runs on its own goroutine and the second half of
+	// this test changes the answer under it — a plain int is a data race that
+	// `make check`'s -race would find, and finding it here would be a puzzle
+	// about the test rather than about curator.
+	var status atomic.Int32
+	status.Store(http.StatusOK)
+
+	// The error is the one http.Serve returns when ln closes, which is what the
+	// deferred Close is for.
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { //nolint:errcheck
+		if r.URL.Path != "/healthz" {
+			t.Errorf("healthcheck asked for %q, want /healthz", r.URL.Path)
+		}
+		w.WriteHeader(int(status.Load()))
+	}))
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	t.Setenv("PORT", strconv.Itoa(port))
+
+	// The same variable the server reads, through the same function — which is
+	// the whole reason config.Port is exported.
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Port != port {
+		t.Fatalf("the server would bind %d and the check probes %d", cfg.Port, port)
+	}
+
+	if err := healthcheck(); err != nil {
+		t.Errorf("healthcheck against a listening /healthz: %v", err)
+	}
+
+	// A 401 is the case that matters: /healthz sits outside the authentication
+	// middleware on purpose (D25, T41), so a credential prompt here is a
+	// regression in the middleware — and either way the container is not healthy.
+	status.Store(http.StatusUnauthorized)
+	if err := healthcheck(); err == nil {
+		t.Error("healthcheck accepted a 401; anything but 200 is unhealthy")
+	}
+}
+
+// Nothing listening is the ordinary state for the first ten seconds of a
+// container's life, and it has to be an error rather than a panic or a hang.
+func TestHealthcheckFailsWithNothingListening(t *testing.T) {
+	clearSettingsEnv(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	t.Setenv("PORT", strconv.Itoa(port))
+
+	if err := healthcheck(); err == nil {
+		t.Errorf("healthcheck reported %s healthy with nothing on it", fmt.Sprintf("127.0.0.1:%d", port))
 	}
 }
