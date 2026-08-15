@@ -25,7 +25,7 @@ button**
 | **6** | Own the download — the torrent engine and a WireGuard tunnel move inside the binary | **built** — T32–T38 done, verified locally 2026-08-14 against a real NordLynx endpoint; one v4-only crash found afterwards and fixed in T56 |
 | **7** | Settings that write — writable config, secrets at rest, optional password | **built** — T39–T42 and T55 done, verified locally 2026-08-14; bcrypt's cost on the Pi is still unmeasured (D25, deferred to phase 10) |
 | 8 | Watch it here — direct play, remux, Open in Jellyfin | **in progress** — T43 (the stream endpoint and the ticket) and T44 (the remux) built and verified locally 2026-08-14; T45 and T46 specified. **There is still no Play button** — nothing in the UI reaches either endpoint yet, and that is T45 |
-| 9 | One command — the image, the release pipeline, minter on demand | T47–T51 |
+| 9 | One command — the image, the release pipeline, and a way to watch on the TV | **specified** — [`phase-9.md`](phase-9.md). T47–T51 keep their cited meanings, plus T62–T66. **T51's double claim is resolved**: it is the stale documents, and the first-run wizard took T50 |
 | 10 | Cutover — run alongside, confirm parity, remove the containers | back up the *arr configs first (T52) |
 
 ---
