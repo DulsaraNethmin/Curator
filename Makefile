@@ -9,7 +9,7 @@ SHELL := /bin/bash
 ARM   := GOOS=linux GOARCH=arm64
 
 .DEFAULT_GOAL := help
-.PHONY: help status check build ui go test race vet cross run ui-dev live live-tunnel live-rss clean
+.PHONY: help status check build ui go test race vet cross run restart ui-dev live live-tunnel live-rss clean
 
 help: ## the targets, and what they are for
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk -F':.*?## ' '{printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
@@ -44,8 +44,21 @@ cross: ## the arm64 build, which is how this ships
 
 ## ---------------------------------------------------------------------------
 
-run: ## run it, reading .env if there is one
+# `run` gets none of .env and `restart` gets all of it, which is the whole
+# difference between them. Nothing in Go reads .env — it is shell-sourced — and
+# a make recipe runs in a fresh non-interactive shell that never sourced it, so
+# `run` comes up on the defaults: port 8090, ./curator.db, no TMDB key, no
+# tunnel. `restart` sources it deliberately.
+run: ## go run on the defaults — a recipe's shell has not sourced .env
 	go run ./cmd/curator
+
+# Not a prerequisite of `check` and never will be: the gate builds, vets, tests
+# and cross-compiles, and a commit gate with a side effect on a live service is
+# not a gate. `ui` first is D16 — the export has to exist before the binary that
+# embeds it. PORT, BIN and LOG are overridable, as is anything in .env:
+# `make restart PORT=8091 VPN_REQUIRED=false`.
+restart: ui ## rebuild, put that binary on PORT (8090), wait until /healthz answers
+	@./scripts/restart.sh
 
 ui-dev: ## the UI alone against a running binary; output:'export' has no dev proxy
 	NEXT_PUBLIC_API_BASE=http://localhost:8090 npm --prefix web run dev
