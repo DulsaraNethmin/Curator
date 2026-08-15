@@ -1097,4 +1097,84 @@ same response rather than later: a library of 29 folders reporting 2 films has t
    the picker's options, tests over the fixture lower the floor, and the real 50 MiB floor is proven
    over **sparse** files in `t.TempDir()` — the shape `internal/api/stream_test.go` already uses.
 
+---
+
+## D34 — curator provisions a Jellyfin it brought up, and never rewrites one somebody is already watching
+
+**Status:** decided, measured against a throwaway 10.10.7 (2026-08-15) · **Amends:**
+[D15](#d15--the-jellyfin-refresh-is-best-effort-and-its-key-is-optional) and the narrowness rule in
+`internal/jellyfin`'s package doc · **Cited by:** [`phase-9.md`](phase-9.md),
+[T64](tasks/T64-jellyfin-provisioner.md), [T66](tasks/T66-adopt-jellyfin.md)
+
+`internal/jellyfin` gains the ability to **write** — complete a startup wizard, create a library,
+mint an API key. Those methods live on a `Provisioner` that **only the setup flow constructs**, they
+refuse any server reporting `StartupWizardCompleted: true`, and the importer and the poller keep the
+narrow read-only `Client` they have always had.
+
+**What forced it.** Phase 9's promise is that a stranger gets from `docker compose up -d` to watching
+on an Apple TV. curator's own player is the right answer in a browser and will never be the answer on
+a television, so Jellyfin is the other half — and the onboarding for that today is install a second
+server, click through its wizard, find its API-keys page, paste a key back, and get two sets of
+Docker mounts to agree. **The last step is the one people fail silently**: the paths differ, the
+library scans, nothing appears, and no error is produced anywhere.
+
+**The rule this reverses was right, and it stays right for `Client`.** The package doc says: *"no
+user or session endpoints … nothing that writes, for the same reason `internal/qbit` cannot delete or
+pause a torrent: a method that does not exist cannot be called by mistake against a media server the
+household is watching."* That argument is untouched by this decision. What changes is that the
+guarantee moves from *the package has no such method* to *the type that has it cannot be reached from
+the poller* — which is weaker, and is therefore paid for with a guard rather than asserted.
+
+**The guard has teeth because Jellyfin has none.** Measured: on a server reporting
+`StartupWizardCompleted: true`, `POST /Startup/User {"Name":"attacker","Password":"x"}` carrying a
+valid API key answered **`204`** and renamed the admin account and changed its password. Same user
+`Id`; the original credentials answered `401` afterwards. Unauthenticated, the same call is `401`. So
+a configured Jellyfin does **not** close its setup endpoints to an authenticated caller, and the only
+thing between a household and being locked out of their own media server is curator's own restraint.
+`Provisioner` re-reads `/System/Info/Public` before every write and does not cache the answer.
+
+**Two operations are permitted against a configured server, and both are additive**: adding a library
+and minting a key. Both are opt-in per use and both are things the user explicitly confirms. Nothing
+under `/Startup/` ever runs against one. That is the adopt branch — a NAS install, or the Pi at the
+phase 10 cutover.
+
+**No Docker socket, and this is where that is recorded.** The alternative that lost was curator
+downloading and running the Jellyfin container itself, which was the first proposal and is the one
+everybody proposes. It requires `-v /var/run/docker.sock:/var/run/docker.sock`, which is **root on
+the host**, handed to a service that ships with authentication **off by default**
+([D25](#d25--authentication-is-optional-and-off-by-default)) — an unauthenticated LAN-wide root
+shell, in a product whose entire security posture is "one password, optional, no TLS, LAN only". It
+is not a trade that can be made safe by being careful with it.
+
+**The cost of refusing it is one pasted command**, accepted deliberately:
+`docker compose --profile jellyfin up -d`. Jellyfin sits behind a compose profile and **never runs
+unbidden** — `docker compose up -d` brings up curator alone, which is the shape Nethmin asked for
+outright: *"when the main app starts, does it start jellyfin as well even if user has not select
+jellyfin? if yes it's not what i expect."* Everything after that line is curator's. The same
+mechanism carries minter, which is why [T49](tasks/T49-minter-on-demand.md) no longer needs a socket
+either, and why D23 — reserved to record that socket's cost — stays unwritten.
+
+**What this buys, measured rather than claimed.** A library created entirely through the API, with
+`LibraryOptions` carrying only `PathInfos`, scanned and produced
+`ProviderIds: {"Tmdb":"1083381"}` with `ProductionYear: 2026`. That is exactly the field
+[D32](#d32--the-jellyfin-link-is-keyed-on-the-tmdb-id-not-on-the-path) keys Open in Jellyfin on, and
+exactly the year `years=` narrows by. **The deep link works on a bundle nobody configured by hand** —
+which is the property being sold, on the key that was already chosen for other reasons.
+
+**Pinned, and degrading to instructions.** The startup endpoints are not a documented contract; they
+are what the setup wizard happens to call in 10.10.7, which is what the Pi runs and what the compose
+file pins. When the API answers something unexpected, the flow **shows the manual steps with the
+exact path to paste** rather than failing. A provisioning flow that breaks on somebody else's release
+schedule and has no fallback is a support burden this project cannot carry.
+
+**The alternatives.** Shipping Jellyfin always-on inside the bundle is simpler and was rejected
+above. Asking the user to do all of it by hand is what exists today and is the thing that fails
+silently on paths. Writing a Jellyfin plugin puts curator's code inside the process it is trying to
+stay narrow against. And configuring Jellyfin by writing its `system.xml` and library folders
+directly on the shared volume would skip the API entirely — it works, it is undocumented, it breaks
+on any schema change, and it requires curator to hold a second, private theory of how Jellyfin stores
+its configuration.
+
+---
+
 D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.
