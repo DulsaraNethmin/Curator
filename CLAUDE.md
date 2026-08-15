@@ -115,6 +115,78 @@ the replacement on a laptop and changes nothing on the Pi. Read from the Pi free
   say what we measured.
 - Config from environment, read once into `internal/config`.
 
+## Fanning work out
+
+A session may run subagents in parallel. The win is real, and it is a **reading**
+win rather than a building one — which is worth knowing before the first one is
+launched, because the building half of this repo is where the collisions are.
+
+**Where it pays.** The context a task starts from is ~3,700 lines before its own
+task file is opened: `docs/decisions.md` is 1,180, `internal/api/jellyfin.go` is
+1,093, `docs/phase-9.md` is 496. One agent per document is the cheapest speed-up
+available here. So are grep-and-audit sweeps across `docs/`, and independent file
+edits once the facts are agreed.
+
+**Where it does not, and the ceiling is lower than it looks.** Coupled prose is
+one lane and one mind. Measured on [T51](docs/tasks/T51-documents.md):
+`README.md` and `docs/architecture.md` are about 60% of that task and describe
+**the same pipeline in two notations** — an ASCII fence and a mermaid
+`sequenceDiagram` — so splitting them produces two different stories about where
+the VPN sits. The realistic ceiling on a documentation task here is ~2x, not Nx.
+
+**Delegated reading returns quotes, not summaries.** A handoff is worth its
+length because nothing in it is reconstructable, and an agent that reports "the
+probe worked" has destroyed the only expensive thing it was sent for. Ask for
+verbatim output, exit codes and byte counts.
+
+### One worktree per agent, and never two builds in one tree
+
+`git worktree add` gives each agent its own `curator.db`, `curator.key`,
+`downloads/`, and — the one that actually bites — its own `internal/web/dist/`.
+`web/scripts/embed.mjs:17` does `rm -rf` on that directory and rebuilds it in
+place, while `//go:embed all:dist` is a **compile-time** directive. A second
+`make check` in the same tree therefore walks a directory being deleted under it,
+and the outcomes run from a binary carrying half a UI to `internal/web` failing
+to compile outright. It is the sharpest edge in the repo and a worktree removes
+it completely.
+
+**Do not copy `.env` into a worktree.** A worktree without one is exactly the
+state CI runs in, which is why all ten `TestLive*` take their skip there
+(`.github/workflows/check.yml`). Copying it back in re-imports every shared
+resource below — the tunnel, qBittorrent's `curator` category, the real library.
+
+### What a worktree does not fix, because it is global to the machine
+
+- **`docker compose`, anything.** `compose.yaml:30` sets `name: curator`, so a
+  second `up -d` reconciles the first agent's containers instead of starting its
+  own, and either `down` destroys both. **`COMPOSE_PROJECT_NAME` and `-p` do not
+  rescue this**: the volumes are declared `name: curator-data` and
+  `name: curator-media` at `compose.yaml:242-244`, and an explicit volume name is
+  absolute — it ignores the project prefix. Two agents share one database, one
+  key and one library whatever the project is called.
+- **Ports.** `defaultPort` is 8090 (`internal/config/config.go:173`) and `Addr()`
+  binds the wildcard, not loopback. 8090 and 8099 are already held by
+  long-running instances that are not a session's to kill. `PORT` is read from
+  the environment only (`config.go:514`), so giving each agent its own is free
+  and is the fix.
+- **Docker image tags.** `curator-ffmpeg:8.1.1`
+  (`scripts/build-ffmpeg.sh:25`) and `ghcr.io/dulsaranethmin/curator:latest` are
+  daemon-global names: a build in one agent re-points the tag another is about to
+  run.
+- **`make clean`.** `Makefile:66` runs `go clean -cache -testcache`, which is
+  every agent's cache and not this one's.
+- **The tunnel, qBittorrent, and the Pi.** One `wg0.conf` is one private key and
+  one peer session, so two `make live-tunnel`s make the endpoint flap. The
+  qBittorrent category is `curator` for everyone. The Pi is read-only anyway.
+
+### Any timing measured while agents run in parallel is noise
+
+`$GOCACHE` and the test cache are machine-global and content-keyed, so one
+agent's `go test ./...` can return another's cached results in milliseconds and
+look like a fast run. **Take timings serially or not at all.** A wrong number in
+a handoff is worse than a missing one, because the next session builds on it
+instead of re-measuring.
+
 ## Git workflow
 
 **Branch first, never commit to `main`.** Create the branch before the first commit of a piece of
