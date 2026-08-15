@@ -140,6 +140,19 @@ var registry = []Setting{
 	// remux exists at all, and this is it.
 	{Env: "FFMPEG_PATH", Group: "playback", Kind: KindPath},
 
+	// Phase 9's one new row, and it is a record of an answer rather than a
+	// switch. Nothing reads it except the screen that asked — it does not gate
+	// the Play button, hide the Jellyfin link or change what any endpoint does,
+	// because that would be the "prefer direct play" toggle above being
+	// reintroduced under a new name (docs/tasks/T65-playback-screen.md).
+	//
+	// Empty is a legal value and the one every install starts in: it means the
+	// question has not been put yet, which is what makes the Playback screen a
+	// first-run destination instead of a nag.
+	{Env: "PLAYBACK_TARGET", Group: "playback", Kind: KindEnum,
+		Options:  []string{config.PlaybackBrowser, config.PlaybackJellyfin},
+		validate: func(v string) error { _, err := config.ParsePlaybackTarget(v); return err }},
+
 	{Env: "JELLYFIN_URL", Group: "jellyfin", Kind: KindURL},
 	{Env: "JELLYFIN_API_KEY", Group: "jellyfin", Kind: KindText, Secret: true},
 

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { api, type Setting, type SettingsResult } from '@/lib/api';
 import { Failure, Working } from '@/components/states';
 import { Section } from '@/components/settings/section';
+import { Playback } from '@/components/settings/playback';
 
 /**
  * Settings, in two halves that answer two different questions.
@@ -64,6 +65,13 @@ export default function Settings() {
           <span className="mono small">{pending.map((row) => row.key).join(' · ')}</span>
         </div>
       )}
+
+      {/* Above the form, because on a fresh install it is the only question on
+          this page anybody has to answer, and because the form below it is a
+          reference rather than a destination. It is not a modal and it does not
+          block anything: search, the library and downloads all work with no
+          playback choice made at all. */}
+      {settings && <Playback settings={settings} onSaved={setSettings} />}
 
       {settings &&
         groupsOf(rows).map(({ group, settings: fields }) => (
@@ -242,7 +250,7 @@ const groups: Record<string, { title: string; blurb?: string; warning?: React.Re
   playback: {
     title: 'Playback',
     blurb:
-      'Optional. Films play in the browser directly; when the browser refuses the container, curator hands the file to ffmpeg and rewrites the container without re-encoding anything. With no ffmpeg it is direct play only, and anything the browser refuses offers a VLC link instead.',
+      'Optional. Films play in the browser directly; when the browser refuses the container, curator hands the file to ffmpeg and rewrites the container without re-encoding anything. With no ffmpeg it is direct play only, and anything the browser refuses offers a VLC link instead. playback_target is the answer given above — it is here too because clearing it is how you get asked again.',
   },
   jellyfin: {
     title: 'Jellyfin',

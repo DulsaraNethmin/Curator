@@ -77,6 +77,17 @@ type Config struct {
 
 	// Phase 8: playback.
 	//
+	// PlaybackTarget records which answer was given to "how do you want to
+	// watch" — `browser`, `jellyfin`, or empty for "nobody has been asked yet".
+	//
+	// It is a record of an answer rather than a switch that changes behaviour,
+	// and that distinction is load-bearing: nothing reads it except the screen
+	// that asks the question, so that it cannot become the "prefer direct play"
+	// toggle phase 8 refused to build under a new name
+	// (docs/tasks/T65-playback-screen.md). Empty is what makes the Playback
+	// screen a first-run destination instead of a nag.
+	PlaybackTarget string
+
 	// FFmpegPath is where the remux's ffmpeg is. Empty means look on PATH, and
 	// not finding one is not a startup error — it means direct play only, the
 	// same posture an unset JELLYFIN_API_KEY already has (docs/decisions.md D24,
@@ -90,6 +101,19 @@ type Config struct {
 const (
 	BackendEmbedded    = "embedded"
 	BackendQBittorrent = "qbittorrent"
+)
+
+// The two answers to "how do you want to watch", and the third state that is
+// not a value at all.
+//
+// PlaybackUnasked is "" rather than a word because it has to be what an unset
+// variable and an absent row both already are — a phase-9 install upgrading
+// from phase 8 has never been asked, and inventing a spelling for that would
+// mean writing a migration to apply it.
+const (
+	PlaybackUnasked  = ""
+	PlaybackBrowser  = "browser"
+	PlaybackJellyfin = "jellyfin"
 )
 
 // Embedded reports whether curator downloads in this process.
@@ -199,10 +223,18 @@ const (
 	// that should need no configuration.
 	defaultQBitDownloadsPath = "/downloads"
 
-	// defaultJellyfinURL is a laptop default, like defaultQBitURL. On the Pi
+	// DefaultJellyfinURL is a laptop default, like defaultQBitURL. On the Pi
 	// Jellyfin is 10.10.7 at 192.168.1.26:8096, and http://jellyfin:8096 inside
 	// Docker.
-	defaultJellyfinURL = "http://127.0.0.1:8096"
+	//
+	// Exported, unlike its neighbours, because phase 9's setup flow has to be
+	// able to tell "somebody configured this" from "nobody has, and this is the
+	// value a fresh clone gets". Inside the bundle those need different
+	// answers — compose deliberately sets no JELLYFIN_URL, so that what T65
+	// writes is not shadowed by an environment that always wins
+	// (docs/decisions.md D28) — and the difference cannot be recovered from the
+	// string alone (docs/tasks/T65-playback-screen.md).
+	DefaultJellyfinURL = "http://127.0.0.1:8096"
 
 	// defaultDownloadsDir is where the embedded engine writes payloads. It is
 	// relative for the same reason defaultDBPath is: `go run ./cmd/curator` on
@@ -317,11 +349,11 @@ func Load(resolved map[string]string) (*Config, error) {
 		// path qBittorrent reports is already the path curator sees".
 		DownloadsPath:     r.get("DOWNLOADS_PATH", ""),
 		QBitDownloadsPath: r.get("QBIT_DOWNLOADS_PATH", defaultQBitDownloadsPath),
-		JellyfinURL:       r.get("JELLYFIN_URL", defaultJellyfinURL),
+		JellyfinURL:       r.get("JELLYFIN_URL", DefaultJellyfinURL),
 		JellyfinAPIKey:    r.get("JELLYFIN_API_KEY", ""),
 
 		// No default, and empty is meaningful: "the browser can reach Jellyfin
-		// at the same URL curator does". A default of defaultJellyfinURL here
+		// at the same URL curator does". A default of DefaultJellyfinURL here
 		// would hard-code 127.0.0.1 into a link somebody clicks from a phone.
 		JellyfinPublicURL: r.get("JELLYFIN_PUBLIC_URL", ""),
 
@@ -353,6 +385,14 @@ func Load(resolved map[string]string) (*Config, error) {
 		return nil, err
 	}
 	cfg.TorrentBackend = backend
+
+	// Same shape, and refused at start-up for the same reason: a value the
+	// settings screen would reject must not be one the environment can smuggle
+	// past it, or the two sources disagree about what is legal.
+	cfg.PlaybackTarget, err = ParsePlaybackTarget(r.get("PLAYBACK_TARGET", PlaybackUnasked))
+	if err != nil {
+		return nil, err
+	}
 
 	cfg.VPNConfig, err = r.vpnConfig()
 	if err != nil {
@@ -533,6 +573,23 @@ func ParseBackend(raw string) (string, error) {
 		return backend, nil
 	default:
 		return "", fmt.Errorf("TORRENT_BACKEND %q: want %q or %q", raw, BackendEmbedded, BackendQBittorrent)
+	}
+}
+
+// ParsePlaybackTarget checks a PLAYBACK_TARGET value.
+//
+// Empty is accepted and means unasked, which is the one thing that separates
+// this from ParseBackend: a backend must be one of two things because something
+// has to download, and this may legitimately be nothing at all because the
+// question may not have been put yet.
+func ParsePlaybackTarget(raw string) (string, error) {
+	target := strings.ToLower(strings.TrimSpace(raw))
+	switch target {
+	case PlaybackUnasked, PlaybackBrowser, PlaybackJellyfin:
+		return target, nil
+	default:
+		return "", fmt.Errorf("PLAYBACK_TARGET %q: want %q or %q, or empty for not yet chosen",
+			raw, PlaybackBrowser, PlaybackJellyfin)
 	}
 }
 

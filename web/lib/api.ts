@@ -363,6 +363,68 @@ export type SettingsResult = {
 };
 
 /**
+ * The four worlds the Jellyfin probe distinguishes, and the screen branches on
+ * three of them.
+ *
+ * `unreachable` and `starting` are the same instruction — keep waiting — and
+ * two different sentences, which is why they are two states: nothing listening
+ * means the pasted command has not run, and starting means it has.
+ */
+export type JellyfinProbeState = 'unreachable' | 'starting' | 'needs_setup' | 'configured';
+
+export type JellyfinProbe = {
+  state: JellyfinProbeState | string;
+  url: string;
+  version?: string;
+
+  /**
+   * What provisioning will hand Jellyfin. It comes from the API rather than
+   * being built here because it is `LIBRARY_MOVIES` as the *server* resolved
+   * it, and a second copy in the browser is exactly the path disagreement this
+   * whole flow exists to make impossible.
+   */
+  library_path: string;
+
+  /** The line the user pastes. It names compose.yaml's profile, so it is the
+   * server's to spell, not this screen's. */
+  command: string;
+  detail?: string;
+};
+
+export type JellyfinProvisioned = {
+  username: string;
+  url: string;
+  public_url: string;
+  library_path: string;
+  library: string;
+};
+
+/**
+ * A provisioning failure, read off ApiError.body.
+ *
+ * `instructions` is the phase's required fallback rather than decoration: the
+ * Jellyfin startup endpoints are not a documented contract, so every failure
+ * has to end somewhere the user can still reach a working Jellyfin by hand.
+ */
+export type JellyfinFailure = {
+  step?: string;
+  adopt?: boolean;
+  instructions?: string[];
+};
+
+export function jellyfinFailure(error: unknown): JellyfinFailure {
+  if (!(error instanceof ApiError)) return {};
+  const body = error.body;
+  return {
+    step: typeof body.step === 'string' ? body.step : undefined,
+    adopt: body.adopt === true,
+    instructions: Array.isArray(body.instructions)
+      ? body.instructions.filter((line): line is string => typeof line === 'string')
+      : undefined,
+  };
+}
+
+/**
  * AuthStatus is what GET /api/auth answers, and it is two booleans because the
  * question is which screen to draw: `required` says whether there is a password
  * at all, `authenticated` whether this browser would get past it.
@@ -399,11 +461,27 @@ export class ApiError extends Error {
    */
   readonly fields: Record<string, string>;
 
-  constructor(status: number, message: string, fields: Record<string, string> = {}) {
+  /**
+   * The rest of the error body, for the endpoints that answer with more than a
+   * message. `POST /api/jellyfin/provision` is the one: a provisioning failure
+   * carries which step it got to, whether the server is one to adopt rather
+   * than retry, and the manual instructions that are the phase's required
+   * fallback. Losing those to `throw new Error(message)` would leave the
+   * screen with nothing to draw but the sentence.
+   */
+  readonly body: Record<string, unknown>;
+
+  constructor(
+    status: number,
+    message: string,
+    fields: Record<string, string> = {},
+    body: Record<string, unknown> = {},
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.fields = fields;
+    this.body = body;
   }
 
   get expiredSearch() {
@@ -458,8 +536,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // phases 2-4 kept it, so the message is worth showing verbatim.
     let message = text || response.statusText;
     let fields: Record<string, string> = {};
+    let parsed: Record<string, unknown> = {};
     try {
       const body = JSON.parse(text);
+      if (body && typeof body === 'object') parsed = body;
       if (typeof body?.error === 'string') message = body.error;
       if (body?.fields && typeof body.fields === 'object') fields = body.fields;
     } catch {
@@ -472,7 +552,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // Routing it through the gate would reset the form somebody is typing in.
     if (response.status === 401 && path !== authLoginPath) unauthorized?.();
 
-    throw new ApiError(response.status, message, fields);
+    throw new ApiError(response.status, message, fields, parsed);
   }
 
   return (text ? JSON.parse(text) : null) as T;
@@ -536,6 +616,29 @@ export const api = {
   // is opt-in: the page loads from configuration alone and checks on request.
   settings: (probe = false) =>
     request<SettingsResult>(`/api/settings${probe ? '?probe=1' : ''}`),
+
+  /**
+   * Is there a Jellyfin, and what state is it in?
+   *
+   * Short-timeout on the server side and safe to call on a loop: it is one
+   * unauthenticated GET that mutates nothing. The Playback screen polls it
+   * while a container starts, which is minutes on a first run — 202 MB of
+   * layers to pull before a 14-27 second cold start.
+   */
+  jellyfinProbe: () => request<JellyfinProbe>('/api/jellyfin/probe'),
+
+  /**
+   * Run Jellyfin's setup wizard and record the result.
+   *
+   * The password is sent once and is never stored by curator: it creates the
+   * account, signs in with it, mints an API key and forgets it. The key never
+   * comes back — the response carries no secret at all.
+   */
+  jellyfinProvision: (body: { username: string; password: string; public_url: string }) =>
+    request<JellyfinProvisioned>('/api/jellyfin/provision', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   /**
    * A partial settings object: key → the text the environment variable would

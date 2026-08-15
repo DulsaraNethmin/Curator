@@ -283,8 +283,8 @@ func TestImportDefaults(t *testing.T) {
 	if cfg.QBitDownloadsPath != defaultQBitDownloadsPath {
 		t.Errorf("QBitDownloadsPath = %q, want %q", cfg.QBitDownloadsPath, defaultQBitDownloadsPath)
 	}
-	if cfg.JellyfinURL != defaultJellyfinURL {
-		t.Errorf("JellyfinURL = %q, want %q", cfg.JellyfinURL, defaultJellyfinURL)
+	if cfg.JellyfinURL != DefaultJellyfinURL {
+		t.Errorf("JellyfinURL = %q, want %q", cfg.JellyfinURL, DefaultJellyfinURL)
 	}
 	if cfg.JellyfinAPIKey != "" {
 		t.Errorf("JellyfinAPIKey = %q, want empty", cfg.JellyfinAPIKey)
@@ -536,5 +536,49 @@ func TestJellyfinLinkPrefersThePublicURL(t *testing.T) {
 	}
 	if got := cfg.JellyfinLink(); got != "http://jellyfin:8096" {
 		t.Errorf("JellyfinLink() = %q, want JellyfinURL — blank is not a value", got)
+	}
+}
+
+// PLAYBACK_TARGET records an answer and changes nothing.
+//
+// That is the whole of its contract (docs/tasks/T65-playback-screen.md): it
+// must not gate the Play button, hide the Jellyfin link or change what any
+// endpoint does, or it becomes the "prefer direct play" toggle phase 8 refused
+// to build under a new name. Asserted structurally rather than by testing each
+// endpoint twice — every field of the resolved configuration is compared, so a
+// later change that made some other setting depend on it fails here.
+func TestPlaybackTargetChangesNothingElse(t *testing.T) {
+	// Only this one is cleared. Everything else is left as the shell has it,
+	// because the assertion is that two loads agree with each other rather than
+	// that either matches a default.
+	t.Setenv("PLAYBACK_TARGET", "")
+
+	base, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	for _, target := range []string{PlaybackBrowser, PlaybackJellyfin} {
+		t.Setenv("PLAYBACK_TARGET", target)
+		got, err := Load(nil)
+		if err != nil {
+			t.Fatalf("Load with PLAYBACK_TARGET=%s: %v", target, err)
+		}
+		if got.PlaybackTarget != target {
+			t.Errorf("PlaybackTarget = %q, want %q", got.PlaybackTarget, target)
+		}
+
+		// Blank the one field that is allowed to differ, then compare the rest.
+		got.PlaybackTarget = base.PlaybackTarget
+		if *got != *base {
+			t.Errorf("PLAYBACK_TARGET=%s changed something else:\n got %+v\nwant %+v", target, *got, *base)
+		}
+	}
+}
+
+func TestPlaybackTargetRefusesAValueTheScreenWouldNotOffer(t *testing.T) {
+	t.Setenv("PLAYBACK_TARGET", "chromecast")
+	if _, err := Load(nil); err == nil {
+		t.Error("Load accepted PLAYBACK_TARGET=chromecast; the environment must not smuggle past what the form refuses")
 	}
 }
