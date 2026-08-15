@@ -40,6 +40,13 @@ unauthenticated it is `401`. Step 6 works **before** step 10, which is why the l
 are both in place before the wizard is closed: if anything fails, the server is still visibly
 unfinished rather than half-configured and claiming otherwise.
 
+**Found while building this, and missed by the measurement above:** step 0 does not go straight from
+refusing the connection to `200`. A starting 10.10.7 accepts the connection and answers **`503`** with
+the body `"Jellyfin Server is loading. Please try again shortly."` for most of that 17.6 s. The first
+run of the live test failed on exactly this. It is `ErrNotReady`, kept distinct from `ErrUnreachable`
+because both mean *wait and ask again* while the wait is on, and mean different sentences once it
+times out: nothing listening says the pasted command never ran, still loading says it did.
+
 Step 7's body is `{"LibraryOptions":{"PathInfos":[{"Path":"<curator's movies path>"}]}}` and
 **nothing else** — see *Do not*.
 
