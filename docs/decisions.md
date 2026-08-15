@@ -1006,3 +1006,95 @@ lands somewhere useful and never 404s.
 read-only lookup and still cannot write, control playback, or read a user or a session — the
 household is watching that Jellyfin throughout this phase, and a method that does not exist cannot
 be called by mistake.
+
+---
+
+## D33 — A folder with no film in it is not a movie: the row goes, the folder stays
+
+**Status:** decided, implemented in [T57](tasks/T57-library-way-in.md) · **Reverses:**
+[T17](tasks/T17-library-link.md)'s "do not touch `scan.go`" rule and
+[`docs/phase-4.md`](phase-4.md)'s "`internal/library/scan.go` is not modified"
+
+`internal/library/scan.go` recorded **every** directory under `LIBRARY_MOVIES` as an imported movie,
+because `largestVideo` answered 0 for an empty folder and the scanner wrote the row anyway. 15 of the
+29 folders on the Pi are empty, so over half the library was a row for a film that is not there — and
+`status: imported` is exactly what the movie page reads to decide whether to draw Play. The Play
+button appeared, and the stream 404'd.
+
+Two halves, and neither works alone. **The scanner stops creating those rows**, and **every scan
+removes the ones already recorded**. Pruning alone is not stable: the next `POST /api/scan` puts
+every one straight back.
+
+### What was reversed, and why it was right before
+
+T17 said, in a *Do not* list: *"Touch `scan.go`. Not `largestVideo`, not `videoExtensions`, not
+`Scan`… the flat, non-recursive, no-floor `largestVideo` is what the scanner needs and it stays as it
+is."* `docs/phase-4.md` repeated it. **That was correct while a disagreement between the two pickers
+produced a wrong `size_bytes`.** It stops being correct now that the same disagreement decides
+whether a row **exists**: a scanner that missed a film the stream endpoint can serve would delete its
+row. Two answers to "which file is the film" went from a smell to data loss, so there is now exactly
+one — `library.FindFeature`, shared by the importer, the stream endpoint and the scanner, called with
+`FeatureOpts{}` in all three.
+
+The consequence worth stating positively: `size_bytes > 0` now means **playable, by construction**.
+No "playable" column, no migration, and no disk read on the list endpoint.
+
+### What removes a row, and what emphatically does not
+
+Classification is a pure join over what the scan just walked — no second look at the disk, so there
+is no window in which the two disagree.
+
+| the row's `library_path` | the scan said | verdict |
+|---|---|---|
+| a download is in flight for it | *(checked first)* | **keep, always** |
+| outside `LIBRARY_MOVIES` | *(never visited)* | **remove** — `AssertInside` means it can never be served |
+| a folder that holds a film | recorded | keep |
+| a folder read successfully with no film in it | `NoMedia` | **remove** |
+| absent, unreadable, or a name that no longer parses | anything else | keep, and say so in the log |
+
+**Only two branches delete, and both are positive findings.** Everything else keeps. That asymmetry
+is the whole safety argument: an unmounted library reads as an empty directory, every row falls
+through to "could not account for it", and **nothing is removed**. If the root itself cannot be read,
+`Scan` returns an error, the request is a 500, and the prune never runs at all. `Skipped` therefore
+carries a `NoMedia` **bool** rather than a sentence — a caller deciding a row's fate on a substring
+match is one reworded message away from deleting the wrong thing.
+
+A row with a download in flight is never pruned even when its folder is empty, because the importer
+creates the destination folder and only then hardlinks into it: there is a real window where the
+folder legitimately holds nothing. "In flight" is the EXISTS over `downloads` that `LibraryByTMDBID`
+already uses for the badge on a poster, so the screen and the pruner cannot disagree.
+
+### Rows only. The directory is never touched
+
+The prune calls `store.DeleteMovie` — rows, `downloads` then `movies` for the foreign key, no disk
+and no torrent client. Emphatically **not** `download.Service.DeleteMovie`, which removes files and
+talks to qBittorrent; that stays on the one request that destroys things on purpose
+([D19](#d19--deleting-a-movie-removes-the-file-and-asks-qbittorrent-to-remove-its-own)).
+
+Deleting the empty directories is the first improvement the next reader will propose, and it is
+refused: until the phase 10 cutover those directories belong to Radarr, and curator removing them is
+curator fighting the \*arr stack for the library.
+
+### Nothing vanishes silently
+
+That is [D6](#d6--tmdb_id-is-nullable)'s principle — surface what needs attention rather than
+dropping it — applied to a different fact. `POST /api/scan` reports `empty`, `removed` and `missing`
+beside `scanned`, and the log carries one line per removed row and one per kept-but-unaccounted-for
+row. `scanned` narrowed its meaning to "folders that hold a film", which is why `empty` ships in the
+same response rather than later: a library of 29 folders reporting 2 films has to explain itself.
+
+### Three costs, accepted rather than worked around
+
+1. **A film under 50 MiB stops being a movie** and its row is pruned. It was already unstreamable —
+   `featureFile` applies the same floor — so the library was claiming a film it could not play.
+2. **A symlinked feature *file* inside a library folder stops counting.** `largestVideo` used an
+   lstat and recorded the link's own few bytes; the shared picker skips every non-regular entry, on a
+   security argument written for torrent folders. Folder-level symlinks still work, and a test names
+   the file-level behaviour so it is a decision rather than a surprise.
+3. **The committed fixture scans as ZERO films at the production floor.** Its videos are 4096, 2048
+   and 512 bytes, and a 50 MiB blob does not belong in git — `docs/phase-4.md` and T17 both say
+   nothing may be added to `testdata/library/movies/`, and that rule survives. So `ScanWith` takes
+   the picker's options, tests over the fixture lower the floor, and the real 50 MiB floor is proven
+   over **sparse** files in `t.TempDir()` — the shape `internal/api/stream_test.go` already uses.
+
+D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.

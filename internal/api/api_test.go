@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,6 +37,96 @@ type fakeStore struct {
 	// The library index behind a TMDB card's "already in your library" badge.
 	library    map[int64]store.LibraryState
 	libraryErr error
+
+	// downloading marks a movie id as having a torrent still running for it, so
+	// the scan's prune can be tested against the one row it must never remove.
+	downloading map[int64]bool
+	onDiskErr   error
+	deleteErr   error
+	deleted     []int64 // ids passed to DeleteMovie, in order
+}
+
+// MoviesOnDisk mirrors the real query's two exclusions rather than returning
+// everything: a row with no library_path is not a prune candidate, and neither is
+// one with a download in flight. A fake that skipped them would let a broken
+// pruner pass.
+func (f *fakeStore) MoviesOnDisk(context.Context) ([]store.OnDisk, error) {
+	if f.onDiskErr != nil {
+		return nil, f.onDiskErr
+	}
+	out := []store.OnDisk{}
+	for _, row := range f.order {
+		if row.LibraryPath == nil || strings.TrimSpace(*row.LibraryPath) == "" {
+			continue
+		}
+		out = append(out, store.OnDisk{
+			ID:          row.ID,
+			Title:       row.Title,
+			Year:        row.Year,
+			LibraryPath: *row.LibraryPath,
+			Downloading: f.downloading[row.ID],
+		})
+	}
+	return out, nil
+}
+
+func (f *fakeStore) DeleteMovie(_ context.Context, id int64) (store.Deleted, error) {
+	if f.deleteErr != nil {
+		return store.Deleted{}, f.deleteErr
+	}
+	row, ok := f.byID[id]
+	if !ok {
+		return store.Deleted{}, store.ErrNotFound
+	}
+	f.deleted = append(f.deleted, id)
+	delete(f.byID, id)
+	if row.LibraryPath != nil {
+		delete(f.byPath, *row.LibraryPath)
+	}
+	for i, r := range f.order {
+		if r.ID == id {
+			f.order = append(f.order[:i], f.order[i+1:]...)
+			break
+		}
+	}
+	return store.Deleted{Movie: *row}, nil
+}
+
+// seedOnDisk records a row the way an earlier scan would have, so a test can put
+// a stale row in front of the pruner.
+func (f *fakeStore) seedOnDisk(path, title string, year int) *store.Movie {
+	f.nextID++
+	p := path
+	row := &store.Movie{
+		ID:          f.nextID,
+		Title:       title,
+		Year:        year,
+		MediaType:   store.MediaTypeMovie,
+		Status:      store.StatusImported,
+		LibraryPath: &p,
+		AddedAt:     time.Now().UTC(),
+	}
+	f.byPath[p] = row
+	f.byID[row.ID] = row
+	f.order = append(f.order, row)
+	return row
+}
+
+// seedWanted records a row that was never on disk: library_path NULL, which is
+// what a film asked for but not yet fetched looks like.
+func (f *fakeStore) seedWanted(title string, year int) *store.Movie {
+	f.nextID++
+	row := &store.Movie{
+		ID:        f.nextID,
+		Title:     title,
+		Year:      year,
+		MediaType: store.MediaTypeMovie,
+		Status:    store.StatusWanted,
+		AddedAt:   time.Now().UTC(),
+	}
+	f.byID[row.ID] = row
+	f.order = append(f.order, row)
+	return row
 }
 
 func (f *fakeStore) LibraryByTMDBID(context.Context) (map[int64]store.LibraryState, error) {
@@ -49,7 +140,11 @@ func (f *fakeStore) LibraryByTMDBID(context.Context) (map[int64]store.LibrarySta
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{byPath: map[string]*store.Movie{}, byID: map[int64]*store.Movie{}}
+	return &fakeStore{
+		byPath:      map[string]*store.Movie{},
+		byID:        map[int64]*store.Movie{},
+		downloading: map[int64]bool{},
+	}
 }
 
 func (f *fakeStore) UpsertMovieByPath(_ context.Context, m store.ScannedMovie) (store.Movie, bool, error) {
@@ -158,10 +253,28 @@ func quiet() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+// fixtureScanner is library.Scan with the feature picker's floor lowered.
+//
+// The fixture's two videos are 4096 and 2048 bytes — committed files, and a 50 MiB
+// blob does not belong in git (docs/phase-4.md). At the production floor the whole
+// fixture holds no film, so these tests would meet an empty library instead of the
+// 29 real folder names they exist to exercise. The floor itself is proven in
+// internal/library, against sparse files in t.TempDir().
+func fixtureScanner() ScannerFunc {
+	return func(root string) ([]library.Movie, []library.Skipped, error) {
+		return library.ScanWith(root, library.FeatureOpts{MinBytes: 1})
+	}
+}
+
 func newTestServer(t *testing.T, st Store, matcher Matcher) http.Handler {
 	t.Helper()
+	return newTestServerAt(t, st, matcher, fixtureRoot)
+}
+
+func newTestServerAt(t *testing.T, st Store, matcher Matcher, root string) http.Handler {
+	t.Helper()
 	mux := http.NewServeMux()
-	New(st, ScannerFunc(library.Scan), matcher, fixtureRoot, quiet()).Register(mux)
+	New(st, fixtureScanner(), matcher, root, quiet()).Register(mux)
 	return mux
 }
 
@@ -184,14 +297,20 @@ func decodeScan(t *testing.T, rec *httptest.ResponseRecorder) scanResponse {
 	return out
 }
 
-func TestScanFixtureReports29(t *testing.T) {
+// The fixture is 29 folders and 2 films. `scanned` counts the films, `empty`
+// counts the folders with nothing playable in them, and the two together are what
+// stop 2 looking like a scanner that broke (docs/decisions.md D33).
+func TestScanFixtureReportsTwoFilmsIn29Folders(t *testing.T) {
 	st := newFakeStore()
 	h := newTestServer(t, st, matchAll())
 
 	got := decodeScan(t, do(t, h, http.MethodPost, "/api/scan"))
-	want := scanResponse{Scanned: 29, Added: 29, Matched: 29, Unmatched: 0}
+	want := scanResponse{Scanned: 2, Added: 2, Matched: 2, Unmatched: 0, Empty: 27}
 	if got != want {
 		t.Errorf("scan = %+v, want %+v", got, want)
+	}
+	if len(st.deleted) != 0 {
+		t.Errorf("deleted %v, want none — there were no rows to prune", st.deleted)
 	}
 }
 
@@ -202,8 +321,8 @@ func TestSecondScanAddsNothing(t *testing.T) {
 	decodeScan(t, do(t, h, http.MethodPost, "/api/scan"))
 	second := decodeScan(t, do(t, h, http.MethodPost, "/api/scan"))
 
-	if second.Scanned != 29 {
-		t.Errorf("second scanned = %d, want 29", second.Scanned)
+	if second.Scanned != 2 {
+		t.Errorf("second scanned = %d, want 2", second.Scanned)
 	}
 	if second.Added != 0 {
 		t.Errorf("second added = %d, want 0 — rescans must be idempotent", second.Added)
@@ -212,8 +331,13 @@ func TestSecondScanAddsNothing(t *testing.T) {
 	if second.Matched != 0 || second.Unmatched != 0 {
 		t.Errorf("second matched/unmatched = %d/%d, want 0/0", second.Matched, second.Unmatched)
 	}
-	if len(st.order) != 29 {
-		t.Errorf("stored rows = %d, want 29 — a rescan duplicated rows", len(st.order))
+	// The prune is idempotent too, and this is the assertion that catches a
+	// pruner that removes the rows it has just written.
+	if second.Removed != 0 {
+		t.Errorf("second removed = %d, want 0 — a rescan of an unchanged library removes nothing", second.Removed)
+	}
+	if len(st.order) != 2 {
+		t.Errorf("stored rows = %d, want 2 — a rescan duplicated rows", len(st.order))
 	}
 }
 
@@ -229,14 +353,14 @@ func TestTMDBErrorLeavesRowPresentAndUnmatched(t *testing.T) {
 	h := newTestServer(t, st, matcher)
 
 	got := decodeScan(t, do(t, h, http.MethodPost, "/api/scan"))
-	if got.Scanned != 29 {
-		t.Errorf("scanned = %d, want 29 — one TMDB failure must not abort the scan", got.Scanned)
+	if got.Scanned != 2 {
+		t.Errorf("scanned = %d, want 2 — one TMDB failure must not abort the scan", got.Scanned)
 	}
 	if got.Unmatched != 1 {
 		t.Errorf("unmatched = %d, want 1", got.Unmatched)
 	}
-	if got.Matched != 28 {
-		t.Errorf("matched = %d, want 28", got.Matched)
+	if got.Matched != 1 {
+		t.Errorf("matched = %d, want 1", got.Matched)
 	}
 
 	var found bool
@@ -264,8 +388,8 @@ func TestMetadataWriteErrorLeavesRowUnmatched(t *testing.T) {
 	if got.Matched != 0 {
 		t.Errorf("matched = %d, want 0", got.Matched)
 	}
-	if got.Unmatched != 29 {
-		t.Errorf("unmatched = %d, want 29", got.Unmatched)
+	if got.Unmatched != 2 {
+		t.Errorf("unmatched = %d, want 2", got.Unmatched)
 	}
 }
 
@@ -274,24 +398,32 @@ func TestScanWithoutAPIKeyStillScans(t *testing.T) {
 	h := newTestServer(t, st, nil) // no TMDB key configured
 
 	got := decodeScan(t, do(t, h, http.MethodPost, "/api/scan"))
-	want := scanResponse{Scanned: 29, Added: 29, Matched: 0, Unmatched: 29}
+	want := scanResponse{Scanned: 2, Added: 2, Matched: 0, Unmatched: 2, Empty: 27}
 	if got != want {
 		t.Errorf("scan = %+v, want %+v — the disk is the source of truth", got, want)
 	}
-	if len(st.order) != 29 {
-		t.Errorf("stored rows = %d, want 29", len(st.order))
+	if len(st.order) != 2 {
+		t.Errorf("stored rows = %d, want 2", len(st.order))
 	}
 }
 
 func TestScannerErrorIsAnError(t *testing.T) {
+	st := newFakeStore()
+	st.seedOnDisk("/somewhere/Gladiator (2000)", "Gladiator", 2000)
 	mux := http.NewServeMux()
-	New(newFakeStore(), ScannerFunc(library.Scan), matchAll(), "./no/such/library", quiet()).Register(mux)
+	New(st, fixtureScanner(), matchAll(), "./no/such/library", quiet()).Register(mux)
 
 	rec := do(t, mux, http.MethodPost, "/api/scan")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 — never a 200 carrying a failure", rec.Code)
 	}
 	assertErrorBody(t, rec)
+
+	// The whole protection behind decision 5 of T57: a root that cannot be read
+	// must prune NOTHING. An unmounted library disk is exactly this request.
+	if len(st.deleted) != 0 {
+		t.Errorf("deleted %v after a failed scan — a root that cannot be read must remove no rows", st.deleted)
+	}
 }
 
 func TestListMovies(t *testing.T) {
@@ -307,8 +439,8 @@ func TestListMovies(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &movies); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(movies) != 29 {
-		t.Fatalf("len = %d, want 29", len(movies))
+	if len(movies) != 2 {
+		t.Fatalf("len = %d, want 2", len(movies))
 	}
 }
 

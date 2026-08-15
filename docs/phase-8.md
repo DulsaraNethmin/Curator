@@ -275,6 +275,12 @@ skip with it, so a folder with a 6 MB `sample.mkv` beside the film cannot stream
 different answers to "which file is the film" is a bug that would only appear on the folders where it
 matters most.
 
+> **Resolved in [T57](tasks/T57-library-way-in.md), and it turned out to matter more than this
+> paragraph expected.** The scanner was the third answer — flat, no floor — and once a scan started
+> *removing* the rows for folders with no film in them, a disagreement stopped meaning a wrong size
+> and started meaning a deleted row for a film that streams. `largestVideo` is gone; all three
+> callers are `FindFeature` with `FeatureOpts{}`. See [D33](decisions.md).
+
 **The containment check defends a row, not a URL — say so and do not oversell it.** The id is parsed
 with `strconv.ParseInt`, so nothing traverses in from the request. What `AssertInside` catches is a
 `library_path` that points outside `LIBRARY_MOVIES`: a row written when the variable pointed

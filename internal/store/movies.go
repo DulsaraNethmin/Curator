@@ -334,3 +334,60 @@ func (s *Store) LibraryByTMDBID(ctx context.Context) (map[int64]LibraryState, er
 	}
 	return byID, nil
 }
+
+// OnDisk is one row that claims a folder, and whether anything is still fetching
+// it. Title and Year ride along because the caller logs a removal by name, and
+// after the DELETE there is nothing left to look them up by.
+type OnDisk struct {
+	ID          int64
+	Title       string
+	Year        int
+	LibraryPath string
+	Downloading bool
+}
+
+// MoviesOnDisk lists every row a scan is allowed to consider removing.
+//
+// Two exclusions, and neither is a branch the caller should have to remember.
+//
+// A WANTED film has library_path NULL — it was never on disk, so "there is no film
+// in its folder" is not a statement about it, and it has no folder to join on
+// either. And a film with a download IN FLIGHT is mid-import: the importer creates
+// the destination folder and only then hardlinks into it, so there is a window in
+// which the folder legitimately holds nothing at all, and pruning then would take
+// the downloads rows with it (docs/decisions.md D33).
+//
+// "In flight" is EXISTS over downloads with state NOT IN (imported, failed) — the
+// same definition LibraryByTMDBID uses for the badge on a poster, deliberately, so
+// the screen and the pruner can never disagree about what curator is already
+// getting.
+func (s *Store) MoviesOnDisk(ctx context.Context) ([]OnDisk, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id, m.title, m.year, m.library_path,
+		       EXISTS (
+		           SELECT 1 FROM downloads d
+		            WHERE d.movie_id = m.id
+		              AND d.state NOT IN (?, ?)
+		       ) AS downloading
+		  FROM movies m
+		 WHERE m.library_path IS NOT NULL AND TRIM(m.library_path) <> ''
+		 ORDER BY m.id`,
+		DownloadImported, DownloadFailed)
+	if err != nil {
+		return nil, fmt.Errorf("movies on disk: %w", err)
+	}
+	defer rows.Close()
+
+	on := []OnDisk{}
+	for rows.Next() {
+		var row OnDisk
+		if err := rows.Scan(&row.ID, &row.Title, &row.Year, &row.LibraryPath, &row.Downloading); err != nil {
+			return nil, fmt.Errorf("movies on disk: %w", err)
+		}
+		on = append(on, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("movies on disk: %w", err)
+	}
+	return on, nil
+}

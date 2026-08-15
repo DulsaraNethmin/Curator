@@ -63,6 +63,12 @@ Run 2026-08-12 against the real TMDB API and the live fixture.
 The 0.016 s rescan is the evidence that a second scan makes **no TMDB calls**: nothing is left with
 a NULL `tmdb_id`.
 
+> **These numbers are a record of that run, not what to expect today.** Since
+> [D33](decisions.md#d33--a-folder-with-no-film-in-it-is-not-a-movie-the-row-goes-the-folder-stays)
+> a folder with no film in it is not a movie, so the same fixture answers
+> `{"scanned":2,...,"empty":27}` — 27 of its 29 folders hold only a `.gitkeep`. Re-verifying phase 1
+> from scratch should expect that, and `removed`/`missing` beside it.
+
 **The matches were checked for correctness, not just presence.** Storing the folder title means a
 wrong match would be invisible from our own API, so all seven 2026 ids were queried back against
 TMDB — every one is the right film with a 2026 release date. `Tom Clancy's Jack Ryan - Ghost War`
@@ -443,8 +449,8 @@ minter.
 | HTML documents | `Cache-Control: no-cache` |
 | Unknown path | **404** carrying the export's own page, **not** the app |
 | `/healthz`, `/api/*` | unaffected by the UI mounted at `/` |
-| Cold scan through the UI's endpoint | `{"scanned":29,"added":29,"matched":29,"unmatched":0}` |
-| Library data as rendered | 29 movies, 29 with posters, **27 zero-size**, 0 unmatched |
+| Cold scan through the UI's endpoint | `{"scanned":29,"added":29,"matched":29,"unmatched":0}` — see the D33 note above; it is 2 films and 27 empty now |
+| Library data as rendered | 29 movies, 29 with posters, **27 zero-size**, 0 unmatched — those 27 rows no longer exist |
 | Live search | **111 releases in 14.6 s** — yts 5, tpb 88, 1337x 20 |
 | Ranking | seeders descending, 1386 · 1085 · 616 |
 | Lazy magnets | **20 of 111** come back `null`, all 1337x, exactly as D10 intends |

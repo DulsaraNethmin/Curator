@@ -20,6 +20,11 @@ Walk the library root, turn each folder into a movie record, and do it idempoten
 4. `size_bytes` is the **largest video file** in the folder (`.mkv`, `.mp4`, `.avi`, `.m4v`), not the
    folder total — samples, artwork and subtitles sit alongside the feature. Zero if none found; an
    empty folder is not an error.
+
+   > **Amended by [D33](../decisions.md) in [T57](T57-library-way-in.md).** An empty folder is still
+   > not an *error* — the scan carries on and reports it — but it is no longer a **movie**: it comes
+   > back as a `Skipped` with `NoMedia` set, and the caller removes its row. `size_bytes` is now the
+   > feature file's, chosen by `library.FindFeature`, and it can never be zero.
 5. Skip hidden entries and non-directories. `.DS_Store` will be there; macOS puts it everywhere.
 
 ## Do not
