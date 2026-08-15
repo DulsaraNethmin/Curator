@@ -1,0 +1,228 @@
+# curator, as a bundle.
+#
+#   docker compose up -d                      curator alone, and nothing else
+#   docker compose --profile jellyfin up -d   adds Jellyfin, and leaves curator running
+#   docker compose --profile 1337x up -d      adds minter, which the 1337x indexer needs
+#
+# The first line is the product. The other two exist because two features need a
+# second container, and neither may arrive uninvited — `docker compose up -d`
+# starting a media server nobody chose is the shape this file was asked for
+# outright (docs/decisions.md D34, docs/phase-9.md). A profiled service is not
+# merely stopped: `docker compose config --services` with no profile does not
+# list it at all, and `docker ps -a` has nothing to show.
+#
+# Almost nothing is configured here on purpose. The TMDB key, the WireGuard
+# tunnel, the indexers and Jellyfin's URL are all settings phase 7 made writable
+# from the browser, and putting them in this file would tell a stranger to edit
+# YAML for the thing the Settings screen exists to do (docs/decisions.md D28).
+# What is left below is what curator needs in order to reach that screen.
+
+# Fixed, so the volumes and the network do not change name with the directory
+# this file was downloaded into. The quickstart is `curl -o compose.yaml … &&
+# docker compose up -d`, run wherever the shell happened to be, and a project
+# named after `Downloads` is one `cd` away from a second empty library.
+#
+# No service below sets container_name, which is the other half of the same
+# question. `jellyfin` would collide with the Jellyfin somebody already runs —
+# a supported case, T66 adopts it — and it buys nothing: the name curator
+# resolves its neighbours by is the SERVICE name on this network, which
+# container_name does not change.
+name: curator
+
+services:
+  curator:
+    # The one image here that is NOT pinned, and the exception is deliberate.
+    # Jellyfin and minter are on somebody else's release schedule, so a floating
+    # tag there is a bundle that breaks on a morning nobody chose. curator is on
+    # this repository's own, and pinning it here would mean editing the file
+    # that IS the quickstart on every release — T48 publishes `latest` beside the
+    # version tags for exactly this line (docs/tasks/T48-release-pipeline.md).
+    image: ghcr.io/dulsaranethmin/curator:latest
+
+    # What makes D29's "a written setting applies at the next start" a sentence
+    # with a mechanism behind it — a container has a supervisor and a `go run`
+    # does not, which is why phase 7 deferred the restart endpoint to here.
+    # Watched, rather than assumed: a setting written through the API read back
+    # as `pending: t63-survived, restart_required: true`, and after a
+    # `down` and an `up -d` as `value: t63-survived, pending: null`.
+    restart: unless-stopped
+
+    # The image is `FROM scratch` and runs as uid 1000 with no entrypoint,
+    # because there is no shell in it to run one in: Docker applies the uid
+    # before the process exists, and no step of that is root
+    # (docs/tasks/T47-image.md). That is the half of the linuxserver.io
+    # convention worth keeping, and it is why `chown -R` never runs across a
+    # household's media directory.
+    #
+    # The cost, written down rather than discovered: nothing inside the image can
+    # fix up permissions, so a PUID that is not 1000 needs volumes that already
+    # belong to it. /data/README in the image carries the four lines that do it,
+    # and BOTH volumes need it — /data fails first with `unable to open database
+    # file (14)`, and /media fails second with a different message once /data is
+    # fixed.
+    user: "${PUID:-1000}:${PGID:-1000}"
+
+    # The host side is a variable because 8090 is a popular port; the container
+    # side is not, because the image's HEALTHCHECK reads PORT out of the same
+    # config the server does and there is no reason for both to move. Jellyfin's
+    # port below is fixed for a reason that does not apply here.
+    ports:
+      - "${CURATOR_PORT:-8090}:8090"
+
+    # A restatement of the image's own ENV defaults, and worth the duplication:
+    # this file is what somebody reads to find out where their films live, and it
+    # is where they change it. An environment key that is already present and
+    # commented is edited correctly; one that has to be known about and added is
+    # the reason a bind mount ends up pointing at a directory nothing scans.
+    environment:
+      DB_PATH: /data/curator.db
+      LIBRARY_MOVIES: /media/movies
+      DOWNLOADS_DIR: /media/downloads
+
+    # ONE volume for media, with the two directories inside it. The importer
+    # hardlinks and falls back to a copy on EXDEV (docs/decisions.md D8), so
+    # downloads and library have to share a filesystem — two volumes would put
+    # them on two, and the failure is silent until a disk fills. Measured inside
+    # this bundle rather than reasoned about: a file hardlinked across the two
+    # reports one inode and a link count of 2, and the Jellyfin container sees
+    # the same inode at the same path.
+    #
+    # /data is separate and holds the database AND the key its secrets are
+    # encrypted with, deliberately together: anything that copies the volume
+    # copies both, and a database restored without its key keeps every row and
+    # cannot read one secret back (docs/decisions.md D28).
+    volumes:
+      - data:/data
+      - media:/media
+
+  # --- only if you asked for it ---------------------------------------------
+
+  jellyfin:
+    # Pinned, and this is the pin that matters most. curator completes Jellyfin's
+    # startup wizard over an API that is not a documented contract — it is what
+    # the wizard happens to call in this version — so an unpinned Jellyfin is a
+    # provisioning flow that breaks on somebody else's release schedule
+    # (docs/decisions.md D34, docs/tasks/T64-jellyfin-provisioner.md). arm64 is
+    # 8 layers, 202 MB to download and 748 MB unpacked, and it takes 14-27 s from
+    # `up -d` to a 200 on /System/Info/Public — measured three times, and the
+    # spread is why T65 polls rather than waits a fixed interval.
+    image: jellyfin/jellyfin:10.10.7
+
+    # The profile, spelled once. A misspelled profile is a service that never
+    # starts and never errors, because a profile is invisible rather than
+    # stopped, so this string is the one typo in the file with no symptom.
+    profiles: [jellyfin]
+    restart: unless-stopped
+
+    # Same uid as curator, so a household that moves off 1000 moves both. The
+    # official image defaults to root and its /config and /cache are mode 0777,
+    # which is what makes a plain named volume work for a non-root uid without a
+    # chown — checked in the image rather than assumed.
+    #
+    # Root would also work, and is what most compose files for this image do. It
+    # is refused here for one concrete reason: a root Jellyfin that ever writes
+    # into the shared media volume — a downloaded subtitle, a saved poster —
+    # leaves a file curator runs as 1000 and cannot delete, and the symptom is a
+    # DELETE that half-succeeds.
+    #
+    # One consequence T64 has to know about, because this line causes it:
+    # Jellyfin names its default user after the process's own user, so a server
+    # started by this file answers GET /Startup/User with
+    # {"Name":"MyJellyfinUser"} and not the {"Name":"root"} phase-9.md recorded
+    # against a container run as root. Nothing should match on that string.
+    user: "${PUID:-1000}:${PGID:-1000}"
+
+    # 8096, fixed, and published to the host on purpose: curator reaches Jellyfin
+    # at http://jellyfin:8096 on this network and does not need it, but the Apple
+    # TV is on the LAN and has no idea this network exists. Leaving it out is a
+    # bundle that works perfectly in a browser on the host and is unreachable
+    # from the one device the feature was built for — and the bug report says
+    # "Jellyfin is down".
+    #
+    # Not a variable, unlike curator's: the browser is what tells curator the LAN
+    # address to hand the TV (window.location.hostname plus this port, because a
+    # container cannot learn its host's LAN IP), and it can only assume the
+    # default. Remapping it means correcting Jellyfin's public URL by hand on the
+    # Playback screen, which is offered and editable for exactly that reason.
+    ports:
+      - "8096:8096"
+
+    # Read-only, and it is a claim rather than a precaution. The division phase 9
+    # sells is that curator acquires and manages while Jellyfin plays, and :ro is
+    # that sentence made structural instead of documented — the same move the
+    # single media volume makes for D8. Measured, because the risk of getting it
+    # wrong is the whole feature: a library created through the API on this mount
+    # scanned and produced `ProviderIds: {"Tmdb":"329865"}` with
+    # `ProductionYear: 2016`, which is exactly the field D32 keys Open in
+    # Jellyfin on and exactly the year `years=` narrows by. A `touch` into
+    # /media from the same container is refused.
+    #
+    # The trade, stated: Jellyfin's own "save metadata / subtitles into media
+    # folders" options cannot work through this mount. They are off by default,
+    # curator writes the subtitle sidecars (T46), and two services writing into
+    # one library folder is the mess the read-only mount is buying its way out
+    # of.
+    #
+    # Note for anyone who wonders about the fresh-install ordering: there is no
+    # race here, checked rather than assumed. Docker populates a named volume
+    # from the image only while the volume is EMPTY, and Jellyfin's own /media is
+    # an empty directory — so Jellyfin mounting first copies nothing, leaves the
+    # volume empty, and curator still populates it with /media/movies and
+    # /media/downloads owned by 1000:1000 when it starts. That is why there is no
+    # depends_on below.
+    #
+    # /config and /cache are Jellyfin's own and are not shared with anything.
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - media:/media:ro
+
+    # No depends_on, in either direction. curator must start without Jellyfin —
+    # that is the opt-in property — and Jellyfin has never needed curator.
+
+  minter:
+    # minter gets past Cloudflare with a patched Firefox, and 1337x is the one
+    # indexer that needs it; YTS and TPB do not. Pinned to the digest tag rather
+    # than to `edge`, which moves — and NOT to `latest`, which minter's own
+    # compose file names and which does not exist in the registry (checked:
+    # 404). `edge` and `sha-adc1d6a` are the same image today.
+    image: ghcr.io/dulsaranethmin/minter:sha-adc1d6a
+
+    # `1337x` is a legal profile name — profile names must start alphanumeric,
+    # and a leading digit looked like a plausible way to lose an afternoon.
+    profiles: ["1337x"]
+    restart: unless-stopped
+
+    # Required, and minter's own compose says so: Firefox needs more than
+    # Docker's default 64 MB of shared memory, and the failure without it looks
+    # like a random browser crash rather than a missing setting.
+    shm_size: 512mb
+
+    # No ports. minter fetches arbitrary URLs on request and only curator asks
+    # it, on this network, at http://minter:8191 — publishing it would put that
+    # on the LAN for no one's benefit. minter's own compose file says to remove
+    # the mapping when it runs beside the service that consumes it; this is that.
+    #
+    # For T49's probe: the image carries its own HEALTHCHECK, and it took 45 s
+    # from `up -d` to healthy here, with GET /health then answering
+    # {"ok":true,...} and the patched Firefox 151 user agent. Long enough that
+    # the screen has to poll rather than check once, the same as Jellyfin.
+
+# Named outright, so they are `curator-data` and `curator-media` on every host
+# rather than the project directory plus an underscore. The four lines in the
+# image's own /data/README that fix ownership for a non-default PUID name these
+# volumes, and a README inside the image cannot be re-derived from the directory
+# somebody ran `docker compose` in.
+#
+# The cost is that two curator projects on one host would share them. One
+# household runs one curator, and a second install that silently gets its own
+# empty library is the worse failure of the two.
+volumes:
+  data:
+    name: curator-data
+  media:
+    name: curator-media
+  jellyfin-config:
+    name: curator-jellyfin-config
+  jellyfin-cache:
+    name: curator-jellyfin-cache
