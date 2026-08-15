@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -178,4 +179,213 @@ func TestLiveFindMovie(t *testing.T) {
 	}
 	t.Logf("tmdb %d is jellyfin item %s on server %s → %s",
 		tmdbID, item.ID, item.ServerID, WebItemURL(baseURL, item))
+}
+
+// --- provisioning, against a throwaway and never anything else ---------------
+
+// TestLiveProvision runs the whole measured sequence against a real Jellyfin and
+// then proves the result with curator's own two calls.
+//
+// It is off unless JELLYFIN_PROVISION_URL names a server, and that variable is
+// deliberately NOT the JELLYFIN_URL every other live test reads. This test
+// completes a startup wizard, creates a library and mints a key: run against the
+// household's server it would be the exact damage D34 exists to prevent, so
+// there is no default, no fallback to .env, and pointing it at the configured
+// Jellyfin is a failure rather than a surprise.
+//
+// Start the target with a FRESH config volume:
+//
+//	docker run -d --name jf-throwaway -p 8097:8096 \
+//	  -v "$PWD/jf-config":/config -v "$PWD/jf-cache":/cache \
+//	  -v "$HOME/curator-local/movies":/media/movies:ro \
+//	  jellyfin/jellyfin:10.10.7
+//	JELLYFIN_PROVISION_URL=http://127.0.0.1:8097 go test ./internal/jellyfin/ -run TestLiveProvision -v
+//
+// A REUSED config volume is the trap this test refuses to walk into: the wizard
+// would already be complete and the run would silently exercise the adopt branch
+// while reporting that it provisioned something.
+func TestLiveProvision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live Jellyfin provisioning in -short mode")
+	}
+	target := strings.TrimSpace(os.Getenv("JELLYFIN_PROVISION_URL"))
+	if target == "" {
+		t.Skip("no JELLYFIN_PROVISION_URL; skipping live provisioning (it needs a throwaway container)")
+	}
+
+	// The guard on the guard. A throwaway is something nobody is watching, and
+	// the only way to be sure of that here is to refuse the one server we know
+	// somebody is.
+	configured, _ := liveConfig(t)
+	if sameServer(target, configured) {
+		t.Fatalf("JELLYFIN_PROVISION_URL is %s, which is the configured JELLYFIN_URL. "+
+			"This test completes a startup wizard and mints keys; point it at a throwaway container.", target)
+	}
+	if strings.Contains(target, "192.168.1.26") {
+		t.Fatalf("JELLYFIN_PROVISION_URL is %s, which is the Pi. Nothing on the Pi changes before phase 10.", target)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	p := NewProvisioner(target, "0.1.0", nil, logger)
+
+	// Measured cold start on arm64: 17.6 s from docker run to a 200 here, so
+	// this waits rather than fails.
+	var status ServerStatus
+	start := time.Now()
+	for {
+		var err error
+		status, err = p.Status(ctx)
+		if err == nil {
+			break
+		}
+		// Both states mean "ask again": nothing listening yet, and listening
+		// but still loading. Measured, a starting 10.10.7 spends most of its
+		// cold start in the second one.
+		if !errors.Is(err, ErrUnreachable) && !errors.Is(err, ErrNotReady) {
+			t.Fatalf("live status: %v", err)
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("no Jellyfin answered at %s within %v", target, time.Since(start))
+		}
+		time.Sleep(time.Second)
+	}
+	t.Logf("jellyfin %s answered after %v (wizard completed: %t)",
+		status.Version, time.Since(start).Round(100*time.Millisecond), status.WizardCompleted)
+
+	if status.WizardCompleted {
+		t.Fatalf("%s has already finished its wizard. Its config volume was reused, and this run "+
+			"would test the adopt branch while claiming to test provisioning. Delete the volume.", target)
+	}
+
+	const (
+		user        = "curator-live-test"
+		password    = "provision-me-please"
+		libraryName = "Movies"
+	)
+	libraryPath := strings.TrimSpace(os.Getenv("JELLYFIN_PROVISION_PATH"))
+	if libraryPath == "" {
+		libraryPath = "/media/movies"
+	}
+
+	if err := p.Configure(ctx, StartupConfiguration{}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if err := p.CreateAdmin(ctx, user, password); err != nil {
+		t.Fatalf("CreateAdmin: %v", err)
+	}
+	if err := p.EnableRemoteAccess(ctx); err != nil {
+		t.Fatalf("EnableRemoteAccess: %v", err)
+	}
+
+	session, err := p.Authenticate(ctx, user, password)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if session.Token == "" || session.UserID == "" {
+		t.Fatalf("session = %+v, want a token and a user id", session)
+	}
+	// The distinction that must survive a real server: a wrong password is 401
+	// and never the 400 a missing header produces.
+	if _, err := p.Authenticate(ctx, user, "not-the-password"); !errors.Is(err, ErrBadCredentials) {
+		t.Errorf("a wrong password gave %v, want ErrBadCredentials", err)
+	}
+
+	if err := p.AddLibrary(ctx, session, libraryName, libraryPath, OnlyIfUnconfigured); err != nil {
+		t.Fatalf("AddLibrary(%s): %v", libraryPath, err)
+	}
+
+	key, err := p.MintKey(ctx, session, KeyAppName, OnlyIfUnconfigured)
+	if err != nil {
+		t.Fatalf("MintKey: %v", err)
+	}
+	if key == "" {
+		t.Fatal("MintKey returned an empty key with no error")
+	}
+	// Not idempotent on Jellyfin's side, so calling twice must reuse rather
+	// than accumulate: two keys named curator, both with Id 0, is the measured
+	// failure this defends against.
+	again, err := p.MintKey(ctx, session, KeyAppName, OnlyIfUnconfigured)
+	if err != nil {
+		t.Fatalf("MintKey a second time: %v", err)
+	}
+	if again != key {
+		t.Errorf("a second MintKey produced a different key; the server is now holding two")
+	}
+
+	if err := p.CompleteSetup(ctx); err != nil {
+		t.Fatalf("CompleteSetup: %v", err)
+	}
+
+	// The guard, against a server that really did just finish its wizard.
+	if err := p.CreateAdmin(ctx, "attacker", "x"); !errors.Is(err, ErrAlreadyConfigured) {
+		t.Fatalf("CreateAdmin on a configured server gave %v, want ErrAlreadyConfigured — "+
+			"measured, Jellyfin itself answers 204 and renames the admin", err)
+	}
+	after, err := p.Status(ctx)
+	if err != nil {
+		t.Fatalf("status after setup: %v", err)
+	}
+	if !after.WizardCompleted {
+		t.Error("the wizard is still open after CompleteSetup")
+	}
+	// And the original credentials still work, which is the property the guard
+	// is actually protecting.
+	if _, err := p.Authenticate(ctx, user, password); err != nil {
+		t.Errorf("the admin curator created can no longer sign in: %v", err)
+	}
+
+	// The minted key, through the code that will consume it: curator's only two
+	// existing Jellyfin calls.
+	client := New(target, key, nil)
+	if err := client.RefreshLibrary(ctx); err != nil {
+		t.Fatalf("RefreshLibrary with the minted key: %v", err)
+	}
+	const noSuchFilm = 999999999
+	if _, err := client.FindMovie(ctx, noSuchFilm, 2026); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FindMovie with the minted key: %v, want ErrNotFound", err)
+	}
+	t.Logf("the minted key works against RefreshLibrary and FindMovie")
+
+	// The positive half — D32's key surviving a library curator created itself.
+	// Optional, and it waits: the scan is queued, not immediate.
+	id := os.Getenv("JELLYFIN_LIVE_TMDB_ID")
+	if id == "" {
+		t.Log("set JELLYFIN_LIVE_TMDB_ID to also check that the scan writes ProviderIds.Tmdb")
+		return
+	}
+	tmdbID, err := strconv.Atoi(id)
+	if err != nil {
+		t.Fatalf("JELLYFIN_LIVE_TMDB_ID = %q: %v", id, err)
+	}
+	releaseYear, _ := strconv.Atoi(os.Getenv("JELLYFIN_LIVE_YEAR"))
+
+	scanStart := time.Now()
+	for {
+		item, err := client.FindMovie(ctx, tmdbID, releaseYear)
+		if err == nil {
+			t.Logf("after %v the scan produced tmdb %d as item %s → %s",
+				time.Since(scanStart).Round(time.Second), tmdbID, item.ID, WebItemURL(target, item))
+			return
+		}
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("lookup while waiting for the scan: %v", err)
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("tmdb %d never appeared: the library curator created scanned but wrote no ProviderIds.Tmdb, "+
+				"which is what Open in Jellyfin is keyed on (D32)", tmdbID)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
+// sameServer compares two base URLs the way a careless copy-paste would differ:
+// a trailing slash, a case difference in the scheme or host.
+func sameServer(a, b string) bool {
+	normalise := func(s string) string {
+		return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), "/"))
+	}
+	return normalise(a) != "" && normalise(a) == normalise(b)
 }

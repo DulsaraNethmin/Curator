@@ -1,17 +1,32 @@
 // Package jellyfin asks Jellyfin to rescan its library, looks up one item, and
-// does nothing else.
+// sets up a server curator brought up itself.
 //
 // The one on the Pi is 10.10.7 at 192.168.1.26:8096, reached as
 // http://jellyfin:8096 from inside Docker. An unset key disables both calls
 // rather than failing startup (docs/decisions.md D15).
 //
 // The narrowness is the design, and phase 8 amended it by exactly one method.
-// There are no per-item refreshes, no user or session endpoints, no playback
-// control and nothing that writes, for the same reason internal/qbit cannot
-// delete or pause a torrent: a method that does not exist cannot be called by
-// mistake against a media server the household is watching. FindMovie is the
-// one lookup T45 needed and it is read-only; if a later phase needs more, it
-// can add exactly what it needs and no more.
+// There are no per-item refreshes, no user or session endpoints and no playback
+// control, for the same reason internal/qbit cannot delete or pause a torrent:
+// a method that does not exist cannot be called by mistake against a media
+// server the household is watching. FindMovie is the one lookup T45 needed and
+// it is read-only; if a later phase needs more, it can add exactly what it
+// needs and no more.
+//
+// Writing exists, and it is confined to one type. Provisioner, in provision.go,
+// completes a startup wizard, creates a library and mints an API key, because
+// phase 9 ships Jellyfin beside curator and the alternative is a stranger
+// pasting a key between two web UIs and getting two sets of Docker mounts to
+// agree unaided (docs/decisions.md D34). Only the setup flow constructs one:
+// Client is what the importer and the poller hold, and it still cannot write.
+// So the guarantee is no longer "the package has no such method" but "the type
+// that has it is not reachable from a background tick", which is weaker and is
+// therefore paid for rather than asserted — every method that touches
+// /Startup/ re-reads /System/Info/Public first and refuses a server whose
+// wizard is complete. That guard is load-bearing because Jellyfin has none of
+// its own: measured on 10.10.7, POST /Startup/User against a fully configured
+// server carrying a valid API key answered 204 and changed the admin's name and
+// password.
 //
 // RefreshLibrary returns an error, deliberately. The guarantee that a refresh
 // can never fail an import or a poll tick is implemented one layer up, at
