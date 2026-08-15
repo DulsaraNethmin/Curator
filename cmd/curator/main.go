@@ -362,7 +362,19 @@ func run() error {
 		// The link a browser follows, which is NOT cfg.JellyfinURL whenever the
 		// two are in Docker together: curator reaches Jellyfin by a container
 		// name and a browser cannot resolve one (docs/phase-8.md).
-		WithJellyfin(mediaServer, cfg.JellyfinLink())
+		WithJellyfin(mediaServer, cfg.JellyfinLink()).
+		// Phase 9's Playback screen, and the only thing in the process that can
+		// construct a Provisioner. Deliberately separate from WithJellyfin
+		// above: that one takes a read-only client the poller and the importer
+		// also hold, and this one takes the type that can rewrite a media
+		// server (docs/decisions.md D34).
+		WithJellyfinSetup(api.JellyfinSetup{
+			URL:         provisionURL(cfg),
+			LibraryPath: cfg.LibraryMovies,
+			New: func(baseURL string) api.Provisioner {
+				return jellyfin.NewProvisioner(baseURL, Version, indexerHTTP, log)
+			},
+		})
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
 	apiSrv.RegisterDownloads(mux)
@@ -371,6 +383,7 @@ func run() error {
 	apiSrv.RegisterMovieDelete(mux)
 	apiSrv.RegisterBrowse(mux)
 	apiSrv.RegisterStream(mux)
+	apiSrv.RegisterJellyfin(mux)
 	auth.Register(mux)
 
 	// The UI is mounted last and at "/", so it can never shadow an API pattern.
@@ -660,6 +673,11 @@ func effective(cfg *config.Config) map[string]string {
 		// binary that was actually resolved is the ffmpeg integration's detail,
 		// beside whether one was found at all.
 		"ffmpeg_path": cfg.FFmpegPath,
+
+		// Empty is meaningful here too, and it is the state every install
+		// starts in: the question has not been put yet, which is what makes the
+		// Playback screen a first-run destination rather than a nag.
+		"playback_target": cfg.PlaybackTarget,
 
 		"jellyfin_url":     cfg.JellyfinURL,
 		"jellyfin_api_key": cfg.JellyfinAPIKey,
@@ -963,6 +981,33 @@ func jellyfinDetail(configured bool) string {
 	}
 	return "not probed: the only call available is a refresh, which would queue a library scan"
 }
+
+// provisionURL is where the Playback screen looks for a Jellyfin.
+//
+// Not simply cfg.JellyfinURL, and the reason is a decision two tasks apart.
+// compose.yaml sets no JELLYFIN_URL on purpose: the environment beats the store
+// (docs/decisions.md D28), so a value there would permanently shadow the one
+// provisioning is about to write. That leaves cfg.JellyfinURL sitting at its
+// laptop default inside the bundle, pointing at a 127.0.0.1 where nothing is —
+// so an unconfigured install looks for Jellyfin at compose's service name,
+// which is the only address the bundle guarantees.
+//
+// A configured one is left alone. Somebody who set JELLYFIN_URL, or saved one,
+// meant it: that is the NAS case, and T66 adopts it at whatever address they
+// gave.
+func provisionURL(cfg *config.Config) string {
+	if cfg.JellyfinURL != "" && cfg.JellyfinURL != config.DefaultJellyfinURL {
+		return cfg.JellyfinURL
+	}
+	return bundleJellyfinURL
+}
+
+// bundleJellyfinURL is compose.yaml's `jellyfin` service on its own network.
+//
+// The name is the service name and nothing else — not a container_name, which
+// compose.yaml deliberately does not set, because DNS on a compose network is
+// keyed on the service.
+const bundleJellyfinURL = "http://jellyfin:8096"
 
 // ffmpegDetail says what playback can and cannot do on this install.
 //

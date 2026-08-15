@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -221,5 +224,38 @@ func TestHealthcheckFailsWithNothingListening(t *testing.T) {
 
 	if err := healthcheck(); err == nil {
 		t.Errorf("healthcheck reported %s healthy with nothing on it", fmt.Sprintf("127.0.0.1:%d", port))
+	}
+}
+
+// Every Register* on api.Server is actually called here.
+//
+// Written after a handler was built, unit-tested and then never mounted: the
+// package's own tests register the routes themselves, so a missing line in this
+// file is invisible to all of them and shows up only as a 404 in a browser. The
+// route table lives in one function and this asserts the function names it.
+//
+// Reflection over the methods rather than a list, so a Register* added in a
+// later phase is covered the moment it exists rather than when somebody
+// remembers to extend a slice.
+func TestEveryRegisterIsWiredIntoMain(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+
+	server := reflect.TypeOf(&api.Server{})
+	found := 0
+	for i := range server.NumMethod() {
+		name := server.Method(i).Name
+		if !strings.HasPrefix(name, "Register") {
+			continue
+		}
+		found++
+		if !strings.Contains(string(source), "."+name+"(mux)") {
+			t.Errorf("api.Server has %s and main.go never calls it — the handlers exist and nothing serves them", name)
+		}
+	}
+	if found == 0 {
+		t.Fatal("found no Register* methods on api.Server; this test has stopped checking anything")
 	}
 }
