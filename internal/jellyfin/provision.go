@@ -34,6 +34,11 @@ const (
 	pathAuthenticateByName   = "/Users/AuthenticateByName"
 	pathVirtualFolders       = "/Library/VirtualFolders"
 	pathAuthKeys             = "/Auth/Keys"
+
+	// pathValidatePath asks the server whether a path exists on ITS filesystem.
+	// It is a POST that writes nothing while ValidateWritable is false, and it is
+	// the only way to separate T66's third case from its second.
+	pathValidatePath = "/Environment/ValidatePath"
 )
 
 // startupPrefix is the family the guard protects. Everything under it
@@ -488,14 +493,27 @@ func (p *Provisioner) AddLibrary(ctx context.Context, session Session, name, lib
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return fmt.Errorf("jellyfin provision: %s answered %d: %w", pathVirtualFolders, status, ErrUnauthorized)
 	}
-	if err := expectNoContent(pathVirtualFolders, status, respBody); err != nil {
-		return err
-	}
 
-	// A 204 is not proof, so the listing is re-read and the path looked for.
-	folders, err := p.libraries(ctx, session)
-	if err != nil {
-		return err
+	// **The status is a hint and the listing is the fact, in both directions.**
+	//
+	// A 204 is not proof the library exists, which is why this re-reads at all.
+	// Measured on 10.10.7, a POST that answered 404 had created the library
+	// anyway: Jellyfin builds the folder, then refreshes it, and an exception in
+	// the refresh becomes the response status while the folder stays. Returning
+	// the failure without looking would tell the user it did not work on a
+	// server where it did — and the obvious response to that is to press the
+	// button again, which is how somebody ends up with Movies, Movies2 and
+	// Movies3 all pointing at one directory.
+	posted := expectNoContent(pathVirtualFolders, status, respBody)
+
+	folders, listErr := p.Libraries(ctx, session)
+	if listErr != nil {
+		// The write's own failure is the more useful one to report when the
+		// read fails too.
+		if posted != nil {
+			return posted
+		}
+		return listErr
 	}
 	for _, folder := range folders {
 		for _, location := range folder.Locations {
@@ -504,21 +522,64 @@ func (p *Provisioner) AddLibrary(ctx context.Context, session Session, name, lib
 			}
 		}
 	}
+	if posted != nil {
+		return posted
+	}
 	return fmt.Errorf(
 		"jellyfin provision: %s answered %d but %q is in no library's Locations afterwards: %w",
 		pathVirtualFolders, status, libraryPath, ErrUnexpectedResponse)
 }
 
-// virtualFolder is a library as the listing reports it, cut down to what is
-// used. Widening this is how the narrowness rule gets lost one convenient
-// field at a time.
-type virtualFolder struct {
+// Library is a library as the listing reports it, cut down to what is used.
+// Widening this is how the narrowness rule gets lost one convenient field at a
+// time.
+type Library struct {
 	Name      string   `json:"Name"`
 	Locations []string `json:"Locations"`
 }
 
-// libraries reads the library listing.
-func (p *Provisioner) libraries(ctx context.Context, session Session) ([]virtualFolder, error) {
+// Covers reports whether this library already takes in path — as one of its
+// Locations exactly, or as a parent of it, because Jellyfin scans recursively.
+//
+// **It is a hint and never a verdict, and the screen that shows it has to say
+// which.** Jellyfin reports the path it sees through its own mount — /movies —
+// where curator holds its own — /media/storage/media/movies — and
+// docs/decisions.md D32 established that those two strings disagree on every
+// deployment where the two services see the disk through different mounts,
+// which is the normal one. So false here is not evidence of a problem. It is
+// evidence that curator cannot tell, and the person who knows their own mounts
+// is the one who decides.
+func (l Library) Covers(path string) bool {
+	want := trimPath(path)
+	if want == "" {
+		return false
+	}
+	for _, location := range l.Locations {
+		at := trimPath(location)
+		if at == "" {
+			continue
+		}
+		if at == want {
+			return true
+		}
+		// A parent counts, and the separator is part of the test: /media/mov is
+		// not a parent of /media/movies, and a plain HasPrefix would say it was.
+		if at == "/" || strings.HasPrefix(want, strings.TrimSuffix(at, "/")+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// Libraries reads the library listing.
+//
+// It takes no Consent because it takes no action: the adopt branch has to see
+// what a server already holds before it can offer to add anything, and looking
+// changes nothing. It returns all of them rather than the first — a real server
+// has Movies, Shows, Music and a folder somebody made in 2019, and a caller
+// that assumed one would report the wrong answer on every server this branch
+// exists for.
+func (p *Provisioner) Libraries(ctx context.Context, session Session) ([]Library, error) {
 	status, body, err := p.do(ctx, http.MethodGet, pathVirtualFolders, nil, session.Token, nil)
 	if err != nil {
 		return nil, err
@@ -531,7 +592,7 @@ func (p *Provisioner) libraries(ctx context.Context, session Session) ([]virtual
 		return nil, unexpectedStatus(pathVirtualFolders, status, body)
 	}
 
-	var folders []virtualFolder
+	var folders []Library
 	if err := json.Unmarshal(body, &folders); err != nil {
 		return nil, unexpectedBody(pathVirtualFolders, err)
 	}
@@ -545,14 +606,101 @@ func (p *Provisioner) libraries(ctx context.Context, session Session) ([]virtual
 // path inside somebody else's container, and curator's own OS has no say in
 // what it means.
 func samePath(a, b string) bool {
-	trim := func(s string) string {
-		s = strings.TrimSpace(s)
-		if s == "/" {
-			return s
-		}
-		return strings.TrimSuffix(s, "/")
+	return trimPath(a) == trimPath(b)
+}
+
+// trimPath normalises the one difference worth tolerating, for the reason
+// samePath gives.
+func trimPath(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "/" {
+		return s
 	}
-	return trim(a) == trim(b)
+	return strings.TrimSuffix(s, "/")
+}
+
+// PathAnswer is what a server said about a path, and "it did not say" is one of
+// the three.
+type PathAnswer int
+
+const (
+	// PathUnknown is the zero value and the honest default: this server gave no
+	// answer curator is willing to act on.
+	PathUnknown PathAnswer = iota
+	// PathPresent means the path exists on the server's own filesystem.
+	PathPresent
+	// PathAbsent means it does not, and the server is one curator trusts to know.
+	PathAbsent
+)
+
+func (a PathAnswer) String() string {
+	switch a {
+	case PathPresent:
+		return "present"
+	case PathAbsent:
+		return "absent"
+	default:
+		return "unknown"
+	}
+}
+
+// PathExists asks the server whether path exists on ITS filesystem.
+//
+// This is what separates T66's third case from its second: curator must not add
+// a library pointing at a path the server cannot see, because the scan would
+// then find nothing and no error would be produced anywhere — the exact silent
+// failure this whole flow exists to remove.
+//
+// Measured on 10.10.7: POST /Environment/ValidatePath with
+// {"Path":…,"ValidateWritable":false} answers 204 when the path is there and 404
+// when it is not, 401 unauthenticated, and it answers the same with a minted API
+// key as with a user token. ValidateWritable stays false deliberately — the
+// other branch writes a probe file into somebody else's library.
+//
+// **A 404 alone is not proof**, and that is why "/" is asked second. The
+// not-there answer is ASP.NET's stock problem+json, byte-for-byte what a route
+// that does not exist would produce, so a Jellyfin without this endpoint would
+// otherwise be read as a Jellyfin that cannot see the path — a confident wrong
+// sentence in the one place this task exists to be careful. "/" exists on every
+// filesystem, so a 404 for it means the endpoint is missing and the answer is
+// PathUnknown.
+func (p *Provisioner) PathExists(ctx context.Context, session Session, path string) (PathAnswer, error) {
+	answer, err := p.validatePath(ctx, session, path)
+	if err != nil || answer != PathAbsent {
+		return answer, err
+	}
+	// Believe the 404 only from a server that answers 204 for a path that cannot
+	// be missing.
+	if root, err := p.validatePath(ctx, session, "/"); err != nil || root != PathPresent {
+		p.log.Info("this jellyfin does not answer path checks, so curator cannot tell whether it can see the library path",
+			"path", path, "root_answer", root.String())
+		return PathUnknown, nil
+	}
+	return PathAbsent, nil
+}
+
+// validatePath is one /Environment/ValidatePath call.
+func (p *Provisioner) validatePath(ctx context.Context, session Session, path string) (PathAnswer, error) {
+	status, body, err := p.do(ctx, http.MethodPost, pathValidatePath, nil, session.Token, map[string]any{
+		"Path": path,
+		// False, always. True asks Jellyfin to write a file to prove it can,
+		// which is not a thing to do to a server somebody else owns.
+		"ValidateWritable": false,
+	})
+	if err != nil {
+		return PathUnknown, err
+	}
+	switch status {
+	case http.StatusNoContent, http.StatusOK:
+		return PathPresent, nil
+	case http.StatusNotFound:
+		return PathAbsent, nil
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return PathUnknown, fmt.Errorf("jellyfin provision: %s answered %d: %w",
+			pathValidatePath, status, ErrUnauthorized)
+	default:
+		return PathUnknown, unexpectedStatus(pathValidatePath, status, body)
+	}
 }
 
 // authKey is one entry of GET /Auth/Keys.

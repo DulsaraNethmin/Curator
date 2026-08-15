@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   api,
   jellyfinFailure,
+  type JellyfinAdopted,
   type JellyfinProbe,
   type JellyfinProvisioned,
   type SettingsResult,
@@ -152,11 +153,23 @@ function JellyfinSetup({
   const [probe, setProbe] = useState<JellyfinProbe | null>(null);
   const [done, setDone] = useState<JellyfinProvisioned | null>(null);
 
+  // The adoption, and the way to run it again. `again` is a closure the form
+  // hands over so that accepting the library offer does not ask for the
+  // password a second time — it stays inside the component that collected it
+  // and is never lifted into state up here.
+  const [adopted, setAdopted] = useState<{ result: JellyfinAdopted; again: Again } | null>(null);
+
+  // Whether the person has said they already run one somewhere else. It is a
+  // way in and not a mode: the screen still decides what to draw from what the
+  // server says, because "is this a new Jellyfin?" is a question the software
+  // can answer and a person can get wrong.
+  const [elsewhere, setElsewhere] = useState(false);
+
   // Polling stops once there is something to do, and once it is done. It is a
   // ref rather than state so the interval closure reads the current answer
   // instead of the one it was created with.
   const stop = useRef(false);
-  stop.current = done !== null;
+  stop.current = done !== null || adopted !== null || elsewhere;
 
   const look = useCallback(async () => {
     try {
@@ -179,6 +192,36 @@ function JellyfinSetup({
 
   if (done) {
     return <Finished done={done} onChange={onChange} />;
+  }
+  if (adopted) {
+    return (
+      <Connected
+        adopted={adopted.result}
+        again={adopted.again}
+        onSaved={onSaved}
+        onChange={onChange}
+      />
+    );
+  }
+
+  // Somebody said they run one elsewhere, so the screen stops describing the
+  // bundled one entirely: the address is theirs to type and nothing else on
+  // this page applies to it.
+  if (elsewhere) {
+    return (
+      <div className="panel playback-ask">
+        <h2 style={{ marginTop: 0 }}>Connecting to your Jellyfin</h2>
+        <AdoptForm
+          libraryPath={probe?.library_path ?? ''}
+          initialURL=""
+          onSaved={onSaved}
+          onDone={(result, again) => setAdopted({ result, again })}
+        />
+        <button type="button" style={{ marginTop: '1rem' }} onClick={() => setElsewhere(false)}>
+          Back
+        </button>
+      </div>
+    );
   }
 
   // Already linked and not mid-setup: this is the resting state of an install
@@ -209,16 +252,39 @@ function JellyfinSetup({
         <ProvisionForm probe={probe} onSaved={onSaved} onDone={setDone} />
       )}
 
-      {probe?.state === 'configured' && <AlreadyConfigured probe={probe} />}
+      {/* A Jellyfin at the bundle's own address that is already set up. The
+          branch was chosen by the server, so the form opens straight onto it
+          with the address filled in rather than asking a question that has
+          already been answered. */}
+      {probe?.state === 'configured' && (
+        <>
+          <div className="banner warn" role="status">
+            <strong>There is already a Jellyfin at {probe.url}, and it is set up.</strong>
+            <span>
+              curator will not run its wizard again — that guard is what stops a household being
+              locked out of a server they are watching. Sign in instead and curator will mint its own
+              key, add nothing you did not ask for, and change nothing else.
+            </span>
+          </div>
+          <AdoptForm
+            libraryPath={probe.library_path}
+            initialURL={probe.url}
+            onSaved={onSaved}
+            onDone={(result, again) => setAdopted({ result, again })}
+          />
+        </>
+      )}
 
-      <button
-        type="button"
-       
-        style={{ marginTop: '1rem' }}
-        onClick={onChange}
-      >
-        Change how you watch
-      </button>
+      <div className="row" style={{ gap: '.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+        <button type="button" onClick={onChange}>
+          Change how you watch
+        </button>
+        {probe?.state !== 'configured' && (
+          <button type="button" onClick={() => setElsewhere(true)}>
+            I already run Jellyfin somewhere else
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -470,34 +536,378 @@ function ProvisionForm({
 }
 
 /**
- * The branch this task does not own.
+ * Running the adoption again, with the credential still in the form's closure.
  *
- * A Jellyfin that has finished its own wizard is somebody's — a NAS install, or
- * the Pi at cutover — and curator will not touch a server a household is
- * watching. Connecting to one is its own flow; until that exists this says so
- * and gives the manual route, which is better than a button that does nothing.
+ * It is a function rather than the password itself for a reason worth the type
+ * alias: the password is used by the component that collected it and by nothing
+ * else, so accepting the library offer cannot become a second place in this file
+ * that holds one.
  */
-function AlreadyConfigured({ probe }: { probe: JellyfinProbe }) {
+type Again = (addLibrary: boolean) => Promise<JellyfinAdopted>;
+
+/**
+ * Connecting to a Jellyfin somebody already runs — a NAS install, or the Pi at
+ * cutover.
+ *
+ * **The address is asked for first and probed before anything else.** An
+ * unreachable one is a typo or a firewall, and finding that out after somebody
+ * has typed a password is a worse experience for no reason.
+ *
+ * The public URL defaults from the address typed here and **not** from
+ * `window.location.hostname`, which is what the setup branch uses. That default
+ * is wrong on this branch by construction: the browser reached *curator*, and an
+ * adopted Jellyfin is usually on a different host entirely.
+ */
+function AdoptForm({
+  libraryPath,
+  initialURL,
+  onSaved,
+  onDone,
+}: {
+  libraryPath: string;
+  initialURL: string;
+  onSaved: (next: SettingsResult) => void;
+  onDone: (adopted: JellyfinAdopted, again: Again) => void;
+}) {
+  const [url, setURL] = useState(initialURL);
+  const [probe, setProbe] = useState<JellyfinProbe | null>(null);
+  const [looking, setLooking] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [publicURL, setPublicURL] = useState(initialURL);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState<string | undefined>();
+  const [instructions, setInstructions] = useState<string[] | undefined>();
+
+  // The address is the only thing asked for until something answers at it.
+  async function look(event: React.FormEvent) {
+    event.preventDefault();
+    setLooking(true);
+    setError(null);
+    setInstructions(undefined);
+    setStep(undefined);
+    try {
+      const found = await api.jellyfinProbe(url);
+      setProbe(found);
+      // Seeded from the address that was just typed, and only once: the URL a
+      // browser reaches Jellyfin at is usually the one a person opens it at.
+      if (found.url) {
+        setURL(found.url);
+        setPublicURL((current) => (current === '' || current === initialURL ? found.url : current));
+      }
+    } catch (e) {
+      setProbe(null);
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLooking(false);
+    }
+  }
+
+  // The call, on its own, so it can be handed to the ending as `again` without
+  // carrying this component's state with it.
+  const again: Again = (addLibrary) =>
+    api.jellyfinAdopt({
+      url,
+      username,
+      password,
+      public_url: publicURL.trim(),
+      add_library: addLibrary,
+    });
+
+  async function connect() {
+    setBusy(true);
+    setError(null);
+    setStep(undefined);
+    setInstructions(undefined);
+    try {
+      const result = await again(false);
+      onSaved(await api.settings());
+      onDone(result, again);
+    } catch (e) {
+      const failure = jellyfinFailure(e);
+      setError(e instanceof Error ? e.message : String(e));
+      setStep(failure.step);
+      setInstructions(failure.instructions);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (probe?.state !== 'configured') {
+    return (
+      <form onSubmit={look} className="playback-form">
+        <label>
+          <span>Where is your Jellyfin?</span>
+          <input
+            value={url}
+            onChange={(e) => setURL(e.target.value)}
+            placeholder="http://192.168.1.26:8096"
+            className="mono"
+            required
+          />
+          <span className="small muted">
+            The address you open Jellyfin at. curator runs in a container, so{' '}
+            <span className="mono">localhost</span> here means curator&apos;s own container and not
+            this machine — use the LAN address.
+          </span>
+        </label>
+
+        {probe !== null && probe.state !== 'configured' && (
+          <div className="banner warn" role="status">
+            {probe.state === 'needs_setup' ? (
+              <>
+                <strong>There is a Jellyfin at {probe.url}, and it has never been set up.</strong>
+                <span>
+                  There is no account on it to sign in with yet. Finish its own setup wizard first
+                  and then come back — or, for a Jellyfin curator starts beside itself, use the
+                  bundled one on the previous screen, which needs no password from you.
+                </span>
+              </>
+            ) : (
+              <>
+                <strong>Nothing that looks like Jellyfin answered at {probe.url}.</strong>
+                <span>{probe.detail}</span>
+              </>
+            )}
+          </div>
+        )}
+
+        {error !== null && (
+          <div className="banner error" role="alert">
+            {error}
+          </div>
+        )}
+
+        <button className="primary" disabled={looking || url.trim() === ''}>
+          {looking ? 'Looking…' : 'Look for it'}
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <form
+      className="playback-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void connect();
+      }}
+    >
+      <div className="banner info" role="status">
+        <strong>
+          Jellyfin {probe.version} answered at {probe.url}, and it is already set up.
+        </strong>
+        <span>
+          Sign in with an account that already exists there. curator uses it once to mint its own API
+          key and does not keep the password — it never changes that server&apos;s setup, its
+          accounts, or any library on it.
+        </span>
+      </div>
+
+      <label>
+        <span>Jellyfin username</span>
+        <input
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          autoComplete="off"
+          required
+        />
+        <span className="small muted">
+          An administrator account — creating an API key needs one.
+        </span>
+      </label>
+
+      <label>
+        <span>Jellyfin password</span>
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="current-password"
+          required
+        />
+      </label>
+
+      <label>
+        <span>Your TV will reach Jellyfin at</span>
+        <input value={publicURL} onChange={(e) => setPublicURL(e.target.value)} className="mono" />
+        <span className="small muted">
+          Taken from the address you just typed rather than from this page&apos;s own — you reached
+          curator here, and your Jellyfin is somewhere else.
+        </span>
+      </label>
+
+      <label>
+        <span>curator keeps its films at</span>
+        <input value={libraryPath} readOnly className="mono" />
+        <span className="small muted">
+          Read-only. curator will look for a library on your server that covers this and tell you
+          what it found — it adds nothing unless you ask.
+        </span>
+      </label>
+
+      {error !== null && (
+        <div className="banner error" role="alert">
+          <strong>{step ? `Connecting failed at ${step}` : 'Connecting failed'}</strong>
+          <span>{error}</span>
+          {instructions && instructions.length > 0 && (
+            <ol className="small" style={{ marginTop: '.5rem' }}>
+              {instructions.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+
+      <button className="primary" disabled={busy}>
+        {busy ? 'Connecting…' : 'Connect to this Jellyfin'}
+      </button>
+    </form>
+  );
+}
+
+/**
+ * The ending of the adopt branch, and the three sentences it exists to say.
+ *
+ * Exactly one of them offers a button. The other two are curator saying what it
+ * found and stopping — including the one where it cannot help, because a library
+ * pointed at a path that server cannot see produces an empty scan and no error
+ * anywhere, which is the failure this whole flow exists to remove rather than
+ * reproduce.
+ */
+function Connected({
+  adopted,
+  again,
+  onSaved,
+  onChange,
+}: {
+  adopted: JellyfinAdopted;
+  again: Again;
+  onSaved: (next: SettingsResult) => void;
+  onChange: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState(adopted);
+
+  // Accepting the offer runs the same call again with the one flag set. It is
+  // safe to run twice: curator reuses the key it minted the first time rather
+  // than leaving a second one behind on somebody's server.
+  async function add() {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await again(true);
+      onSaved(await api.settings());
+      setResult(next);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="panel playback-ask">
+      <h2 style={{ marginTop: 0 }}>Connected to your Jellyfin</h2>
+      <div className="banner info" role="status">
+        <strong>curator has its own API key for Jellyfin {result.version}.</strong>
+        <span>
+          Open the Jellyfin app on your TV, phone or Apple TV, point it at{' '}
+          <span className="mono">{result.public_url || result.url}</span>, and sign in as you already
+          do. curator changed nothing about that server
+          {result.library.added ? ' except the library you just asked for' : ''}.
+        </span>
+      </div>
+
+      <LibraryOffer
+        adopted={result}
+        busy={busy}
+        error={error}
+        onAdd={result.library.state === 'addable' ? add : undefined}
+      />
+
+      <dl className="playback-choices">
+        <dt>The check curator ran</dt>
+        <dd className="small muted">{result.check.detail}.</dd>
+        <dt>Libraries on that server</dt>
+        <dd className="small muted">
+          {result.library.names.length > 0 ? result.library.names.join(', ') : 'none at all'}.
+          curator read all of them and edited none.
+        </dd>
+      </dl>
+
+      <button type="button" onClick={onChange}>
+        Change how you watch
+      </button>
+    </div>
+  );
+}
+
+/** The one offer, and the two sentences that are not one. */
+function LibraryOffer({
+  adopted,
+  busy,
+  error,
+  onAdd,
+}: {
+  adopted: JellyfinAdopted;
+  busy: boolean;
+  error: string | null;
+  onAdd?: () => Promise<void>;
+}) {
+  const { state, detail } = adopted.library;
+
+  if (state === 'covered') {
+    return (
+      <div className="banner info" role="status">
+        <strong>
+          {adopted.library.added
+            ? 'curator added the library.'
+            : 'Your films are already covered.'}
+        </strong>
+        <span>{detail}.</span>
+      </div>
+    );
+  }
+
+  if (state === 'unseen' || state === 'unknown') {
+    return (
+      <div className="banner warn" role="status">
+        <strong>curator cannot add a library to that server.</strong>
+        <span>{detail}.</span>
+        <span style={{ display: 'block', marginTop: '.5rem' }}>
+          That is usually because the two run on different machines and do not share a disk — or
+          because Jellyfin sees the same disk at a path of its own, in which case your films are
+          already there and nothing is wrong. curator cannot tell which from here, so it is not
+          going to guess and point a library at a path that server may not have. Open in Jellyfin
+          works either way: it looks films up by their TMDB id, not by their path.
+        </span>
+      </div>
+    );
+  }
+
+  if (!onAdd) return null;
+
   return (
     <div className="banner warn" role="status">
-      <strong>There is already a Jellyfin at {probe.url}, and it is set up.</strong>
-      <span>
-        curator will not run its wizard again — that guard is what stops a household being locked
-        out of a server they are watching. Connecting to an existing Jellyfin is a separate flow and
-        is not built yet. Until it is:
+      <strong>No library on that server covers curator&apos;s films.</strong>
+      <span>{detail}. curator can add one, which adds a library and changes nothing else.</span>
+      <span style={{ display: 'block', marginTop: '.5rem' }}>
+        Your existing libraries, accounts and settings are untouched either way — and if you would
+        rather do it yourself, add a Movies library at{' '}
+        <span className="mono">{adopted.library_path}</span> in Jellyfin instead.
       </span>
-      <ol className="small" style={{ marginTop: '.5rem' }}>
-        <li>
-          In Jellyfin, add a Movies library at exactly{' '}
-          <span className="mono">{probe.library_path}</span> if one does not already cover it.
-        </li>
-        <li>In Jellyfin: Dashboard → API Keys → new key.</li>
-        <li>
-          Paste it into the Jellyfin section below as <span className="mono">JELLYFIN_API_KEY</span>,
-          with <span className="mono">JELLYFIN_URL</span> set to{' '}
-          <span className="mono">{probe.url}</span>.
-        </li>
-      </ol>
+      <button type="button" className="primary" disabled={busy} onClick={() => void onAdd()}>
+        {busy ? 'Adding…' : `Add a Movies library at ${adopted.library_path}`}
+      </button>
+      {error !== null && (
+        <span className="small" role="alert" style={{ display: 'block', marginTop: '.5rem' }}>
+          That did not work: {error}
+        </span>
+      )}
     </div>
   );
 }
