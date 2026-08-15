@@ -28,6 +28,21 @@ var ErrNoVideo = errors.New("no video file to import")
 // of retrying will change it, unlike a full disk or an unmounted library.
 var ErrBadTitle = errors.New("the title cannot be a folder name")
 
+// ErrOutsideRoot reports that a path is not this library's to touch.
+//
+// It is named for the reason ErrNoVideo is: the caller has to be able to tell a
+// REFUSAL from a FAILURE. Deleting a movie has to remove the ROW even when the
+// folder is not ours to delete — a library_path outside the root can never be
+// served either (stream.go refuses it with AssertInside), so a delete that gave
+// up on it would leave the one row nothing can use and nothing can remove.
+//
+// It does NOT weaken anything. RemoveMovieFolder still refuses, AssertInside
+// still refuses, and the containment check is still the argument that stops a
+// library_path which had drifted into "/" being an rm -rf with a friendly name.
+// This only lets one caller say "then there is nothing of mine there" instead of
+// treating the refusal as a broken disk.
+var ErrOutsideRoot = errors.New("outside the library root")
+
 // DefaultMinFeatureBytes is the floor a file must clear to be considered the
 // feature. Release folders routinely ship a 3-8 MB `sample.mkv` beside the
 // film, and without a floor a torrent whose feature failed to download would
@@ -430,11 +445,11 @@ func RemoveMovieFolder(root, folder string) error {
 	}
 
 	if absFolder == absRoot {
-		return fmt.Errorf("remove %s: that is the library root itself, not a movie", folder)
+		return fmt.Errorf("remove %s: that is the library root itself, not a movie: %w", folder, ErrOutsideRoot)
 	}
 	rel, err := filepath.Rel(absRoot, absFolder)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("remove %s: outside the library root %s", folder, root)
+		return fmt.Errorf("remove %s: outside the library root %s: %w", folder, root, ErrOutsideRoot)
 	}
 
 	info, err := os.Lstat(absFolder)

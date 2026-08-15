@@ -730,16 +730,31 @@ func (s *Server) handlePlayback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The film has to actually be there. This used to resolve the folder only,
+	// on the argument that a playback response should not touch the disk — and
+	// the result was the thing the comment below it warned against: a 200
+	// carrying a stream_url the stream would 404, with the failure arriving
+	// inside <video>, where it is indistinguishable from a codec refusal.
+	//
+	// It costs one ReadDir of a directory this handler is about to read anyway
+	// for the subtitles, and it is the same picker, so this cannot disagree with
+	// the endpoint that will be asked next.
+	if _, err := library.FindFeature(folder, library.FeatureOpts{}); err != nil {
+		s.log.Warn("playback: no feature file", "movie_id", movie.ID, "library_path", folder, "err", err)
+		s.fail(w, http.StatusNotFound, errors.New("this film has no playable file in the library"))
+		return
+	}
+
 	path := streamPath(movie.ID)
 	body := playbackBody{StreamURL: path, ExternalURL: s.absolute(r, path)}
 	if s.remux != nil {
 		body.RemuxURL = remuxPath(movie.ID)
 	}
 
-	// A folder that cannot be read is NOT a refusal to play the film. The
-	// feature is the point and the subtitle is a courtesy, exactly as it is at
-	// import — and the stream endpoint is about to answer the same question for
-	// itself, with a 404 that says so properly. An empty list here and a Warn.
+	// A folder whose SUBTITLES cannot be listed is still not a refusal to play
+	// the film. The feature is the point and the subtitle is a courtesy, exactly
+	// as it is at import: an empty list here and a Warn. The feature itself is a
+	// different question and it was answered above.
 	tracks, err := subtitleTracks(folder)
 	if err != nil {
 		s.log.Warn("playback: could not list this film's subtitles; offering none",

@@ -39,6 +39,11 @@ Stated first, because most of the risk in this phase is collateral damage.
   added to `testdata/library/movies/` either**. `link.go` is in package `library` and can call the
   existing unexported `isVideo` and `isHidden` directly; the importer's recursive search is a
   **separate exported function**, not a change to `largestVideo`.
+
+  > **The first half is superseded by [D33](decisions.md), in [T57](tasks/T57-library-way-in.md):**
+  > `largestVideo` is gone, the scanner calls `FindFeature`, and a folder with no film in it is no
+  > longer a movie at all. The `testdata/` half survives — the fixture is unchanged, and the floor
+  > is met with sparse files in `t.TempDir()` instead.
 - **`UpsertMovieByPath` is not modified**, so
   `TestWantedMovieDoesNotDisturbTheScanUpsert`'s assertions all still hold. Only its comment is
   stale — it says the wanted row and the scanned row stay separate for ever, and phase 4 is what

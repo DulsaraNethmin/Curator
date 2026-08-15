@@ -39,7 +39,10 @@ phase 6.
 Two traps worth naming. `syscall.Stat_t.Nlink` is `uint16` on darwin and `uint64` on linux, so read
 it through a converting helper or `GOOS=linux GOARCH=arm64 go vet ./...` breaks on a line that looks
 fine here. And **a folder does not imply a file** — 15 of the 29 library folders on the Pi are empty,
-and only 14 video files exist in total.
+and only 14 video files exist in total. Since
+[D33](docs/decisions.md#d33--a-folder-with-no-film-in-it-is-not-a-movie-the-row-goes-the-folder-stays)
+the consequence is the opposite of what it used to be: such a folder is **not a movie**, every scan
+removes its row, and the directory itself is left exactly where it is.
 
 ---
 

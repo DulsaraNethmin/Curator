@@ -17,6 +17,11 @@ The other half: what curator already has, what it is doing right now, and whethe
    wanted film. **15 of the 29 folders on the Pi are empty**, so `size_bytes` is 0 for over half the
    library on the very first screen anyone opens. A poster placeholder is not a nicety here; it is
    the majority case.
+
+   > **The zero-size half is gone as of [D33](../decisions.md) / [T57](T57-library-way-in.md):** an
+   > empty folder is no longer a row at all, so a scanned row can never carry `size_bytes` 0 — only
+   > a *wanted* row does, and it carries NULL. The poster placeholder still matters, for the
+   > unmatched rows D6 keeps.
 3. Surface **unmatched** films rather than hiding them. A `tmdb_id` of null is the row that wants
    human attention — that is the entire reason D6 made the column nullable instead of dropping the
    row.

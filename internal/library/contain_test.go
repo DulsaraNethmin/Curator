@@ -1,6 +1,7 @@
 package library
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -46,8 +47,15 @@ func TestAssertInside(t *testing.T) {
 		{"traversal that has not been cleaned", root + "/Interstellar (2014)/../../../etc/passwd"},
 	}
 	for _, c := range outside {
-		if err := AssertInside(root, c.path); err == nil {
+		err := AssertInside(root, c.path)
+		if err == nil {
 			t.Errorf("%s: %s was accepted as inside %s", c.name, c.path, root)
+			continue
+		}
+		// The same sentinel RemoveMovieFolder wraps, so one errors.Is answers
+		// "is this path ours?" whichever of the two was asked.
+		if !errors.Is(err, ErrOutsideRoot) {
+			t.Errorf("%s: err = %v, want it to wrap ErrOutsideRoot", c.name, err)
 		}
 	}
 }

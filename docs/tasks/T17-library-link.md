@@ -62,6 +62,12 @@ a second name **on disk**. No database, no HTTP, no environment, no knowledge th
   asserts exactly 29 folders and `TestScanSizeIsLargestVideoFile` hardcodes byte sizes and "27
   zero-size folders". `FindFeature` is a *separate* exported function that happens to look similar;
   the flat, non-recursive, no-floor `largestVideo` is what the scanner needs and it stays as it is.
+
+  > **Superseded by [D33](../decisions.md) in [T57](T57-library-way-in.md).** This rule was right
+  > while a disagreement between the two pickers produced a wrong `size_bytes`. It stopped being
+  > right once the same disagreement decided whether a row *exists*: `largestVideo` is gone and the
+  > scanner calls `FindFeature`, so there is exactly one answer to which file is the film. The
+  > second rule below still stands.
 - **Add anything to `testdata/library/movies/`** — same two tests, same reason. Build every fixture
   this task needs in `t.TempDir()`.
 - Import `internal/store`, `internal/qbit`, `internal/config` or anything else. This package is pure

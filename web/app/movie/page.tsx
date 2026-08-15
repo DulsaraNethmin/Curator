@@ -47,6 +47,11 @@ function Movie() {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<unknown>(null);
 
+  // Whether the hero's ▶ Watch here has been pressed. The <Player> mounts on it
+  // and starts itself, which is what lets the two watch actions — here, and in
+  // Jellyfin — sit together in the hero instead of one being a button below it.
+  const [watching, setWatching] = useState(false);
+
   // Metadata and releases are two fetches and never a Promise.all. TMDB answers
   // in about 150 ms; a cold release search takes up to thirteen seconds because
   // a real browser is clearing Cloudflare behind minter. Awaiting both would
@@ -60,6 +65,7 @@ function Movie() {
     setError(null);
     setReleases(null);
     setSearchError(null);
+    setWatching(false);
 
     api
       .tmdbMovie(id)
@@ -121,6 +127,13 @@ function Movie() {
   const poster = posterURL(details.poster_path);
   const runtime = formatRuntime(details.runtime);
 
+  // `imported` and nothing else. library.state is the only truthful source —
+  // movies.status never says "downloading", the Go side derives that from the
+  // downloads table — and a film mid-download is emphatically not one curator
+  // already has: when a torrent stalls, dispatching a different release is
+  // exactly what you want to do.
+  const onDisk = details.library?.state === 'imported';
+
   return (
     <>
       <div className="hero" style={backdrop ? { backgroundImage: `url(${backdrop})` } : undefined}>
@@ -148,11 +161,26 @@ function Movie() {
             {details.overview && <p className="overview">{details.overview}</p>}
 
             <div className="actions">
-              {/* Nothing has touched an indexer up to this point, and nothing
-                  will until this is pressed. That is what makes browsing free. */}
-              <button className="primary" onClick={findReleases} disabled={searching}>
-                {searching ? 'Searching…' : releases ? 'Search again' : 'Find releases'}
-              </button>
+              {onDisk ? (
+                // The two ways to watch, side by side, because that is what
+                // they are. "Find releases" is not drawn at all for a film
+                // curator already has: acquiring it again is not an action this
+                // page should offer, and the releases section below says so
+                // rather than leaving the absence a mystery.
+                <button
+                  className="primary"
+                  onClick={() => setWatching(true)}
+                  disabled={watching}
+                >
+                  ▶ Watch here
+                </button>
+              ) : (
+                /* Nothing has touched an indexer up to this point, and nothing
+                   will until this is pressed. That is what makes browsing free. */
+                <button className="primary" onClick={findReleases} disabled={searching}>
+                  {searching ? 'Searching…' : releases ? 'Search again' : 'Find releases'}
+                </button>
+              )}
 
               {/* Absent means there is nothing to draw — no Jellyfin
                   configured, or a film curator does not have on disk. Not a
@@ -175,47 +203,69 @@ function Movie() {
           by: they are different numbers and the wrong one is a 404 on a film
           you can see (D21).
 
-          Below the hero rather than beside the poster, because what this
-          renders once it starts is a video and not a button. */}
-      {details.library?.state === 'imported' && (
-        <Player movieID={details.library.movie_id} title={details.title} />
+          Still below the hero, and now mounted by the hero's own button rather
+          than drawing one of its own. What it renders once it starts is a video
+          and not a button, so this is where it belongs — and the button that
+          starts it is above the fold, which is what the arrangement was for. */}
+      {onDisk && watching && details.library && (
+        <Player movieID={details.library.movie_id} title={details.title} autoStart />
       )}
 
       <Facts details={details} />
 
       <h2>Releases</h2>
 
-      {searching && (
-        <Working
-          what="Searching YTS, TPB and 1337x"
-          hint="1337x needs a real browser to clear Cloudflare, so the first search for a title takes ~13s. The next one this hour is instant."
-        />
-      )}
-      {searchError !== null && <Failure error={searchError} onRetry={findReleases} />}
-
-      {!releases && !searching && searchError === null && (
+      {onDisk ? (
+        // The heading stays and the list does not. A section that silently
+        // vanished would be a mystery; this one says why there is nothing to
+        // fetch, and what to do if you want a different release anyway. The
+        // server refuses the dispatch too — this is the explanation, not the
+        // guard.
         <Empty>
-          Press <strong>Find releases</strong> to ask YTS, TPB and 1337x for{' '}
-          <span className="mono">{details.title}</span>.
+          curator already has this film
+          {details.library?.library_path && (
+            <>
+              , at <span className="mono">{details.library.library_path}</span>
+            </>
+          )}
+          . To replace it with a different release, delete it from the{' '}
+          <Link href="/library/">Library</Link> first.
         </Empty>
-      )}
+      ) : (
+        <>
+          {searching && (
+            <Working
+              what="Searching YTS, TPB and 1337x"
+              hint="1337x needs a real browser to clear Cloudflare, so the first search for a title takes ~13s. The next one this hour is instant."
+            />
+          )}
+          {searchError !== null && <Failure error={searchError} onRetry={findReleases} />}
 
-      <Releases
-        result={releases}
-        // TMDB's title, year and id, which is the whole point of the redesign:
-        // the folder and the movies row come from the catalogue rather than from
-        // whatever was typed into a box.
-        film={{ title: details.title, year: details.year, tmdb_id: details.tmdb_id }}
-        searching={searching}
-        onSearchAgain={findReleases}
-        noYearReason="TMDB has no release date for this film, so there is no year — and Title (Year) is the folder name curator would have to write."
-        empty={
-          <>
-            No releases for <strong>{details.title}</strong> on any indexer. The film exists; nobody
-            has uploaded it under this name.
-          </>
-        }
-      />
+          {!releases && !searching && searchError === null && (
+            <Empty>
+              Press <strong>Find releases</strong> to ask YTS, TPB and 1337x for{' '}
+              <span className="mono">{details.title}</span>.
+            </Empty>
+          )}
+
+          <Releases
+            result={releases}
+            // TMDB's title, year and id, which is the whole point of the
+            // redesign: the folder and the movies row come from the catalogue
+            // rather than from whatever was typed into a box.
+            film={{ title: details.title, year: details.year, tmdb_id: details.tmdb_id }}
+            searching={searching}
+            onSearchAgain={findReleases}
+            noYearReason="TMDB has no release date for this film, so there is no year — and Title (Year) is the folder name curator would have to write."
+            empty={
+              <>
+                No releases for <strong>{details.title}</strong> on any indexer. The film exists;
+                nobody has uploaded it under this name.
+              </>
+            }
+          />
+        </>
+      )}
     </>
   );
 }

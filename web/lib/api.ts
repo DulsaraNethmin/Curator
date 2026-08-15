@@ -90,10 +90,22 @@ export type SearchResult = {
 };
 
 export type ScanResult = {
+  /**
+   * Folders that hold a FILM, which is narrower than it sounds: a folder with
+   * nothing playable in it is not a movie, and `empty` counts those. The two
+   * belong together — a library of 29 folders reporting 2 films has to explain
+   * itself.
+   */
   scanned: number;
   added: number;
   matched: number;
   unmatched: number;
+  /** Folders on disk with no film in them. */
+  empty: number;
+  /** Rows removed. The folders themselves were left exactly where they are. */
+  removed: number;
+  /** Rows kept because this scan could not account for them — absent, unreadable, or a name that no longer parses. */
+  missing: number;
 };
 
 /**
@@ -264,6 +276,12 @@ export type Deletion = {
   library_path?: string;
   torrents_removed: number;
   bytes_freed: number;
+  /**
+   * A folder that was NOT removed, because it sits outside LIBRARY_MOVIES and is
+   * therefore not curator's to delete. Absent in the ordinary case — and present
+   * rather than silent because the banner otherwise says the folder went.
+   */
+  folder_left?: string;
 };
 
 export type Integration = {
@@ -362,7 +380,9 @@ export type AuthStatus = {
  *        the system whose correct fix is a user action
  *   503  the integration is unconfigured; say which variable to set
  *   502  a dependency is down; it is not our fault and not the user's
- *   409  the torrent has not finished
+ *   409  a deliberate refusal of a well-formed request: the torrent has not
+ *        finished, the torrent is not curator's to delete, or curator already
+ *        has this film in the library
  *   422  nothing importable, or a title that cannot be a folder name
  */
 export class ApiError extends Error {
@@ -570,8 +590,11 @@ export const api = {
 // --- formatting ------------------------------------------------------------
 
 export function formatBytes(bytes: number | null): string {
-  // 0 is not "unknown" here: 15 of the 29 real library folders are empty, so a
-  // zero-size movie is the ordinary case and says something true.
+  // null is "no file", and it is the only way a library row says that now: a
+  // wanted film has no size, and since a folder with no film in it is no longer
+  // a row at all (D33), a scanned row's size_bytes is a feature file's and can
+  // never be 0. The zero branch stays for a release whose indexer reported no
+  // size, where "empty" is still the honest word.
   if (bytes === null) return '—';
   if (bytes === 0) return 'empty';
 
