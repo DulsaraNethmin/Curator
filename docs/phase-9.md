@@ -38,7 +38,7 @@ fallback working correctly, and it is the path problem this phase removes by con
 
 ---
 
-## The reading this is built on — correct me here if it is wrong
+## The reading this is built on — **confirmed 2026-08-15**
 
 You said: *"when the main app starts, does it start jellyfin as well even if user has not selected
 jellyfin? if yes it's not what i expect."*
@@ -46,10 +46,11 @@ jellyfin? if yes it's not what i expect."*
 So **Jellyfin never runs unbidden.** `docker compose up -d` brings up **curator alone**. Jellyfin
 sits behind a compose profile and only exists once you have chosen it as your playback method.
 
-That is the **opt-in profile**, and it is what everything below assumes. You left the bundling
-question unselected and said *"i think this is what i prefer. but i'm open for suggestion"* — this is
-the only reading consistent with the note above, so it is written down here where you can overrule
-it rather than buried in a task file.
+That is the **opt-in profile**, and it is what everything below assumes. It was written here as a
+reading to be overruled rather than buried in a task file, because you left the bundling question
+unselected and said *"i think this is what i prefer. but i'm open for suggestion"*. **Asked again
+before T63 could hard-code it, and chosen: the opt-in profile, with the pasted command accepted as
+its cost.** T63 may now depend on it without asking again.
 
 **The consequence, stated plainly: there is one pasted command in the flow.** You ruled out the
 Docker socket when it turned out that `-v /var/run/docker.sock` is root on the host and
@@ -81,7 +82,7 @@ demand", T47–T51.** Three of those numbers are cited by other documents and ke
 | **T49** | fetching minter on demand when 1337x is enabled — hangs off phase 7's `indexer_1337x` (`phase-7.md:214`, `phase-7.md:381`) |
 | **T51** | **claimed twice**, and this document resolves it — see immediately below |
 
-### T51 is the documents. The first-run wizard is T50.
+### T51 is the documents. The first-run wizard is T50. — **confirmed 2026-08-15**
 
 `phase-6.md:24` says T51 corrects the stale documents; `phase-7.md:384` says T51 is the first-run
 wizard. **T51 keeps the documents**, for a reason that is not a coin toss: phase 6 *deliberately left
