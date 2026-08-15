@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
+	"github.com/DulsaraNethmin/curator/internal/library"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
@@ -353,6 +354,13 @@ type Deletion struct {
 	LibraryPath     string `json:"library_path,omitempty"`
 	TorrentsRemoved int    `json:"torrents_removed"`
 	BytesFreed      int64  `json:"bytes_freed"`
+
+	// FolderLeft names a folder that was NOT removed because it is outside
+	// LIBRARY_MOVIES and therefore not ours to delete. Absent in the ordinary
+	// case, like jellyfin_url and remux_url — and present rather than silent
+	// because the screen says "the library folder was removed", which would be a
+	// lie for exactly this delete.
+	FolderLeft string `json:"folder_left,omitempty"`
 }
 
 // DeleteMovie removes a film from the library and from the disk.
@@ -368,6 +376,11 @@ type Deletion struct {
 // it, and asking it avoids the state a direct unlink produces: a torrent whose
 // files have vanished underneath it, which qBittorrent reports as missingFiles
 // and the poller then records as `failed` for a download nobody failed to get.
+//
+// One error in step 2 is not a failure: library.ErrOutsideRoot means the folder
+// is not ours to delete, so there is nothing of ours in there and the rows still
+// go. The report names the folder that was left, because the screen otherwise
+// says it was removed.
 func (s *Service) DeleteMovie(ctx context.Context, id int64) (Deletion, error) {
 	if s.importer == nil {
 		return Deletion{}, ErrUnconfigured
@@ -406,7 +419,22 @@ func (s *Service) DeleteMovie(ctx context.Context, id int64) (Deletion, error) {
 
 	// 2. Our own hardlink and the folder holding it.
 	if err := s.importer.RemoveFromLibrary(report.LibraryPath); err != nil {
-		return Deletion{}, fmt.Errorf("delete movie %d: %w", id, err)
+		if !errors.Is(err, library.ErrOutsideRoot) {
+			return Deletion{}, fmt.Errorf("delete movie %d: %w", id, err)
+		}
+		// A refusal, not a failure: there is nothing of ours in there to remove,
+		// so this is the same answer "already gone" gets. Refusing here would
+		// make the row PERMANENTLY undeletable — nothing can serve a library_path
+		// outside the root either (stream.go refuses it with the same check) — and
+		// that row is exactly the one that most needs deleting. The containment
+		// check itself is untouched; only what its caller concludes changed.
+		//
+		// Warn with both paths because this is the operator's problem — a
+		// repointed LIBRARY_MOVIES, a database restored beside a different
+		// library — and the log is where it gets diagnosed.
+		report.FolderLeft = report.LibraryPath
+		s.log.Warn("delete: the library folder is outside LIBRARY_MOVIES, so it is not ours to remove; leaving it on disk and deleting the rows",
+			"movie_id", id, "library_path", report.LibraryPath, "err", err)
 	}
 
 	// 3. The rows, last.

@@ -31,6 +31,9 @@ import (
 // root itself is inside root — Rel gives "." — which no caller relies on and
 // none is refused for: the importer only ever asks about root/folder, and a row
 // whose library_path IS the root is a strange row rather than an escape.
+//
+// A refusal wraps ErrOutsideRoot, the same sentinel RemoveMovieFolder uses, so
+// one errors.Is answers "is this path ours?" whichever of the two asked.
 func AssertInside(root, path string) error {
 	absoluteRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -42,10 +45,10 @@ func AssertInside(root, path string) error {
 	}
 	rel, err := filepath.Rel(absoluteRoot, absolute)
 	if err != nil {
-		return fmt.Errorf("destination %s is not under the library root %s", path, root)
+		return fmt.Errorf("destination %s is not under the library root %s: %w", path, root, ErrOutsideRoot)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("destination %s escapes the library root %s", path, root)
+		return fmt.Errorf("destination %s escapes the library root %s: %w", path, root, ErrOutsideRoot)
 	}
 	return nil
 }

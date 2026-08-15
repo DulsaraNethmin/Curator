@@ -264,6 +264,12 @@ export type Deletion = {
   library_path?: string;
   torrents_removed: number;
   bytes_freed: number;
+  /**
+   * A folder that was NOT removed, because it sits outside LIBRARY_MOVIES and is
+   * therefore not curator's to delete. Absent in the ordinary case — and present
+   * rather than silent because the banner otherwise says the folder went.
+   */
+  folder_left?: string;
 };
 
 export type Integration = {

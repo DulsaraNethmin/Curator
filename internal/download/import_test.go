@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DulsaraNethmin/curator/internal/library"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
@@ -483,6 +486,82 @@ func TestDeleteMovieWithNoDownloads(t *testing.T) {
 	}
 	if len(im.removed) != 1 || !st.deletedMovie {
 		t.Error("the folder and the row should still have been removed")
+	}
+}
+
+// A library_path outside LIBRARY_MOVIES is the row that most needs deleting, and
+// until this it was the one that could not be: RemoveMovieFolder refuses such a
+// path, the error propagated, step 3 never ran, and the request 500'd with the row
+// still there. Nothing can serve that row either, so it was a row nothing could
+// use and nothing could remove.
+//
+// The refusal here is the REAL one — produced by RemoveMovieFolder rather than
+// hand-written — so this fails if the sentinel stops being wrapped.
+func TestDeleteMovieLeavesAFolderOutsideTheRootAndStillRemovesTheRows(t *testing.T) {
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+	outside := filepath.Join(elsewhere, "Interstellar (2014)")
+	if err := os.Mkdir(outside, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	client := &fakeClient{}
+	st := newFakeStore()
+	st.movie = store.Movie{ID: 1, Title: "Interstellar", Year: 2014, LibraryPath: &outside}
+	im := &fakeImporter{removeErr: library.RemoveMovieFolder(root, outside)}
+	if im.removeErr == nil {
+		t.Fatal("RemoveMovieFolder accepted a path outside the root; this test proves nothing")
+	}
+
+	report, err := newDeleteService(client, st, im).DeleteMovie(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DeleteMovie: %v — a refusal to touch a folder must not block the rows", err)
+	}
+	if !st.deletedMovie {
+		t.Error("the rows were not deleted")
+	}
+	if report.FolderLeft != outside {
+		t.Errorf("folder_left = %q, want %q — the report must not claim the folder was removed", report.FolderLeft, outside)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Errorf("the folder outside the root was removed anyway: %v", err)
+	}
+}
+
+// Every other failure still stops the delete. The narrowing is to one sentinel,
+// not to "errors from step 2 do not count".
+func TestDeleteMovieStopsWhenTheFolderCannotBeRemoved(t *testing.T) {
+	path := "/library/movies/Interstellar (2014)"
+
+	client := &fakeClient{}
+	st := newFakeStore()
+	st.movie = store.Movie{ID: 1, Title: "Interstellar", Year: 2014, LibraryPath: &path}
+	im := &fakeImporter{removeErr: errors.New("remove: permission denied")}
+
+	if _, err := newDeleteService(client, st, im).DeleteMovie(context.Background(), 1); err == nil {
+		t.Fatal("DeleteMovie succeeded despite the folder not being removed")
+	}
+	if st.deletedMovie {
+		t.Error("the rows were deleted while the folder is still there")
+	}
+}
+
+// The ordinary case is untouched: inside the root, the folder goes and there is
+// nothing to report about it.
+func TestDeleteMovieInsideTheRootReportsNoFolderLeft(t *testing.T) {
+	path := "/library/movies/Interstellar (2014)"
+
+	client := &fakeClient{}
+	st := newFakeStore()
+	st.movie = store.Movie{ID: 1, Title: "Interstellar", Year: 2014, LibraryPath: &path}
+	im := &fakeImporter{}
+
+	report, err := newDeleteService(client, st, im).DeleteMovie(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("DeleteMovie: %v", err)
+	}
+	if report.FolderLeft != "" {
+		t.Errorf("folder_left = %q, want empty", report.FolderLeft)
 	}
 }
 

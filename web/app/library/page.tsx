@@ -121,8 +121,19 @@ export default function Library() {
           <span className="small">
             {deleted.torrents_removed > 0
               ? `${deleted.torrents_removed} torrent${deleted.torrents_removed === 1 ? '' : 's'} removed from qBittorrent, and ${formatBytes(deleted.bytes_freed)} freed.`
-              : 'The library folder was removed. There was no torrent to delete.'}
+              : deleted.folder_left
+                ? 'There was no torrent to delete.'
+                : 'The library folder was removed. There was no torrent to delete.'}
           </span>
+          {/* The row is gone either way, but saying the folder was removed when
+              it was not is the kind of small lie that costs an hour later. A
+              path outside LIBRARY_MOVIES is not curator's to delete. */}
+          {deleted.folder_left && (
+            <span className="small muted">
+              The folder <span className="mono">{deleted.folder_left}</span> is outside{' '}
+              <span className="mono">LIBRARY_MOVIES</span>, so it was left on disk.
+            </span>
+          )}
         </div>
       )}
 

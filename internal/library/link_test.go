@@ -740,8 +740,18 @@ func TestRemoveMovieFolderRefusesAnythingOutsideOrTheRootItself(t *testing.T) {
 		"a traversal":        filepath.Join(root, "..", "elsewhere"),
 		"an absolute escape": "/tmp",
 	} {
-		if err := RemoveMovieFolder(root, folder); err == nil {
+		err := RemoveMovieFolder(root, folder)
+		if err == nil {
 			t.Errorf("%s: %q was accepted", name, folder)
+			continue
+		}
+		// Refusals wrap ErrOutsideRoot on BOTH paths — the root itself and an
+		// escape — because the delete service has to tell "I would not touch
+		// this" apart from "the disk said no", and it must not do that on the
+		// message. Asserted here rather than trusted, since a refactor that
+		// dropped the wrap on one branch would leave a row undeletable.
+		if !errors.Is(err, ErrOutsideRoot) {
+			t.Errorf("%s: err = %v, want it to wrap ErrOutsideRoot", name, err)
 		}
 	}
 
