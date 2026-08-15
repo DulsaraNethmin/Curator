@@ -302,7 +302,6 @@ func Load(resolved map[string]string) (*Config, error) {
 	r := source(resolved)
 
 	cfg := &Config{
-		Port:          defaultPort,
 		DBPath:        env("DB_PATH", defaultDBPath),
 		LibraryMovies: r.get("LIBRARY_MOVIES", defaultLibraryMovies),
 		TMDBAPIKey:    r.get("TMDB_API_KEY", ""),
@@ -405,15 +404,9 @@ func Load(resolved map[string]string) (*Config, error) {
 	// directly and never from the resolved map. They are Bootstrap's, and the
 	// rule is that anything needed in order to reach the settings screen is not
 	// settable from it.
-	if raw := os.Getenv("PORT"); raw != "" {
-		port, err := strconv.Atoi(raw)
-		if err != nil {
-			return nil, fmt.Errorf("PORT %q: not a number", raw)
-		}
-		if port < 1 || port > 65535 {
-			return nil, fmt.Errorf("PORT %d: out of range 1-65535", port)
-		}
-		cfg.Port = port
+	cfg.Port, err = Port()
+	if err != nil {
+		return nil, err
 	}
 
 	if raw := os.Getenv("LOG_BUFFER_LINES"); raw != "" {
@@ -453,6 +446,30 @@ func Load(resolved map[string]string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// Port is the port the server listens on, read from the environment alone and
+// never from the settings store: anything needed in order to reach the settings
+// screen is not settable from it (docs/decisions.md D28).
+//
+// Exported, and called rather than repeated, because the image's HEALTHCHECK
+// runs `curator -healthcheck` in the same binary — a `FROM scratch` image has no
+// shell and no curl to run one with (docs/tasks/T47-image.md). A health check
+// that guessed 8090 while the server read PORT would report a working curator as
+// unhealthy, and compose would refuse to start anything waiting on it.
+func Port() (int, error) {
+	raw := os.Getenv("PORT")
+	if raw == "" {
+		return defaultPort, nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("PORT %q: not a number", raw)
+	}
+	if port < 1 || port > 65535 {
+		return 0, fmt.Errorf("PORT %d: out of range 1-65535", port)
+	}
+	return port, nil
 }
 
 // source reads a value out of the resolved settings, then out of the
