@@ -72,7 +72,25 @@ type Step = 'direct' | 'remux' | 'vlc';
  */
 type Halt = { title: string; detail: string };
 
-export function Player({ movieID, title }: { movieID: number; title: string }) {
+/**
+ * @param autoStart fetch the playback URLs as soon as this mounts, and draw no
+ *   Play button of its own.
+ *
+ *   It exists so that "watch it here" and "open it in Jellyfin" can sit together
+ *   in the hero, which they could not while this component owned the only button
+ *   that starts playback. The caller decides when to mount it; everything below
+ *   — the stall deadlines, the picture poll, the HEAD probe, the VLC card — is
+ *   unchanged and unaware.
+ */
+export function Player({
+  movieID,
+  title,
+  autoStart,
+}: {
+  movieID: number;
+  title: string;
+  autoStart?: boolean;
+}) {
   const [urls, setURLs] = useState<PlaybackURLs | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -108,12 +126,32 @@ export function Player({ movieID, title }: { movieID: number; title: string }) {
     }
   }
 
+  // Guarded by a ref rather than by the effect's dependencies: start() is a new
+  // function on every render, so listing it would re-fire the fetch for ever,
+  // and autoStart is a one-shot instruction rather than a state to keep in sync.
+  // A retry after a failure is the Failure card's button, deliberately — an
+  // automatic one would hammer an endpoint that has already said no.
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!autoStart || autoStarted.current) return;
+    autoStarted.current = true;
+    void start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart]);
+
   if (!urls) {
     return (
       <div className="player">
-        <button className="primary" onClick={start} disabled={loading}>
-          {loading ? 'Starting…' : '▶ Play'}
-        </button>
+        {/* With autoStart the caller owns the button, so drawing one here would
+            be a second control for the same act. What is left is the progress
+            and the failure, which are still this component's to report. */}
+        {autoStart ? (
+          loading && <p className="small muted">Starting…</p>
+        ) : (
+          <button className="primary" onClick={start} disabled={loading}>
+            {loading ? 'Starting…' : '▶ Play'}
+          </button>
+        )}
         {error !== null && <Failure error={error} onRetry={start} />}
       </div>
     );

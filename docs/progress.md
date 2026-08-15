@@ -877,6 +877,61 @@ library is the Pi's `/media/storage/media/movies` and curator's local library is
 subtitles**, so there is nothing there to compare against either. Putting a file on the Pi is phase
 10, after T52. VLC is the substitute measurement and it is the same convention.
 
+## T57–T60 — the library is a list of films you can watch
+
+Out-of-band work, in the T55/T56 convention: no phase owns it, and **T47–T54 stay unclaimed** for
+phases 9 and 10. Four commits on `t57-library-way-in`, each green under `make check` alone.
+
+| | |
+|---|---|
+| [T57](tasks/T57-library-way-in.md) | a folder with no film in it is not a movie — the scanner uses `FindFeature`, and every scan removes the rows that no longer describe one ([D33](decisions.md)) |
+| [T58](tasks/T58-delete-outside-root.md) | a `library_path` outside the root stops blocking its own deletion |
+| [T59](tasks/T59-already-have.md) | `POST /api/downloads` refuses a film curator already has, with 409 |
+| [T60](tasks/T60-library-way-in-web.md) | the card opens the film, and the film's page leads with watching |
+
+### What the live run measured
+
+Port **8097**, embedded build, against a **copy** of `./curator.db` — the first change that deletes
+rows automatically. `LIBRARY_MOVIES=~/curator-local/movies`, which holds one film.
+
+| Check | Result |
+|---|---|
+| First scan | `{"scanned":1,"added":0,"matched":0,"unmatched":0,"empty":0,"removed":28,"missing":0}` in **13 ms** |
+| The film that is really there | kept its row — `added: 0`, `id` unchanged at 3, size and `tmdb_id` intact |
+| The 28 stale rows | removed, each logged with `why="its library_path is outside LIBRARY_MOVIES, so it can never be served"` |
+| `testdata/library/movies/` | **still 29 directories** afterwards. Rows only |
+| Second scan | `removed: 0` — idempotent |
+| A film whose file was deleted between scans | `{"scanned":1,"empty":1,"removed":1}`, logged `why="there is no film in that folder"`, **and the folder is still on disk** |
+| `POST /api/downloads` with `tmdb_id` 1083381 | **409** — *"curator already has this film, at …/Backrooms (2026) — delete it first to replace it"* |
+| The same for a film curator does not have | past the gate; 503 from the unconfigured downloader, which is the pre-existing answer |
+| Library screen | one card, "1 on disk", the card's root is an `<a href="/movie/?id=1083381">` with Delete as its **sibling** — no `<button>` inside an `<a>` |
+| Clicking the card | opens `/movie/?id=1083381` |
+| The hero | `▶ Watch here` and `Open in Jellyfin` side by side, and **no "Find releases"**; the Releases section names the path and links to the Library |
+| `▶ Watch here` | **direct play**, first frame in ~9 s, `1924×1040`, `readyState` 4, five subtitle tracks, on `/api/movies/3/stream` — the remux never entered it |
+
+**The tab was visible for the playback measurement, and that took work.** `document.hidden` was
+**true** on the first two checks even with `document.hasFocus()` true, because the tab was in a
+window whose *active* tab was something else. Chrome throttles media preload in a hidden tab and the
+player's 12 s cap then falls the chain through to remux, which looks exactly like a codec refusal —
+so the reading was retaken after selecting the tab with `osascript` and asserting
+`document.hidden === false`. Activating the application is not enough; the tab has to be the active
+one in its window.
+
+**The database copy has to include the WAL.** The first attempt copied `curator.db` alone and ran
+against a stale snapshot — 29 `testdata/` rows and no live one — which produced a plausible-looking
+`removed: 29` for the wrong reason. `curator.db-wal` was 951 KB and two days newer than the main
+file. Copy `curator.db`, `curator.db-wal` and `curator.db-shm`, or the run is against a database
+nobody has.
+
+### Not this task's, found while running it
+
+**`go test -race ./...` has an intermittent data race in `TestLiveEngineOverTunnel`** — third-party,
+in `wireguard/tun/netstack.(*netTun).Close()` racing gvisor's `WriteNotify` on the same channel when
+a packet is in flight as the tunnel closes. Seen once under a full-suite run and **not reproduced in
+six targeted runs**, three on this branch and three on `main` at `e211dc0`, so it is pre-existing and
+load-dependent rather than anything these commits introduced. It only fires when `.env` supplies a
+`VPN_CONFIG_FILE`, because that is what un-skips the live test.
+
 ## Corrections made to the docs
 
 Recorded so the reasoning is not lost.

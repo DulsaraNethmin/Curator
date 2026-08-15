@@ -295,11 +295,19 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   gap: 1rem;
   grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
 }
-/* A card is a <div> on the Library screen and an <a> in a TMDB grid, where the
-   whole poster is the link to the film's page. */
+/* A card is an <a> wherever there is a film page to open — the TMDB grids, and
+   the Library screen since T57 — and a <div> only for a Library row TMDB never
+   matched, which has no /movie/?id= to go to (D6, D21). The hover rules below
+   are keyed on that difference and need no other switch. */
 .movie { display: block; text-decoration: none; color: inherit; }
 a.movie:hover img, a.movie:hover .noposter { border-color: var(--muted); }
 a.movie:hover .title { color: var(--accent); }
+
+/* The Library card's wrapper. Delete has to be OUTSIDE the anchor — a <button>
+   inside an <a> is invalid and double-fires — so the grid child is this and the
+   two are siblings. It carries the spacing the button used to set inline. */
+.movie-cell { display: flex; flex-direction: column; }
+.movie-cell > button { margin-top: .4rem; width: 100%; }
 
 .movie img, .movie .noposter {
   width: 100%;

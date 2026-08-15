@@ -1439,24 +1439,63 @@ func TestAFilmWithNoSubtitlesGetsAnEmptyArrayAndNotNull(t *testing.T) {
 	}
 }
 
-// A folder that cannot be listed must not refuse to play the film: the feature
-// is the point and the subtitle is a courtesy, exactly as it is at import.
-func TestAnUnlistableFolderStillPlaysTheFilm(t *testing.T) {
+// This REPLACES TestAnUnlistableFolderStillPlaysTheFilm, which asserted that a
+// row whose folder is not there answers 200 with a stream_url. That was the bug
+// handlePlayback's own comment warned about — "a playback response that handed
+// out a URL the stream would 404 is worse than a 404 from playback" — and then
+// produced anyway by resolving the folder and never the file. The failure
+// arrived later, inside <video>, where it is indistinguishable from a codec
+// refusal and sends the fallback chain looking for one.
+//
+// The subtitle listing keeps its courtesy posture — the feature is the point and
+// a sidecar is a nicety — but it is now a race guard rather than a reachable
+// path: ListSidecars reads the same directory FindFeature has just read, so
+// anything that breaks the second broke the first.
+func TestPlaybackRefusesAFilmWithNoFileOnDisk(t *testing.T) {
 	f := newStreamFixture(t, Credential{})
-	// A row whose folder is not there at all. The stream endpoint answers its
-	// own 404 for this; playback must still hand back the URLs rather than
-	// failing on the subtitle listing.
-	id := f.row("Gone (2014)", filepath.Join(f.root, "Gone (2014)"))
 
-	body := decodePlayback(t, playback(f.bare, id))
-	if body.StreamURL == "" {
-		t.Error("playback refused a film because its subtitles could not be listed")
-	}
-	if len(body.Subtitles) != 0 {
-		t.Errorf("subtitles = %+v, want none", body.Subtitles)
-	}
-	if !strings.Contains(f.logged(), "could not list this film's subtitles") {
-		t.Errorf("the failure was not reported:\n%s", f.logged())
+	for _, tc := range []struct {
+		name string
+		id   func() int64
+	}{
+		{
+			// The folder is not there at all.
+			name: "the folder is gone",
+			id:   func() int64 { return f.row("Gone (2014)", filepath.Join(f.root, "Gone (2014)")) },
+		},
+		{
+			// The folder is there and holds nothing playable — the row T57 stops
+			// the scanner from creating, and the one a deleted file leaves behind
+			// between scans.
+			name: "the folder holds no film",
+			id: func() int64 {
+				dir := filepath.Join(f.root, "Empty (2014)")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				return f.row("Empty (2014)", dir)
+			},
+		},
+		{
+			// Under the floor, which the stream endpoint would refuse to serve.
+			// The two must agree, because they ask the same picker.
+			name: "the only video is under the floor",
+			id: func() int64 {
+				dir := filepath.Join(f.root, "Tiny (2014)")
+				f.feature(filepath.Join(dir, "sample.mkv"), sampleSize)
+				return f.row("Tiny (2014)", dir)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := playback(f.bare, tc.id())
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404: %s", rec.Code, rec.Body)
+			}
+			if strings.Contains(rec.Body.String(), "stream_url") {
+				t.Errorf("the body handed out a URL the stream would 404: %s", rec.Body)
+			}
+		})
 	}
 }
 

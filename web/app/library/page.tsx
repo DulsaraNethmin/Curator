@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { api, formatBytes, posterURL, type Deletion, type Movie, type ScanResult } from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
 
@@ -71,7 +72,8 @@ export default function Library() {
       <h1>Library</h1>
       <p className="lede">
         One folder per film, named <span className="mono">Title (Year)</span>. Scanning re-reads the
-        disk; it never writes to it.
+        disk and never writes to it — a folder with no film in it loses its entry here, and stays
+        exactly where it is on disk.
       </p>
 
       <form className="row" onSubmit={(e) => (e.preventDefault(), rescan())}>
@@ -100,7 +102,8 @@ export default function Library() {
       {scan && !scanning && (
         <div className="banner info">
           <strong>
-            Scanned {scan.scanned}, added {scan.added}, matched {scan.matched}
+            Scanned {scan.scanned} film{scan.scanned === 1 ? '' : 's'}, added {scan.added}, matched{' '}
+            {scan.matched}
           </strong>
           <span className="small">
             {scan.added === 0
@@ -108,6 +111,28 @@ export default function Library() {
               : `${scan.added} new folder${scan.added === 1 ? '' : 's'}.`}
             {scan.unmatched > 0 && ` ${scan.unmatched} still unmatched by TMDB.`}
           </span>
+          {/* Removed and missing are the two the scan must never do quietly:
+              one deleted a row, the other could not account for one. */}
+          {scan.empty > 0 && (
+            <span className="small muted">
+              {scan.empty} folder{scan.empty === 1 ? '' : 's'} on disk hold no film and{' '}
+              {scan.empty === 1 ? 'was' : 'were'} not recorded.
+            </span>
+          )}
+          {scan.removed > 0 && (
+            <span className="small muted">
+              {scan.removed} entr{scan.removed === 1 ? 'y' : 'ies'} removed — no film there, or a
+              path outside <span className="mono">LIBRARY_MOVIES</span>. The folders were left on
+              disk.
+            </span>
+          )}
+          {scan.missing > 0 && (
+            <span className="small muted">
+              {scan.missing} entr{scan.missing === 1 ? 'y' : 'ies'} kept that this scan could not
+              account for — the folder is missing, unreadable, or no longer named{' '}
+              <span className="mono">Title (Year)</span>. Nothing was removed for it.
+            </span>
+          )}
         </div>
       )}
 
@@ -213,11 +238,10 @@ function ConfirmDelete({
 function Card({ movie, onDelete }: { movie: Movie; onDelete: () => void }) {
   const poster = posterURL(movie.poster_path);
 
-  return (
-    <div className="movie">
-      {/* A poster is the exception, not the rule: 15 of the 29 folders in the
-          real library are empty and unmatched, so the fallback is the majority
-          case and has to look deliberate rather than broken. Plain <img>
+  const body = (
+    <>
+      {/* A poster is the exception, not the rule: the unmatched rows have none,
+          so the fallback has to look deliberate rather than broken. Plain <img>
           because a static export has no image optimiser. */}
       {poster ? (
         <img src={poster} alt="" loading="lazy" />
@@ -242,7 +266,27 @@ function Card({ movie, onDelete }: { movie: Movie; onDelete: () => void }) {
         )}
         {movie.status !== 'imported' && <span className="badge">{movie.status}</span>}
       </div>
-      <button className="small" style={{ marginTop: '.4rem', width: '100%' }} onClick={onDelete}>
+    </>
+  );
+
+  return (
+    // A wrapper, not a <Link> around everything: a <button> nested inside an <a>
+    // is invalid HTML and double-fires, and Delete is the one destructive
+    // control on this screen. So Delete is the anchor's SIBLING.
+    <div className="movie-cell">
+      {movie.tmdb_id === null ? (
+        // No page to open. /movie/ is addressed by the TMDB id (D21) and D6
+        // keeps that id null rather than guessing one, so this card is
+        // deliberately not a link — the `unmatched` badge above already says
+        // why, and a second addressing mode for these rows would be worse than
+        // a card that does not link.
+        <div className="movie">{body}</div>
+      ) : (
+        <Link className="movie" href={`/movie/?id=${movie.tmdb_id}`}>
+          {body}
+        </Link>
+      )}
+      <button className="small" onClick={onDelete}>
         Delete
       </button>
     </div>
