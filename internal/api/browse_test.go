@@ -620,3 +620,125 @@ func TestAHandMatchedRowIsLookedUpByTMDBsYear(t *testing.T) {
 		t.Errorf("year = %d, want the folder's 2011", body.Year)
 	}
 }
+
+// Both TMDB 502s, and the pair matters as much as either: the whole reason
+// tmdb.ErrUnauthorized has its own arm is that a rejected key is a different
+// situation from TMDB being unwell, and 502 cannot say which. If the two
+// sentences were the same string, the arm would be decoration.
+func TestTMDBFailuresAreWrittenForAHuman(t *testing.T) {
+	said := map[string]string{}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		says string
+	}{{
+		// The key is SET and is being refused, which is exactly what 503 would
+		// have lied about — so the sentence has to carry the distinction the
+		// status cannot.
+		name: "a key TMDB will not take",
+		err:  fmt.Errorf("tmdb search: %w: Invalid API key: You must be granted a valid key.", tmdb.ErrUnauthorized),
+		says: "rejected",
+	}, {
+		name: "TMDB is unwell",
+		err:  errors.New("tmdb search: unexpected status 500 Internal Server Error: The server is down"),
+		says: "TMDB did not answer",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			log, buffer := captured()
+			mux := http.NewServeMux()
+			srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, log).
+				WithBrowser(&fakeBrowser{searchErr: tc.err})
+			srv.Register(mux)
+			srv.RegisterBrowse(mux)
+
+			rec := getJSON(t, mux, "/api/tmdb/search?query=x", nil)
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502 (%s)", rec.Code, rec.Body)
+			}
+
+			got := errorBody(t, rec)
+			if !strings.Contains(got, tc.says) {
+				t.Errorf("body does not say %q: %q", tc.says, got)
+			}
+			// `tmdb search: ` is curator's own prefix and the tail is TMDB's
+			// status_message — a third party's prose in curator's banner.
+			assertNoLeak(t, "body", got, []string{
+				"tmdb search:", "unexpected status", "Invalid API key",
+				"You must be granted", "The server is down",
+			})
+			said[tc.name] = got
+
+			if logged := flattenLog(buffer); !strings.Contains(logged, "tmdb search:") {
+				t.Errorf("the log lost the chain:\n%s", logged)
+			}
+		})
+	}
+
+	if len(said) == 2 {
+		var got []string
+		for _, sentence := range said {
+			got = append(got, sentence)
+		}
+		if got[0] == got[1] {
+			t.Errorf("both TMDB 502s say %q — one of them is false, and the arm is decoration", got[0])
+		}
+	}
+}
+
+// The thirteenth leak, and the one no grep for a status constant finds: a failed
+// discover rail is named inside a 200, so the chain reached the home screen at a
+// status nobody was auditing.
+func TestAFailedRailIsWrittenForAHuman(t *testing.T) {
+	log, buffer := captured()
+	mux := http.NewServeMux()
+	srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, log).
+		WithBrowser(&fakeBrowser{
+			trendingErr: fmt.Errorf("tmdb trending: %w: Invalid API key: You must be granted a valid key.",
+				tmdb.ErrUnauthorized),
+			popularErr: fmt.Errorf("tmdb popular: %w: Invalid API key: You must be granted a valid key.",
+				tmdb.ErrUnauthorized),
+		})
+	srv.Register(mux)
+	srv.RegisterBrowse(mux)
+
+	var body struct {
+		Rows []struct {
+			ID    string `json:"id"`
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
+		} `json:"rows"`
+	}
+	rec := getJSON(t, mux, "/api/tmdb/discover", &body)
+	// Still 200: the page is worth drawing, and that is the whole reason this
+	// site went unnoticed.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — a failed rail is not a failed page: %s", rec.Code, rec.Body)
+	}
+	if len(body.Rows) == 0 {
+		t.Fatal("no rows at all")
+	}
+
+	for _, row := range body.Rows {
+		if row.OK {
+			t.Errorf("row %s reports ok with a failing browser", row.ID)
+			continue
+		}
+		if !strings.Contains(row.Error, "rejected") {
+			t.Errorf("row %s does not say the key was refused: %q", row.ID, row.Error)
+		}
+		assertNoLeak(t, "row "+row.ID, row.Error, []string{
+			"tmdb trending:", "tmdb popular:", "api key rejected",
+			"Invalid API key", "You must be granted",
+		})
+	}
+
+	// The rail is the one 5xx-shaped failure inside a 200, so a gate on the
+	// status would have dropped it. It has to reach the log some other way.
+	logged := flattenLog(buffer)
+	for _, want := range []string{"tmdb trending:", "Invalid API key"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("the log lost %q, so a rejected key is invisible to an operator:\n%s", want, logged)
+		}
+	}
+}

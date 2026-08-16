@@ -64,8 +64,17 @@ func (s *Server) failDelete(w http.ResponseWriter, id int64, err error) {
 		s.fail(w, http.StatusServiceUnavailable, err)
 	case errors.Is(err, download.ErrClient):
 		// The torrent could not be removed, so nothing else was touched. The
-		// film is still in the library and still on disk.
-		s.fail(w, http.StatusBadGateway, err)
+		// film is still in the library and still on disk — and saying so is the
+		// whole sentence, because a failed delete that does not say what
+		// survived reads as a half-finished one.
+		//
+		// Which client, and which of its endpoints, is `qbit torrents/delete: `
+		// or `engine: ` and belongs in the log: the answer used to depend on
+		// TORRENT_BACKEND, which is the defect torrent.WrongCategory closed for
+		// the 409 one line up and this closes for the 502.
+		s.failCause(w, http.StatusBadGateway,
+			"curator could not reach the torrent client, so nothing was deleted — the film is still in your library and the download is still there",
+			err)
 	default:
 		s.fail(w, http.StatusInternalServerError, err)
 	}

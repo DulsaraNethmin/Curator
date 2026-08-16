@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/DulsaraNethmin/curator/internal/jellyfin"
+	"github.com/DulsaraNethmin/curator/internal/logs"
 	"github.com/DulsaraNethmin/curator/internal/settings"
 )
 
@@ -1141,4 +1142,157 @@ func TestProvisionFailuresAreWrittenForAHuman(t *testing.T) {
 			t.Errorf("step = %q, want %q", body.Step, "signing in")
 		}
 	})
+}
+
+// setupServerLogging is setupServerWithReader with the ring buffer attached, for
+// the T72 assertions that are about what an operator can still read.
+func setupServerLogging(
+	t *testing.T, p *fakeProvisioner, reader *fakeReader,
+) (http.Handler, *logs.Buffer) {
+	t.Helper()
+	log, buffer := captured()
+	set := fullSettings()
+	set.States = func(context.Context) (map[string]SettingState, error) { return nil, nil }
+	set.Writer = &fakeWriter{}
+
+	mux := http.NewServeMux()
+	New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, log).
+		WithSettings(set).
+		WithJellyfinSetup(JellyfinSetup{
+			URL:         testJellyfinURL,
+			LibraryPath: testLibraryPath,
+			New:         func(string) Provisioner { return p },
+			Reader: func(baseURL, apiKey string) MediaServer {
+				reader.baseURL, reader.key = baseURL, apiKey
+				return reader
+			},
+		}).
+		RegisterJellyfin(mux)
+	return mux, buffer
+}
+
+// The seven Jellyfin 502/503 answers, which were the worst of the twelve: they
+// go out through `respond` rather than `fail`, so before T72 they were 5xx that
+// were written to NOBODY — the chain was in the body where it could not be read
+// and in no log at all (docs/decisions.md D41).
+func TestJellyfinDependencyFailuresAreWrittenForAHuman(t *testing.T) {
+	// Every prefix internal/jellyfin puts on the wire, plus the two upstream
+	// paths and the third-party body `snippet` quotes up to 256 bytes of.
+	leaks := []string{
+		"jellyfin provision", "jellyfin find movie", "/System/Info/Public",
+		"/Library/VirtualFolders", "/Users/AuthenticateByName", "dial tcp",
+		"Error processing request", "calling jellyfin at",
+	}
+
+	t.Run("provision: nothing is listening", func(t *testing.T) {
+		// The string measured live in T71's own verification, reconstructed.
+		p := &fakeProvisioner{key: "k", failAt: "Configure", failWith: fmt.Errorf(
+			"jellyfin provision: GET /System/Info/Public: calling jellyfin at http://jellyfin:8096: "+
+				"Get \"http://jellyfin:8096/System/Info/Public\": dial tcp: lookup jellyfin: no such host: %w",
+			jellyfin.ErrUnreachable)}
+		h, buffer := setupServerLogging(t, p, &fakeReader{err: jellyfin.ErrNotFound})
+
+		rec := postProvision(t, h, `{"username":"a","password":"b"}`)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body)
+		}
+		body := failureBody(t, rec)
+		if !strings.Contains(body.Error, testJellyfinURL) {
+			t.Errorf("error does not name the address curator tried: %q", body.Error)
+		}
+		assertNoLeak(t, "error", body.Error, leaks)
+		// The instructions were always written. They are the reason this was the
+		// least-bad of the twelve, and they must survive the rewrite.
+		if len(body.Instructions) == 0 {
+			t.Error("no instructions: every failure ends somewhere the user can still act")
+		}
+		if logged := flattenLog(buffer); !strings.Contains(logged, "dial tcp") {
+			t.Errorf("a 503 that reaches no log is undiagnosable:\n%s", logged)
+		}
+	})
+
+	t.Run("provision: an answer curator does not understand", func(t *testing.T) {
+		// The other string measured live in T71's verification.
+		p := &fakeProvisioner{key: "k", failAt: "AddLibrary", failWith: fmt.Errorf(
+			"jellyfin provision: /Library/VirtualFolders answered 400 Bad Request "+
+				"(\"Error processing request.\"): %w", jellyfin.ErrUnexpectedResponse)}
+		h, buffer := setupServerLogging(t, p, &fakeReader{err: jellyfin.ErrNotFound})
+
+		rec := postProvision(t, h, `{"username":"a","password":"b"}`)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502: %s", rec.Code, rec.Body)
+		}
+		body := failureBody(t, rec)
+		assertNoLeak(t, "error", body.Error, leaks)
+		// Step is the machine-readable half and the screen renders it as
+		// "Setting up Jellyfin failed at the library" — so the sentence must not
+		// repeat it, and the field must not be lost.
+		if body.Step != "the library" {
+			t.Errorf("step = %q, want the library — the screen says how far curator got", body.Step)
+		}
+		if logged := flattenLog(buffer); !strings.Contains(logged, "/Library/VirtualFolders") {
+			t.Errorf("the log lost the endpoint that answered 400:\n%s", logged)
+		}
+	})
+
+	t.Run("adopt: nothing is listening", func(t *testing.T) {
+		p := adopted("k")
+		p.statusErr = fmt.Errorf(
+			"jellyfin provision: GET /System/Info/Public: calling jellyfin at %s: dial tcp: connection refused: %w",
+			testAdoptURL, jellyfin.ErrUnreachable)
+		h, buffer := setupServerLogging(t, p, &fakeReader{err: jellyfin.ErrNotFound})
+
+		rec := postAdopt(t, h, `{"url":"`+testAdoptURL+`","username":"a","password":"b"}`)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body)
+		}
+		body := failureBody(t, rec)
+		if !strings.Contains(body.Error, testAdoptURL) {
+			t.Errorf("error does not name the address curator tried: %q", body.Error)
+		}
+		assertNoLeak(t, "error", body.Error, leaks)
+		if logged := flattenLog(buffer); !strings.Contains(logged, "connection refused") {
+			t.Errorf("the log lost the transport error:\n%s", logged)
+		}
+	})
+
+	t.Run("adopt: the account is not an administrator", func(t *testing.T) {
+		// Reaches adoptFailure through `jellyfin find movie: `, a chain family
+		// the 502 body used to render and nobody had written down.
+		h, buffer := setupServerLogging(t, adopted("k"), &fakeReader{
+			err: fmt.Errorf("jellyfin find movie: jellyfin answered 401 Unauthorized: %w",
+				jellyfin.ErrUnauthorized)})
+
+		rec := postAdopt(t, h, `{"url":"`+testAdoptURL+`","username":"a","password":"b"}`)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502: %s", rec.Code, rec.Body)
+		}
+		body := failureBody(t, rec)
+		// The one word that must be there: it is a permission, not a password,
+		// and the whole cost of getting this wrong is somebody retyping for ever.
+		if !strings.Contains(body.Error, "administrator") {
+			t.Errorf("error does not say an administrator is needed: %q", body.Error)
+		}
+		assertNoLeak(t, "error", body.Error, leaks)
+		if logged := flattenLog(buffer); !strings.Contains(logged, "jellyfin find movie") {
+			t.Errorf("the log lost the chain:\n%s", logged)
+		}
+	})
+}
+
+// D40 left the 4xx unlogged deliberately, and T72 adds logging to the same two
+// functions. The gate is what keeps both true at once.
+func TestJellyfinRefusalsStillReachNoLog(t *testing.T) {
+	p := &fakeProvisioner{key: "k", failAt: "Configure", failWith: fmt.Errorf(
+		"jellyfin provision: jellyfin 10.10.7 at http://jellyfin:8096: %w",
+		jellyfin.ErrAlreadyConfigured)}
+	h, buffer := setupServerLogging(t, p, &fakeReader{err: jellyfin.ErrNotFound})
+
+	rec := postProvision(t, h, `{"username":"a","password":"b"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if logged := flattenLog(buffer); strings.Contains(logged, "jellyfin provision") {
+		t.Errorf("a 409 reached the log, which D40 left alone on purpose:\n%s", logged)
+	}
 }

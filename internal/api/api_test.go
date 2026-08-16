@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/library"
+	"github.com/DulsaraNethmin/curator/internal/logs"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
 )
@@ -344,6 +345,46 @@ func matchAll() matcherFunc {
 // quiet keeps expected warnings out of the test output.
 func quiet() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// captured is quiet() with the ring buffer /api/logs serves attached.
+//
+// T71's tests only had to prove a chain was ABSENT from a body. T72's have to
+// prove it is absent from the body AND present in the log, because at 502 and
+// 503 — unlike at 409 and 422 — there is a second reader, and a sentence that
+// replaced the chain in both places would have destroyed it (docs/decisions.md
+// D41).
+func captured() (*slog.Logger, *logs.Buffer) {
+	buffer := logs.NewBuffer(200)
+	return slog.New(buffer.Handler(slog.NewTextHandler(io.Discard, nil))), buffer
+}
+
+// flattenLog renders message and attributes together, which is where a wrapped
+// chain actually ends up — `fail` and `failCause` log it as an `err` attribute,
+// not in the message.
+func flattenLog(buffer *logs.Buffer) string {
+	entries, _, _ := buffer.Since(0, 200)
+	var out strings.Builder
+	for _, entry := range entries {
+		out.WriteString(entry.Msg)
+		for key, value := range entry.Attrs {
+			out.WriteString(" " + key + "=" + value)
+		}
+		out.WriteString("\n")
+	}
+	return out.String()
+}
+
+// assertNoLeak fails for every substring of the error chain that reached the
+// reader. It takes the whole list rather than one at a time so a failure names
+// every leak at once, which is what makes a rewrite one iteration instead of six.
+func assertNoLeak(t *testing.T, what, got string, leaks []string) {
+	t.Helper()
+	for _, leak := range leaks {
+		if strings.Contains(got, leak) {
+			t.Errorf("%s leaks %q from the error chain: %q", what, leak, got)
+		}
+	}
 }
 
 // fixtureScanner is library.Scan with the feature picker's floor lowered.

@@ -237,3 +237,36 @@ func TestTheTwo422sDoNotSayTheSameThing(t *testing.T) {
 		t.Errorf("both 422s say %q — one of them is false", noVideo)
 	}
 }
+
+// The 502 arm of failImport, which T71 left alone one line under the 422 it
+// rewrote.
+func TestImportDependencyFailureIsWrittenForAHuman(t *testing.T) {
+	log, buffer := captured()
+	mux := http.NewServeMux()
+	chain := fmt.Errorf("import %s: %w: %w", importHash, download.ErrClient,
+		fmt.Errorf("qbit torrents/info: calling qBittorrent at http://127.0.0.1:8080: connection refused"))
+	srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, log).
+		WithDownloads(&fakeDispatcher{importErr: chain})
+	srv.Register(mux)
+	srv.RegisterDownloads(mux)
+
+	rec := post(t, mux, "/api/downloads/"+importHash+"/import", "")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (%s)", rec.Code, rec.Body)
+	}
+
+	got := errorBody(t, rec)
+	// Retrying is the whole remedy and the sentence has to say so, because a
+	// 502 with no advice reads as "this download is broken".
+	if !strings.Contains(got, "again") {
+		t.Errorf("body does not say trying again will work: %q", got)
+	}
+	assertNoLeak(t, "body", got, []string{
+		"import " + importHash, importHash, "qbit", "engine:",
+		"torrents/info", "calling qBittorrent at", "connection refused",
+	})
+
+	if logged := flattenLog(buffer); !strings.Contains(logged, "torrents/info") {
+		t.Errorf("the log lost the endpoint that failed:\n%s", logged)
+	}
+}

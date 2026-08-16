@@ -460,18 +460,31 @@ type stepError struct {
 func (e stepError) Error() string { return e.step + ": " + e.err.Error() }
 func (e stepError) Unwrap() error { return e.err }
 
-// provisionFailure turns a sequence error into the status and the body.
+// provisionFailure turns a sequence error into the status and the body, and
+// keeps the chain in the log the body stops carrying.
+//
+// These answers go out through `respond` rather than `fail`, so until T72 they
+// were 5xx that were written to nobody: not logged, because `fail`'s gate is the
+// only thing that logs, and not legible, because the body carried the chain.
+func (s *Server) provisionFailure(err error, setup *JellyfinSetup) (int, jellyfinFailureBody) {
+	status, body := provisionOutcome(err, setup)
+	s.logCause(status, err)
+	return status, body
+}
+
+// provisionOutcome is the classification, with no Server to reach for, so a test
+// can read the sentence without a logger and the logging cannot be forgotten in
+// one branch out of six.
 //
 // Every branch carries instructions. That is the phase requirement rather than
 // politeness: the startup endpoints are what the wizard happens to call in the
 // version we pin, so a flow that cannot survive a Jellyfin answering something
 // new is a support burden this project cannot carry.
-func (s *Server) provisionFailure(err error, setup *JellyfinSetup) (int, jellyfinFailureBody) {
-	body := jellyfinFailureBody{Error: err.Error()}
+func provisionOutcome(err error, setup *JellyfinSetup) (int, jellyfinFailureBody) {
+	var body jellyfinFailureBody
 	var step stepError
 	if errors.As(err, &step) {
 		body.Step = step.step
-		body.Error = step.err.Error()
 	}
 
 	status := http.StatusBadGateway
@@ -495,6 +508,12 @@ func (s *Server) provisionFailure(err error, setup *JellyfinSetup) (int, jellyfi
 
 	case errors.Is(err, jellyfin.ErrUnreachable):
 		status = http.StatusServiceUnavailable
+		// What this replaced was the transport error entire: "jellyfin provision:
+		// GET /System/Info/Public: calling jellyfin at http://jellyfin:8096: Get
+		// \"http://…\": dial tcp: lookup jellyfin: no such host" — measured live.
+		// The instructions below were already carrying the human half; the chain
+		// was sitting above them saying the same thing in Go.
+		body.Error = "curator could not reach a jellyfin at " + setup.URL + ", so nothing has been set up"
 		body.Instructions = []string{
 			"Nothing answered at " + setup.URL + ".",
 			"Run " + bundleCommand + " in the directory holding compose.yaml, and wait for it to finish starting.",
@@ -503,6 +522,7 @@ func (s *Server) provisionFailure(err error, setup *JellyfinSetup) (int, jellyfi
 
 	case errors.Is(err, jellyfin.ErrNotReady):
 		status = http.StatusServiceUnavailable
+		body.Error = "that jellyfin is answering but is still starting up, so curator has not set anything up yet"
 		body.Instructions = []string{
 			"Jellyfin is up and still loading. Wait a few seconds and try again — a cold start took 14 to 27 seconds when this was measured.",
 		}
@@ -532,6 +552,19 @@ func (s *Server) provisionFailure(err error, setup *JellyfinSetup) (int, jellyfi
 		return status, body
 	}
 
+	// Everything else a Jellyfin can do: a status outside the measured table, a
+	// body that will not decode, a key minted and then not listed, a 401 on a
+	// token issued two calls earlier. One sentence covers them because there is
+	// one remedy, and Step already says how far curator got — the screen renders
+	// "Setting up Jellyfin failed at the library", so repeating it here would say
+	// it twice.
+	//
+	// This is the branch that carried the other measured string: "jellyfin
+	// provision: /Library/VirtualFolders answered 400 Bad Request (\"Error
+	// processing request.\"): jellyfin answered something curator does not
+	// understand" — an upstream path, an upstream status, and 256 bytes of
+	// somebody else's response body quoted into a banner.
+	body.Error = "jellyfin answered something curator did not expect, so curator stopped rather than leave it half-set-up"
 	body.Instructions = manualSteps(setup)
 	return status, body
 }
@@ -1042,11 +1075,18 @@ func (s *Server) checkFilm(ctx context.Context) (tmdbID, year int, title string)
 // curator created two steps earlier and adoption signs in with one the person
 // typed.
 func (s *Server) adoptFailure(err error, target string, setup *JellyfinSetup) (int, jellyfinFailureBody) {
-	body := jellyfinFailureBody{Error: err.Error()}
+	status, body := adoptOutcome(err, target, setup)
+	s.logCause(status, err)
+	return status, body
+}
+
+// adoptOutcome is the classification, split from the logging for the reason
+// provisionOutcome is.
+func adoptOutcome(err error, target string, setup *JellyfinSetup) (int, jellyfinFailureBody) {
+	var body jellyfinFailureBody
 	var step stepError
 	if errors.As(err, &step) {
 		body.Step = step.step
-		body.Error = step.err.Error()
 	}
 
 	switch {
@@ -1077,12 +1117,19 @@ func (s *Server) adoptFailure(err error, target string, setup *JellyfinSetup) (i
 		return http.StatusBadGateway, body
 
 	case errors.Is(err, jellyfin.ErrUnauthorized):
+		// The account is real and the password was right — this is the next call
+		// being refused, which is a permission and not a credential. Reachable
+		// through two chains with different prefixes, `jellyfin provision: ` from
+		// minting and `jellyfin find movie: ` from checking the key, which is
+		// exactly why neither belongs in the sentence.
+		body.Error = "that account signed in, and then jellyfin would not let it do what curator needs — creating an API key takes an administrator"
 		body.Instructions = append([]string{
 			"That account signed in, and then Jellyfin refused it something. An administrator account is required to create an API key.",
 		}, adoptManualSteps(target, setup.LibraryPath)...)
 		return http.StatusBadGateway, body
 
 	case errors.Is(err, jellyfin.ErrUnreachable):
+		body.Error = "curator could not reach a jellyfin at " + target + ", so nothing has been connected"
 		body.Instructions = []string{
 			"Nothing answered at " + target + ".",
 			"Check the address, and that this machine can reach it — curator runs in a container, so `localhost` here is curator's own container and not yours.",
@@ -1090,12 +1137,16 @@ func (s *Server) adoptFailure(err error, target string, setup *JellyfinSetup) (i
 		return http.StatusServiceUnavailable, body
 
 	case errors.Is(err, jellyfin.ErrNotReady):
+		body.Error = "that jellyfin is answering but is still starting up, so curator has not connected to it yet"
 		body.Instructions = []string{
 			"That Jellyfin is up and still loading. Wait a few seconds and try again — a cold start took 14 to 27 seconds when this was measured.",
 		}
 		return http.StatusServiceUnavailable, body
 	}
 
+	// As in provisionOutcome: everything else the server can do, under one
+	// sentence, with Step carrying how far curator got.
+	body.Error = "jellyfin answered something curator did not expect, so curator stopped rather than leave this half-connected"
 	body.Instructions = adoptManualSteps(target, setup.LibraryPath)
 	return http.StatusBadGateway, body
 }

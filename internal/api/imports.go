@@ -69,7 +69,12 @@ func (s *Server) failImport(w http.ResponseWriter, hash string, err error) {
 		// sentence, and the status is 422 for both, so the split has to be here.
 		s.fail(w, http.StatusUnprocessableEntity, errors.New(badTitleSentence(err)))
 	case errors.Is(err, download.ErrClient):
-		s.fail(w, http.StatusBadGateway, err)
+		// Nothing was hardlinked and no row moved: the import needs the client's
+		// content_path before it can begin, so this fails before the library is
+		// touched. Retrying once the client is back is the whole remedy.
+		s.failCause(w, http.StatusBadGateway,
+			"curator could not reach the torrent client, so this download was not imported — nothing was moved, and importing it again once the client is back will work",
+			err)
 	default:
 		s.fail(w, http.StatusInternalServerError, err)
 	}
