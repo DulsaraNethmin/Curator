@@ -85,15 +85,20 @@ func TestMatchMovieWritesTheMetadataAndKeepsTheFolderTitle(t *testing.T) {
 // **The row keeps the folder's year, and this test is here so the next person to
 // "fix" that finds out why before shipping it.**
 //
-// Writing TMDB's year is the obvious improvement — it is what makes D32's
-// `years=` Jellyfin narrowing find the film, so a hand-matched row whose folder
-// year is wrong gets a search link rather than a deep link. It was built, run
-// against a real library, and reverted: UpsertMovieByPath's SET list includes
-// `year`, so the very next scan rewrites it from the folder name. The row
-// answered 2008 and a deep link, then 2019 and a search one scan later.
+// Writing TMDB's year onto `year` was built in T67, run against a real library,
+// and reverted: UpsertMovieByPath's SET list includes `year`, so the very next
+// scan rewrites it from the folder name. The row answered 2008 and a deep link,
+// then 2019 and a search one scan later.
 //
-// Making it stick means changing which columns the scan owns, which is phase 1's
-// contract and is not this task's to change.
+// T68 did make it stick, and deliberately not by freeing this column. `year` is
+// half the directory name — importer.go builds the destination folder out of the
+// row's title and year — so a matched row whose `year` moved to TMDB's would
+// import its next release into a second folder beside the first. TMDB's year
+// lives in `tmdb_year` instead ([D37]), which is what
+// TestMatchMovieWritesTMDBsYearIntoItsOwnColumn asserts. This test still holds,
+// unchanged, and that is the point: both years are now true at once.
+//
+// [D37]: ../../docs/decisions.md
 func TestMatchMovieKeepsTheFoldersYear(t *testing.T) {
 	st := newFakeStore()
 	// A folder whose year disagrees with TMDB's, which is the only case where
@@ -113,6 +118,40 @@ func TestMatchMovieKeepsTheFoldersYear(t *testing.T) {
 	}
 	if got.Year != 2018 {
 		t.Errorf("year = %d, want the folder's 2018 — see this test's comment before changing it", got.Year)
+	}
+}
+
+// The other half of the same match: TMDB's year is recorded, in the column the
+// scan does not own, and the response carries it.
+func TestMatchMovieWritesTMDBsYearIntoItsOwnColumn(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedOnDisk("/media/movies/Endgame (2018)", "Endgame", 2018)
+	browser := &fakeBrowser{details: &tmdb.Details{Match: endgame()}} // TMDB says 2019
+
+	rec := postMatch(t, matchServer(t, browser, st),
+		fmt.Sprintf("/api/movies/%d/match", row.ID), `{"tmdb_id":299534}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	var got movieBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.TMDBYear == nil || *got.TMDBYear != 2019 {
+		t.Fatalf("tmdb_year = %v, want TMDB's 2019", got.TMDBYear)
+	}
+	if got.MatchYear() != 2019 {
+		t.Errorf("MatchYear() = %d, want 2019 — this is what Jellyfin is asked with", got.MatchYear())
+	}
+	// Both years survive the round trip through JSON, because the UI reads the
+	// row back out of this response rather than reloading it.
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	if raw["year"] != float64(2018) || raw["tmdb_year"] != float64(2019) {
+		t.Errorf("year/tmdb_year = %v/%v, want 2018/2019", raw["year"], raw["tmdb_year"])
 	}
 }
 

@@ -136,6 +136,14 @@ working as designed, not a hole in this feature.
 **This was implemented, run against a real library, and taken back out. Do not re-add it without
 reading this.**
 
+> **Settled since, by [T68](T68-tmdb-year.md) and
+> [D37](../decisions.md#d37--year-is-the-folders-tmdbs-year-gets-a-column-of-its-own).** Everything
+> below still holds — `year` is still the folder's, and writing TMDB's onto it still reverts. What
+> changed is that TMDB's year now has a column of its own, `movies.tmdb_year`, so the deep link
+> lands without this column moving. The closing paragraph's *"moving `year` out of the scan's
+> authority"* is the one thing here that was **not** done: the importer builds the library folder
+> out of the row's own year, so freeing it costs a second folder on the next import.
+
 A hand-matched row is the only way to produce a row whose `year` disagrees with TMDB's: the scan
 cannot, because `SearchMovie` rejects a match whose year disagrees. That disagreement costs the
 Jellyfin deep link, because [D32](../decisions.md#d32--the-jellyfin-link-is-keyed-on-the-tmdb-id-not-on-the-path)

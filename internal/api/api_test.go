@@ -21,6 +21,8 @@ import (
 // fixtureRoot is the 29-folder library fixture, mirroring the real one on the Pi.
 const fixtureRoot = "../../testdata/library/movies"
 
+func ptrInt(n int) *int { return &n }
+
 // fakeStore is an in-memory stand-in for internal/store, keyed on library_path
 // exactly as the real one is.
 type fakeStore struct {
@@ -225,6 +227,9 @@ func (f *fakeStore) MatchMovie(_ context.Context, id int64, match store.TMDBMatc
 	row.TMDBID = &tmdbID
 	row.Overview = match.Overview
 	row.PosterPath = match.PosterPath
+	// tmdb_year, and deliberately not year — the fake mirrors the real store's
+	// division or the year tests prove nothing (D37).
+	row.TMDBYear = match.Year
 	if match.Title != nil {
 		row.Title = *match.Title
 	}

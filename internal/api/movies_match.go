@@ -93,19 +93,22 @@ func (s *Server) handleMatchMovie(w http.ResponseWriter, r *http.Request) {
 	// canonical title would undo the " - " substitution that identifies the
 	// folder (D9), and library_path is the row's identity anyway.
 	//
-	// The year is not written either, and that one was tried and reverted: the
-	// scan rewrites `year` from the folder on every pass, so a row matched to a
-	// film of another year answers a Jellyfin deep link until the next scan and a
-	// search afterwards. store.TMDBMatch carries the measurement. The cost is that
-	// a folder whose year is wrong keeps D32's search fallback rather than gaining
-	// a deep link — the poster, the overview and the catalogue page are fixed
-	// either way.
+	// The year IS written, and into `tmdb_year` rather than `year` — T67 wrote it
+	// onto `year` and watched the next scan take it back. `year` is the folder's
+	// and stays the folder's; this is the number Jellyfin is asked with (D37).
 	match := store.TMDBMatch{TMDBID: body.TMDBID}
 	if details.Overview != "" {
 		match.Overview = &details.Overview
 	}
 	if details.PosterPath != "" {
 		match.PosterPath = &details.PosterPath
+	}
+	if details.Year > 0 {
+		// A film with no release date leaves this NULL rather than storing 0,
+		// which is the same thing FindMovie does with it: skip the narrowing
+		// rather than narrow to a year nothing has.
+		year := details.Year
+		match.Year = &year
 	}
 
 	matched, err := s.store.MatchMovie(r.Context(), id, match)
@@ -122,7 +125,7 @@ func (s *Server) handleMatchMovie(w http.ResponseWriter, r *http.Request) {
 	// the film up for a deep link.
 	out := movieBody{Movie: matched}
 	out.JellyfinURL = s.jellyfinLinkFor(
-		r.Context(), matched.TMDBID, matched.Year, matched.Title, matched.Status == store.StatusImported)
+		r.Context(), matched.TMDBID, matched.MatchYear(), matched.Title, matched.Status == store.StatusImported)
 	s.respond(w, http.StatusOK, out)
 }
 

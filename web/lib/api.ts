@@ -17,7 +17,14 @@ export type Movie = {
   id: number;
   tmdb_id: number | null;
   title: string;
+  /** The FOLDER's year — what `Title (Year)` on disk says, and what the importer
+   * writes back out. Not necessarily the film's: see tmdb_year. */
   year: number;
+  /** TMDB's release year, and null unless the two can disagree — which only
+   * happens for a row somebody matched by hand. Nothing on screen reads it; it
+   * is what the server asks Jellyfin with, and it is here so the type matches
+   * the row the API actually sends. */
+  tmdb_year: number | null;
   media_type: string;
   overview: string | null;
   poster_path: string | null;

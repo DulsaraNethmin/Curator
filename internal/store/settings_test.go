@@ -227,6 +227,112 @@ func servesAReason(t *testing.T, s *Store) {
 	}
 }
 
+// The same two directions for T68's column, because the mechanism's promise is
+// per-column and a second passenger is where "each step asks the database about
+// its own shape" either holds or does not.
+func TestMigrationAddsTheTMDBYearColumnToAnOlderDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "phase-9.db")
+
+	// The phase 9 movies table: everything T67 shipped against, without
+	// tmdb_year. The columns scanMovie reads have to be here or the failure
+	// would be a bad SELECT rather than a missing migration.
+	raw, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `
+		CREATE TABLE movies (
+		  id           INTEGER PRIMARY KEY,
+		  tmdb_id      INTEGER UNIQUE,
+		  title        TEXT NOT NULL,
+		  year         INTEGER NOT NULL,
+		  media_type   TEXT NOT NULL DEFAULT 'movie',
+		  overview     TEXT,
+		  poster_path  TEXT,
+		  status       TEXT NOT NULL,
+		  library_path TEXT UNIQUE,
+		  quality      TEXT,
+		  size_bytes   INTEGER,
+		  added_at     DATETIME NOT NULL,
+		  imported_at  DATETIME
+		);
+		INSERT INTO movies (title, year, status, library_path, added_at)
+		VALUES ('Some Home Video', 2019, 'imported', '/movies/Some Home Video (2019)', '2026-08-16T00:00:00Z');
+	`); err != nil {
+		t.Fatalf("create the old table: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if !hasColumn(t, s, "movies", "tmdb_year") {
+		t.Fatal("movies.tmdb_year is missing after opening an older database")
+	}
+	// The row that predates the column reads back, which is the half a pragma
+	// cannot tell you: ALTER TABLE filled it with NULL and MatchYear has to
+	// answer the folder's year for it rather than 0.
+	servesATMDBYear(t, s)
+
+	// Every start applies it, so the second must change nothing rather than fail
+	// on a duplicate column.
+	again, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open twice: %v", err)
+	}
+	defer again.Close()
+	if !hasColumn(t, again, "movies", "tmdb_year") {
+		t.Fatal("movies.tmdb_year vanished on the second open")
+	}
+}
+
+func TestAFreshDatabaseHasTheTMDBYearColumn(t *testing.T) {
+	s := newTestStore(t)
+	if !hasColumn(t, s, "movies", "tmdb_year") {
+		t.Fatal("movies.tmdb_year is missing from a fresh database")
+	}
+	servesATMDBYear(t, s)
+}
+
+// servesATMDBYear is the end both paths reach: a pre-existing row reads back
+// with a NULL tmdb_year that MatchYear resolves to the folder's year, and a
+// hand-match writes one that sticks.
+func servesATMDBYear(t *testing.T, s *Store) {
+	t.Helper()
+	ctx := context.Background()
+
+	const path = "/movies/Some Home Video (2019)"
+	m, _, err := s.UpsertMovieByPath(ctx, ScannedMovie{
+		LibraryPath: path, Title: "Some Home Video", Year: 2019,
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if m.TMDBYear != nil {
+		t.Errorf("tmdb_year = %v on a row that predates the column, want NULL", *m.TMDBYear)
+	}
+	if m.MatchYear() != 2019 {
+		t.Errorf("MatchYear() = %d, want the folder's 2019", m.MatchYear())
+	}
+
+	matched, err := s.MatchMovie(ctx, m.ID, TMDBMatch{TMDBID: 1726, Year: ptrInt(2008)})
+	if err != nil {
+		t.Fatalf("MatchMovie: %v", err)
+	}
+	if matched.TMDBYear == nil || *matched.TMDBYear != 2008 {
+		t.Fatalf("tmdb_year = %v, want 2008 — the column is there but the row does not serve it", matched.TMDBYear)
+	}
+	if matched.MatchYear() != 2008 {
+		t.Errorf("MatchYear() = %d, want TMDB's 2008", matched.MatchYear())
+	}
+}
+
 func hasColumn(t *testing.T, s *Store, table, column string) bool {
 	t.Helper()
 	var found int

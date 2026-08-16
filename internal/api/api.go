@@ -450,7 +450,7 @@ func (s *Server) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 
 	body := movieBody{Movie: movie}
 	body.JellyfinURL = s.jellyfinLinkFor(
-		r.Context(), movie.TMDBID, movie.Year, movie.Title, movie.Status == store.StatusImported)
+		r.Context(), movie.TMDBID, movie.MatchYear(), movie.Title, movie.Status == store.StatusImported)
 	s.respond(w, http.StatusOK, body)
 }
 

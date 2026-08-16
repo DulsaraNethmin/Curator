@@ -1340,4 +1340,73 @@ status, quality and size_bytes — and it is a decision of its own rather than a
 
 ---
 
+## D37 — `year` is the folder's; TMDB's year gets a column of its own
+
+**Status:** decided, implemented in [T68](tasks/T68-tmdb-year.md) · **Follows from:**
+[D36](#d36--a-row-tmdb-could-not-match-is-matched-by-hand-and-the-scan-never-takes-it-back), which
+closes by naming this as a decision of its own · **Restores the premise of:**
+[D32](#d32--the-jellyfin-link-is-keyed-on-the-tmdb-id-not-on-the-path)
+
+`movies.year` was doing two jobs, and nothing noticed until a row could be matched by hand. It is
+**the folder's year** — parsed out of `Title (Year)`, written back out by `library.DestFolder`, and
+round-tripped by a test. It is also **the film's year**, which is what a Jellyfin lookup is narrowed
+by. For every row the scan matched those are the same number, because `SearchMovie` rejects a
+candidate whose year disagrees, so the two meanings were never separable. [T67](tasks/T67-manual-match.md)
+made them separable and the Jellyfin deep link is where it showed: a hand-matched row was looked up
+under the folder's year, `years=` narrowed to a year the film is not in, and a perfectly good match
+silently degraded to a search link.
+
+### The obvious repair is the wrong one, and it costs a second folder
+
+[D36](#d36--a-row-tmdb-could-not-match-is-matched-by-hand-and-the-scan-never-takes-it-back) proposed
+moving `year` out of the scan's authority for matched rows. **That was measured and refused.**
+`year` is not metadata the scan happens to own — it is half a directory name, and
+`internal/importer/importer.go` builds the destination folder from **the row's** title and year:
+
+```go
+folder, err := library.DestFolder(movie.Title, movie.Year)
+```
+
+A hand-matched row keeps a `/movie/` catalogue page, and a release dispatched from it resolves
+through `UpsertWantedMovie`, which matches on `tmdb_id` and returns the existing row untouched. So a
+matched row whose `year` had moved to TMDB's would import its next release into `Title (TMDBYear)/`
+while the film already sat in `Title (FolderYear)/` — one film, two folders, and the second one
+scanned back in as a second row. Freeing the column fixes a link by breaking an import.
+
+### So the row carries both, and says which is which
+
+`movies.tmdb_year`, nullable, written only by `store.MatchMovie`. `year` keeps its meaning and the
+scan keeps its authority intact — phase 1's division is unchanged, which is what T67 asked for.
+
+**NULL is not missing data; it is a statement.** It says the folder's year *is* TMDB's, which is
+true by construction for every row the scan matched. So the column needs no backfill to be correct
+on an existing database, and the scan's own match (`SetTMDBMetadata`) deliberately does not write it
+— it would only ever store a number equal to the one beside it.
+
+`Movie.MatchYear()` is the accessor, and the rule lives there rather than at three call sites: TMDB's
+year when it is known to differ, the folder's otherwise. Everything that identifies the film to
+something outside curator asks it — `GET /api/movies/{id}`, the match response, and `checkFilm`,
+which proves a Jellyfin key against a library row and would otherwise report a good key as broken.
+The importer is the one caller that still wants `year`, because that is the folder it already wrote.
+
+### Measured, against the real TMDB and the real 10.10.7
+
+A folder named `Zzz Nonexistent Home Movie Xyq (2011)` matched by hand to Iron Man (`tmdb_id` 1726,
+released 2008) — T67's failing case exactly:
+
+| | `year` | `tmdb_year` | `jellyfin_url` |
+|---|---|---|---|
+| after the match | 2011 | 2008 | `#/details?id=0a938432…&serverId=004aee63…` |
+| after 1, 2 and 3 rescans | 2011 | 2008 | the same deep link |
+
+T67 measured the same shape reverting on the first rescan. Opening a real 29-row database written
+before the column existed added it, left all 29 rows intact, and left every one of them NULL.
+
+**Two honest edges.** TMDB can revise a release date after a match, and neither `year` nor
+`tmdb_year` would learn about it — the same staleness `tmdb_id` already has, and not worth a refresh
+pass. And nothing on screen reads `tmdb_year`; it is in the API response because the row carries it,
+not because a screen wants it.
+
+---
+
 D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.

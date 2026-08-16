@@ -27,6 +27,7 @@ func newTestStore(t *testing.T) *Store {
 
 func ptrString(s string) *string { return &s }
 func ptrInt64(n int64) *int64    { return &n }
+func ptrInt(n int) *int          { return &n }
 
 // scanned is a plausible library folder, so tests only spell out what they care
 // about. The title carries the ' - ' colon substitution from CLAUDE.md.

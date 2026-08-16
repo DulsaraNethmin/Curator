@@ -45,11 +45,21 @@ var (
 // verification greps the API response for `.tmdb_id == null`.
 //
 // LibraryPath is nullable too: a movie can be wanted before it is on disk.
+//
+// Year and TMDBYear are two different facts and the column names say so. Year is
+// the *folder's* year: it is parsed out of `Title (Year)`, it is written back out
+// by library.DestFolder when the importer creates that folder, and it round-trips
+// (link_test.go). TMDBYear is what TMDB says the film came out, recorded only
+// when a human matched the row by hand and the two can therefore disagree. NULL
+// is not missing data — it is the statement that the folder's year *is* TMDB's,
+// which is true by construction for every row the scan matched, because
+// SearchMovie rejects a candidate whose year disagrees. See MatchYear.
 type Movie struct {
 	ID          int64      `json:"id"`
 	TMDBID      *int64     `json:"tmdb_id"`
 	Title       string     `json:"title"`
 	Year        int        `json:"year"`
+	TMDBYear    *int       `json:"tmdb_year"`
 	MediaType   string     `json:"media_type"`
 	Overview    *string    `json:"overview"`
 	PosterPath  *string    `json:"poster_path"`
@@ -59,6 +69,24 @@ type Movie struct {
 	SizeBytes   *int64     `json:"size_bytes"`
 	AddedAt     time.Time  `json:"added_at"`
 	ImportedAt  *time.Time `json:"imported_at"`
+}
+
+// MatchYear is the year to identify this film to anything outside curator by,
+// which is TMDB's when it is known to differ from the folder's and the folder's
+// otherwise.
+//
+// It exists because one column was doing two jobs. `year` names a directory on
+// disk and it identifies a film to Jellyfin, and for every row the scan matched
+// those two are the same number, so nothing distinguished them until a row could
+// be matched by hand (T67). Jellyfin wants this one: D32 narrows its lookup with
+// `years=` on the premise that "both sides take the year from TMDB", and a
+// hand-matched row is the only thing that breaks it. The importer wants `year`,
+// because that is the folder it already wrote.
+func (m Movie) MatchYear() int {
+	if m.TMDBYear != nil {
+		return *m.TMDBYear
+	}
+	return m.Year
 }
 
 // ScannedMovie is everything a library scan knows about a folder.
@@ -83,26 +111,37 @@ type ScannedMovie struct {
 // Title is optional: nil keeps the title parsed off the folder name, so a caller
 // that does not trust a match enough to rename the row is not forced to.
 //
-// **There is deliberately no Year field, and it was tried.** A hand-matched row
-// is the only way to produce a row whose year disagrees with TMDB's — the scan
-// cannot, because SearchMovie rejects a match whose year disagrees — and that
-// disagreement costs the Jellyfin deep link, since D32 narrows its lookup with
-// `years=`. Writing TMDB's year here fixes the link and then loses it again on
-// the next scan: UpsertMovieByPath's SET list includes `year`, so the folder's
-// year is rewritten every time. Measured on a real library: matched to a 2008
-// film, the row answered 2008 and a deep link, and after one rescan answered
-// 2019 and a search again. A value that reverts on the next scan is worse than
-// one that was never written, so the year stays the folder's and the link falls
-// back to D32's search, which always lands somewhere useful.
+// **Year writes `tmdb_year`, and emphatically not `year` — that was tried
+// first and it reverted.** T67 wrote TMDB's year onto `year` itself, because
+// that is what makes D32's `years=` Jellyfin narrowing find a hand-matched
+// film. Measured on a real library: matched to a 2008 film, the row answered
+// 2008 and a deep link, and after one rescan answered 2019 and a search again,
+// because UpsertMovieByPath's SET list includes `year` and rewrites it from the
+// folder name every pass.
+//
+// Freezing `year` for matched rows is the obvious repair and it is the wrong
+// one, which is [D37]. `year` is not metadata the scan happens to own: it is
+// half the directory name, and importer.go:105 builds the destination folder
+// from the *row's* title and year. Move it to TMDB's and the next release
+// imported for that film lands in a second folder beside the first. So `year`
+// stays the folder's, TMDB's goes in a column of its own, and Movie.MatchYear
+// is which one anything outside curator gets asked with.
+//
+// [D37]: ../../docs/decisions.md
 type TMDBMatch struct {
 	TMDBID     int64
 	Title      *string
 	Overview   *string
 	PosterPath *string
+	// Year is TMDB's release year, nil when TMDB has no release date for the
+	// film. It is only ever written by MatchMovie: the scan's own matches agree
+	// with the folder by construction, so recording it there would store a
+	// number equal to the one beside it.
+	Year *int
 }
 
 const selectMovie = `
-SELECT id, tmdb_id, title, year, media_type, overview, poster_path,
+SELECT id, tmdb_id, title, year, tmdb_year, media_type, overview, poster_path,
        status, library_path, quality, size_bytes, added_at, imported_at
 FROM movies`
 
@@ -253,14 +292,17 @@ func (s *Store) MatchMovie(ctx context.Context, id int64, match TMDBMatch) (Movi
 		return fail(ErrTMDBIDTaken)
 	}
 
-	// The same columns SetTMDBMetadata writes, and deliberately not `year` — see
-	// TMDBMatch. The scan owns that column and rewrites it from the folder on
-	// every pass, so writing it here would revert.
+	// The columns SetTMDBMetadata writes, plus `tmdb_year` — and still not
+	// `year`, which stays the folder's. The scan rewrites `year` from the folder
+	// on every pass and the importer builds the folder back out of it, so this is
+	// the one TMDB fact that needs somewhere else to live. See TMDBMatch.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE movies
-		SET tmdb_id = ?, title = COALESCE(?, title), overview = ?, poster_path = ?
+		SET tmdb_id = ?, title = COALESCE(?, title), overview = ?, poster_path = ?,
+		    tmdb_year = ?
 		WHERE id = ?`,
-		match.TMDBID, match.Title, match.Overview, match.PosterPath, id); err != nil {
+		match.TMDBID, match.Title, match.Overview, match.PosterPath,
+		match.Year, id); err != nil {
 		return fail(err)
 	}
 
@@ -344,7 +386,7 @@ func scanMovie(row rowScanner) (Movie, error) {
 		importedAt any
 	)
 	if err := row.Scan(
-		&m.ID, &m.TMDBID, &m.Title, &m.Year, &m.MediaType, &m.Overview, &m.PosterPath,
+		&m.ID, &m.TMDBID, &m.Title, &m.Year, &m.TMDBYear, &m.MediaType, &m.Overview, &m.PosterPath,
 		&m.Status, &m.LibraryPath, &m.Quality, &m.SizeBytes, &addedAt, &importedAt,
 	); err != nil {
 		return Movie{}, err

@@ -41,9 +41,10 @@ func TestAManualMatchSurvivesARescan(t *testing.T) {
 	if matched.Title != scanned(path).Title {
 		t.Errorf("title = %q, want the folder's %q", matched.Title, scanned(path).Title)
 	}
-	// The year is the folder's and stays the folder's — TMDBMatch has no Year
-	// field, because the scan rewrites that column on every pass and a value
-	// written here would revert. TMDBMatch's own comment carries the measurement.
+	// The year is the folder's and stays the folder's, even now that TMDBMatch
+	// has a Year: it writes tmdb_year. The scan rewrites `year` on every pass and
+	// the importer builds the folder name back out of it, so TMDB's year needed a
+	// column of its own rather than this one (D37).
 	if matched.Year != scanned(path).Year {
 		t.Errorf("year = %d, want the folder's %d", matched.Year, scanned(path).Year)
 	}
@@ -180,5 +181,106 @@ func TestSetTMDBMetadataStillOverwrites(t *testing.T) {
 	}
 	if got.TMDBID == nil || *got.TMDBID != 24428 {
 		t.Errorf("tmdb_id = %v, want 24428 — SetTMDBMetadata must still overwrite", got.TMDBID)
+	}
+}
+
+// T68's whole claim, and the one T67 could not make: TMDB's year is recorded,
+// it is recorded somewhere the scan does not own, and it is still there after a
+// rescan.
+//
+// T67 wrote TMDB's year onto `year` itself and measured it revert on the next
+// pass — a 2019 folder matched to a 2008 film answered 2008 and a deep link,
+// then 2019 and a search. This is that measurement turned into an assertion,
+// against the column that survives it.
+func TestAManualMatchsTMDBYearSurvivesARescan(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const path = "/movies/Some Home Video (2019)"
+
+	m, _, err := s.UpsertMovieByPath(ctx, scanned(path))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// The folder says 2018 (scanned()); Iron Man came out in 2008. A row whose
+	// two years agree could not tell these apart.
+	if _, err := s.MatchMovie(ctx, m.ID, TMDBMatch{TMDBID: 1726, Year: ptrInt(2008)}); err != nil {
+		t.Fatalf("MatchMovie: %v", err)
+	}
+
+	for _, pass := range []string{"straight after the match", "after one rescan", "after two"} {
+		got, err := s.GetMovie(ctx, m.ID)
+		if err != nil {
+			t.Fatalf("GetMovie %s: %v", pass, err)
+		}
+		if got.Year != 2018 {
+			t.Errorf("%s: year = %d, want the folder's 2018 — the scan owns this column", pass, got.Year)
+		}
+		if got.TMDBYear == nil || *got.TMDBYear != 2008 {
+			t.Errorf("%s: tmdb_year = %v, want 2008 — this is the column T67 could not keep", pass, got.TMDBYear)
+		}
+		if got.MatchYear() != 2008 {
+			t.Errorf("%s: MatchYear() = %d, want TMDB's 2008", pass, got.MatchYear())
+		}
+		if _, _, err := s.UpsertMovieByPath(ctx, scanned(path)); err != nil {
+			t.Fatalf("rescan %s: %v", pass, err)
+		}
+	}
+}
+
+// A row nobody hand-matched has no tmdb_year, and MatchYear answers the folder's
+// year for it. That NULL is the load-bearing half of the design: every row the
+// scan matched already agrees with TMDB, because SearchMovie rejects a candidate
+// whose year disagrees, so the column needs no backfill to be correct.
+func TestMatchYearFallsBackToTheFoldersYear(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Avengers - Infinity War (2018)"))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if m.TMDBYear != nil {
+		t.Errorf("tmdb_year = %v on a freshly scanned row, want NULL", *m.TMDBYear)
+	}
+	if m.MatchYear() != 2018 {
+		t.Errorf("MatchYear() = %d, want the folder's 2018", m.MatchYear())
+	}
+
+	// The scan's own match does not write it either, for the same reason.
+	if err := s.SetTMDBMetadata(ctx, m.ID, TMDBMatch{TMDBID: 299536}); err != nil {
+		t.Fatalf("SetTMDBMetadata: %v", err)
+	}
+	got, err := s.GetMovie(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMovie: %v", err)
+	}
+	if got.TMDBYear != nil {
+		t.Errorf("tmdb_year = %v after a scan match, want NULL — the two agree by construction", *got.TMDBYear)
+	}
+	if got.MatchYear() != 2018 {
+		t.Errorf("MatchYear() = %d, want 2018", got.MatchYear())
+	}
+}
+
+// TMDB has no release date for some films, and 0 is not a year. NULL keeps
+// MatchYear on the folder's year rather than narrowing a Jellyfin lookup to a
+// year nothing was released in.
+func TestAMatchWithNoTMDBYearLeavesTheColumnNull(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Avengers - Infinity War (2018)"))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	matched, err := s.MatchMovie(ctx, m.ID, TMDBMatch{TMDBID: 299536})
+	if err != nil {
+		t.Fatalf("MatchMovie: %v", err)
+	}
+	if matched.TMDBYear != nil {
+		t.Errorf("tmdb_year = %v, want NULL for a film with no release date", *matched.TMDBYear)
+	}
+	if matched.MatchYear() != 2018 {
+		t.Errorf("MatchYear() = %d, want the folder's 2018", matched.MatchYear())
 	}
 }
