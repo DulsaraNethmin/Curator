@@ -24,15 +24,23 @@ const MediaTypeMovie = "movie"
 // turn a missing id into a 404 with errors.Is.
 var ErrNotFound = errors.New("movie not found")
 
-// ErrAlreadyMatched and ErrTMDBIDTaken are MatchMovie's two refusals, and they are
-// separate errors because they are two different mistakes with two different
-// remedies: the first means this row is not the one to correct, the second means
-// this film is already in the library under another folder.
+// ErrAlreadyMatched, ErrNotMatched and ErrTMDBIDTaken are the refusals MatchMovie
+// and CorrectMatch answer with, and they are separate errors because they are
+// different mistakes with different remedies: the first means this row already
+// names a film and the correction route is the one to use, the second means there
+// is no match here to correct yet, and the third means this film is already in the
+// library under another folder.
 //
-// Both are 409s in internal/api — the request is well-formed and the refusal is
-// deliberate.
+// ErrAlreadyMatched and ErrNotMatched are exact inverses, one per method. Neither
+// method infers which the caller meant: MatchMovie establishes a match and
+// CorrectMatch replaces one, and a request that names the wrong one is answered
+// rather than quietly redirected.
+//
+// All three are 409s in internal/api — the request is well-formed and the refusal
+// is deliberate.
 var (
 	ErrAlreadyMatched = errors.New("movie is already matched to a tmdb id")
+	ErrNotMatched     = errors.New("movie has no tmdb id to correct")
 	ErrTMDBIDTaken    = errors.New("another movie already holds that tmdb id")
 )
 
@@ -243,6 +251,7 @@ func (s *Store) SetTMDBMetadata(ctx context.Context, id int64, match TMDBMatch) 
 }
 
 // MatchMovie records a match a human chose, against a row that has none.
+// CorrectMatch is its counterpart for a row that already has one.
 //
 // It is deliberately not SetTMDBMetadata. That one serves the scan, where the row
 // was selected by `WHERE tmdb_id IS NULL` and overwriting unconditionally is
@@ -276,8 +285,10 @@ func (s *Store) MatchMovie(ctx context.Context, id int64, match TMDBMatch) (Movi
 	case err != nil:
 		return fail(err)
 	case existing != nil:
-		// Not "overwrite it": a row that already names a film is not the row this
-		// request is about, and saying so is cheaper than undoing it afterwards.
+		// Still not "overwrite it", even now that CorrectMatch exists: replacing a
+		// match is a different intent from establishing one, and a caller that
+		// meant it says so with a different call. This one stays the write that
+		// cannot destroy an answer somebody already gave.
 		return fail(ErrAlreadyMatched)
 	}
 
@@ -292,17 +303,7 @@ func (s *Store) MatchMovie(ctx context.Context, id int64, match TMDBMatch) (Movi
 		return fail(ErrTMDBIDTaken)
 	}
 
-	// The columns SetTMDBMetadata writes, plus `tmdb_year` — and still not
-	// `year`, which stays the folder's. The scan rewrites `year` from the folder
-	// on every pass and the importer builds the folder back out of it, so this is
-	// the one TMDB fact that needs somewhere else to live. See TMDBMatch.
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE movies
-		SET tmdb_id = ?, title = COALESCE(?, title), overview = ?, poster_path = ?,
-		    tmdb_year = ?
-		WHERE id = ?`,
-		match.TMDBID, match.Title, match.Overview, match.PosterPath,
-		match.Year, id); err != nil {
+	if err := writeMatch(ctx, tx, id, match); err != nil {
 		return fail(err)
 	}
 
@@ -314,6 +315,104 @@ func (s *Store) MatchMovie(ctx context.Context, id int64, match TMDBMatch) (Movi
 		return fail(err)
 	}
 	return row, nil
+}
+
+// CorrectMatch repoints a row that is already matched at a different film.
+//
+// **It overwrites in one statement and never lets the row pass through NULL, and
+// that is the whole design rather than an implementation detail.** The obvious
+// shape — clear tmdb_id, overview, poster_path and tmdb_year, then reuse
+// MatchMovie — is broken twice over, because a row with a NULL tmdb_id is not an
+// inert row waiting for a human:
+//
+//   - MoviesMissingMetadata selects exactly `WHERE tmdb_id IS NULL`, and the scan
+//     feeds every row it returns to SetTMDBMetadata, which overwrites
+//     unconditionally. A scan landing between the clear and the match re-matches
+//     the row **from its folder name** — which is the thing that produced the
+//     wrong match in the first place, so it would restore precisely the film
+//     being corrected away from.
+//   - adoptTwin writes a tmdb_id onto a row whose own is NULL (imports.go), so an
+//     import completing in that window could repoint it too.
+//
+// Neither needs a slow human to go wrong: the clear and the match are two HTTP
+// requests, and a scan is one button. Overwriting inside a single transaction
+// removes the window rather than narrowing it.
+//
+// The refusals are MatchMovie's, inverted and with one relaxation. A row with no
+// tmdb_id is ErrNotMatched — there is nothing here to correct and POST is the
+// route for it. Another row holding the target id is still ErrTMDBIDTaken, but the
+// probe ignores this row, so re-picking the film already stored is allowed: it
+// costs a fresh overview, poster and tmdb_year, which is a refresh and not a
+// collision.
+func (s *Store) CorrectMatch(ctx context.Context, id int64, match TMDBMatch) (Movie, error) {
+	fail := func(err error) (Movie, error) {
+		return Movie{}, fmt.Errorf("correct movie %d to tmdb %d: %w", id, match.TMDBID, err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fail(err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	var existing *int64
+	switch err := tx.QueryRowContext(ctx, `SELECT tmdb_id FROM movies WHERE id = ?`, id).Scan(&existing); {
+	case errors.Is(err, sql.ErrNoRows):
+		return fail(ErrNotFound)
+	case err != nil:
+		return fail(err)
+	case existing == nil:
+		return fail(ErrNotMatched)
+	}
+
+	// `AND id != ?` is the one difference from MatchMovie's probe. Without it a
+	// correction that lands on the film already stored would collide with itself.
+	var other int64
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT id FROM movies WHERE tmdb_id = ? AND id != ?`, match.TMDBID, id).Scan(&other); {
+	case errors.Is(err, sql.ErrNoRows):
+		// The only outcome that proceeds.
+	case err != nil:
+		return fail(err)
+	default:
+		return fail(ErrTMDBIDTaken)
+	}
+
+	if err := writeMatch(ctx, tx, id, match); err != nil {
+		return fail(err)
+	}
+
+	row, err := scanMovie(tx.QueryRowContext(ctx, selectMovie+` WHERE id = ?`, id))
+	if err != nil {
+		return fail(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fail(err)
+	}
+	return row, nil
+}
+
+// writeMatch is the UPDATE MatchMovie and CorrectMatch share, and it is one
+// function so the two cannot drift: a row corrected by hand and a row matched by
+// hand have to be the same shape afterwards, or a second correction would behave
+// differently from the first.
+//
+// The columns are the ones SetTMDBMetadata writes, plus `tmdb_year` — and still
+// not `year`, which stays the folder's. The scan rewrites `year` from the folder
+// on every pass and the importer builds the folder back out of it, so this is the
+// one TMDB fact that needs somewhere else to live. See TMDBMatch.
+//
+// It takes the transaction rather than the Store because both callers have
+// already decided, under the write lock, that the row is theirs to write.
+func writeMatch(ctx context.Context, tx *sql.Tx, id int64, match TMDBMatch) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE movies
+		SET tmdb_id = ?, title = COALESCE(?, title), overview = ?, poster_path = ?,
+		    tmdb_year = ?
+		WHERE id = ?`,
+		match.TMDBID, match.Title, match.Overview, match.PosterPath,
+		match.Year, id)
+	return err
 }
 
 // ListMovies returns every movie, newest first. id breaks ties on added_at

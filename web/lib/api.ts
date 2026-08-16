@@ -544,9 +544,17 @@ export type AuthStatus = {
  *   503  the integration is unconfigured; say which variable to set
  *   502  a dependency is down; it is not our fault and not the user's
  *   409  a deliberate refusal of a well-formed request: the torrent has not
- *        finished, the torrent is not curator's to delete, or curator already
- *        has this film in the library
+ *        finished, the torrent is not curator's to delete, curator already has
+ *        this film in the library, the row is already matched (POST /match), or
+ *        the row has no match to correct (PUT /match)
  *   422  nothing importable, or a title that cannot be a folder name
+ *
+ * **409 now covers five unrelated situations, and `states.tsx` titles all of
+ * them "Not finished yet"** — which is right for the import path it was written
+ * for and wrong for the rest. Nothing surfaces it today because the two callers
+ * that can provoke the others render `cause.message` inline instead of `<Failure>`,
+ * so this is a latent bug and not a live one. A screen that routes a 409 through
+ * `<Failure>` has to fix the title first.
  */
 export class ApiError extends Error {
   readonly status: number;
@@ -727,6 +735,25 @@ export const api = {
   matchMovie: (id: number, tmdbID: number) =>
     request<MovieRow>(`/api/movies/${id}/match`, {
       method: 'POST',
+      body: JSON.stringify({ tmdb_id: tmdbID }),
+    }),
+
+  /**
+   * Repoint a row that is already matched at a different film (T69).
+   *
+   * Same path, same body, same response as `matchMovie` — the method is the
+   * whole difference, because the resource is the same and what changes is
+   * whether a match is being established or replaced. Sending the wrong one is a
+   * 409 that names the right one rather than silently doing the other job.
+   *
+   * There is deliberately no `unmatchMovie` beside it. Clearing a `tmdb_id` puts
+   * the row back on the scan's work list, where it would be re-matched from the
+   * folder name that was wrong to begin with, so the correction is one request
+   * that overwrites rather than two that pass through nothing.
+   */
+  correctMatch: (id: number, tmdbID: number) =>
+    request<MovieRow>(`/api/movies/${id}/match`, {
+      method: 'PUT',
       body: JSON.stringify({ tmdb_id: tmdbID }),
     }),
 

@@ -30,6 +30,11 @@ import { MatchPicker } from '@/components/match-picker';
  * has an address here. A matched one simply also has a richer page, and links
  * to it.
  *
+ * **That openness is what T69 built on.** Correcting a wrong match needed a page
+ * that would accept a matched row, and this one already did — so the feature cost
+ * a link from `/movie/` and a label, rather than a screen. The picker below opens
+ * for either kind of row and the method it uses is decided from the row itself.
+ *
  * The `<Suspense>` boundary is not decoration — `useSearchParams()` without one
  * fails the export build, which is the toolchain remembering D21 so nobody has
  * to.
@@ -192,8 +197,10 @@ function LibraryFilm() {
           </a>
         )}
 
-        {/* A matched row reached here anyway. The catalogue page is the better
-            one for it, so say so rather than quietly being a worse version. */}
+        {/* A matched row, which since T69 arrives here on purpose rather than
+            only by accident: `/movie/` links a film it holds back to this page
+            so the match can be corrected. The catalogue page is still the better
+            one for everything else about it, so the way back stays. */}
         {movie.tmdb_id !== null && (
           <Link className="button" href={`/movie/?id=${movie.tmdb_id}`}>
             Poster, cast and releases →
@@ -202,20 +209,30 @@ function LibraryFilm() {
 
         {/* Only where there is a key in force to search with. A keyless install
             is the population this cannot help at all — there is no key to ask —
-            and the sentence above sends it to Settings instead (T67, D35). */}
-        {movie.tmdb_id === null && keyInForce && !matching && (
-          <button onClick={() => setMatching(true)}>Find the right film</button>
+            and the sentence above sends it to Settings instead (T67, D35).
+
+            **It is drawn for a matched row too since T69**, and the label is the
+            whole difference: pointing an unmatched row at a film and repointing
+            a matched one are the same gesture with different stakes, and the
+            button says which one is about to happen. The picker behind it is the
+            same component and the method it uses is decided from the row. */}
+        {keyInForce && !matching && (
+          <button className={movie.tmdb_id === null ? undefined : 'quiet'} onClick={() => setMatching(true)}>
+            {movie.tmdb_id === null ? 'Find the right film' : 'Correct the match'}
+          </button>
         )}
       </div>
 
-      {matching && movie.tmdb_id === null && (
+      {matching && (
         <MatchPicker
           movie={movie}
           onCancel={() => setMatching(false)}
           onMatched={(next) => {
             // The API answers the same body the GET does, so the row is simply
             // replaced — no refetch, and jellyfin_url arrives already changed
-            // from a search into a deep link.
+            // from a search into a deep link. A correction answers the same
+            // shape, so this path is unchanged by T69: the row that comes back
+            // is the row to hold, whichever method fetched it.
             setMovie(next);
             setMatching(false);
           }}

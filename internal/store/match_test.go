@@ -284,3 +284,276 @@ func TestAMatchWithNoTMDBYearLeavesTheColumnNull(t *testing.T) {
 		t.Errorf("MatchYear() = %d, want the folder's 2018", matched.MatchYear())
 	}
 }
+
+// The happy path of a correction: every column TMDB owns is replaced, and every
+// column the folder owns is left exactly where it was.
+func TestCorrectMatchRepointsTheRowAndRefreshesEveryTMDBColumn(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const path = "/movies/Avengers - Infinity War (2018)"
+
+	m, _, err := s.UpsertMovieByPath(ctx, scanned(path))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// Matched to the wrong film, which is the state this method exists for.
+	if _, err := s.MatchMovie(ctx, m.ID, TMDBMatch{
+		TMDBID:     1726,
+		Overview:   ptrString("Tony Stark builds an armored suit."),
+		PosterPath: ptrString("/iron.jpg"),
+		Year:       ptrInt(2008),
+	}); err != nil {
+		t.Fatalf("MatchMovie: %v", err)
+	}
+
+	corrected, err := s.CorrectMatch(ctx, m.ID, TMDBMatch{
+		TMDBID:     299536,
+		Overview:   ptrString("As the Avengers and their allies have continued..."),
+		PosterPath: ptrString("/infinity.jpg"),
+		Year:       ptrInt(2018),
+	})
+	if err != nil {
+		t.Fatalf("CorrectMatch: %v", err)
+	}
+
+	if corrected.TMDBID == nil || *corrected.TMDBID != 299536 {
+		t.Errorf("tmdb_id = %v, want 299536", corrected.TMDBID)
+	}
+	// All four TMDB columns move together. A correction that changed the id and
+	// left the previous film's overview and poster behind would be worse than no
+	// correction at all — the row would name one film and describe another.
+	if corrected.Overview == nil || *corrected.Overview != "As the Avengers and their allies have continued..." {
+		t.Errorf("overview = %v, want the new film's", corrected.Overview)
+	}
+	if corrected.PosterPath == nil || *corrected.PosterPath != "/infinity.jpg" {
+		t.Errorf("poster_path = %v, want the new film's", corrected.PosterPath)
+	}
+	if corrected.TMDBYear == nil || *corrected.TMDBYear != 2018 {
+		t.Errorf("tmdb_year = %v, want the new film's 2018", corrected.TMDBYear)
+	}
+
+	// And the folder's half is untouched, exactly as MatchMovie leaves it (D37).
+	if corrected.Title != scanned(path).Title {
+		t.Errorf("title = %q, want the folder's %q", corrected.Title, scanned(path).Title)
+	}
+	if corrected.Year != scanned(path).Year {
+		t.Errorf("year = %d, want the folder's %d", corrected.Year, scanned(path).Year)
+	}
+	if corrected.LibraryPath == nil || *corrected.LibraryPath != path {
+		t.Errorf("library_path = %v, want %q", corrected.LibraryPath, path)
+	}
+}
+
+// The inverse of MatchMovie's refusal, and it is a refusal rather than a silent
+// fallback to MatchMovie: replacing a match and establishing one are different
+// intents, and a caller that got the method wrong is told which one it wanted.
+func TestCorrectMatchRefusesARowWithNoMatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Avengers - Infinity War (2018)"))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	_, err = s.CorrectMatch(ctx, m.ID, TMDBMatch{TMDBID: 299536})
+	if !errors.Is(err, ErrNotMatched) {
+		t.Fatalf("CorrectMatch error = %v, want ErrNotMatched", err)
+	}
+
+	got, err := s.GetMovie(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("GetMovie: %v", err)
+	}
+	if got.TMDBID != nil {
+		t.Errorf("tmdb_id = %v, want it still NULL — a refused correction writes nothing", *got.TMDBID)
+	}
+}
+
+// tmdb_id is UNIQUE, and correcting onto a film another folder already holds is
+// the same collision MatchMovie answers, reached from the other direction.
+func TestCorrectMatchRefusesAnIDAnotherRowHolds(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	first, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Avengers - Infinity War (2018)"))
+	if err != nil {
+		t.Fatalf("upsert first: %v", err)
+	}
+	second, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Infinity War (2018)"))
+	if err != nil {
+		t.Fatalf("upsert second: %v", err)
+	}
+	if _, err := s.MatchMovie(ctx, first.ID, TMDBMatch{TMDBID: 299536}); err != nil {
+		t.Fatalf("MatchMovie first: %v", err)
+	}
+	if _, err := s.MatchMovie(ctx, second.ID, TMDBMatch{TMDBID: 1726}); err != nil {
+		t.Fatalf("MatchMovie second: %v", err)
+	}
+
+	_, err = s.CorrectMatch(ctx, second.ID, TMDBMatch{TMDBID: 299536})
+	if !errors.Is(err, ErrTMDBIDTaken) {
+		t.Fatalf("CorrectMatch error = %v, want ErrTMDBIDTaken", err)
+	}
+
+	// Neither row moved: the refusal is decided before the write, in the same
+	// transaction, so there is nothing half-applied to undo.
+	gotFirst, err := s.GetMovie(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("GetMovie first: %v", err)
+	}
+	if gotFirst.TMDBID == nil || *gotFirst.TMDBID != 299536 {
+		t.Errorf("first row's tmdb_id = %v, want 299536", gotFirst.TMDBID)
+	}
+	gotSecond, err := s.GetMovie(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("GetMovie second: %v", err)
+	}
+	if gotSecond.TMDBID == nil || *gotSecond.TMDBID != 1726 {
+		t.Errorf("second row's tmdb_id = %v, want the original 1726", gotSecond.TMDBID)
+	}
+}
+
+// The one refusal that is deliberately NOT inverted. MatchMovie's taken-probe asks
+// whether ANY row holds the id; this one excludes the row being corrected, so
+// re-picking the film already stored is allowed and costs a fresh overview, poster
+// and tmdb_year. Without the exclusion a correction would collide with itself, and
+// the sentence the user got back would name a conflict with their own film.
+func TestCorrectMatchToTheFilmAlreadyStoredIsARefreshNotACollision(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	m, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Avengers - Infinity War (2018)"))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := s.MatchMovie(ctx, m.ID, TMDBMatch{
+		TMDBID:   299536,
+		Overview: ptrString("stale"),
+	}); err != nil {
+		t.Fatalf("MatchMovie: %v", err)
+	}
+
+	corrected, err := s.CorrectMatch(ctx, m.ID, TMDBMatch{
+		TMDBID:   299536,
+		Overview: ptrString("fresh"),
+		Year:     ptrInt(2018),
+	})
+	if err != nil {
+		t.Fatalf("CorrectMatch onto the same id = %v, want it allowed", err)
+	}
+	if corrected.Overview == nil || *corrected.Overview != "fresh" {
+		t.Errorf("overview = %v, want the re-read 'fresh'", corrected.Overview)
+	}
+	if corrected.TMDBYear == nil || *corrected.TMDBYear != 2018 {
+		t.Errorf("tmdb_year = %v, want 2018", corrected.TMDBYear)
+	}
+}
+
+// A correction survives a rescan for the same three reasons a match does, and the
+// assertion is made rather than argued because it is the whole point of writing
+// the correction into the database instead of the UI.
+func TestACorrectionSurvivesARescan(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const path = "/movies/Avengers - Infinity War (2018)"
+
+	m, _, err := s.UpsertMovieByPath(ctx, scanned(path))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := s.MatchMovie(ctx, m.ID, TMDBMatch{TMDBID: 1726, Year: ptrInt(2008)}); err != nil {
+		t.Fatalf("MatchMovie: %v", err)
+	}
+	if _, err := s.CorrectMatch(ctx, m.ID, TMDBMatch{TMDBID: 299536, Year: ptrInt(2018)}); err != nil {
+		t.Fatalf("CorrectMatch: %v", err)
+	}
+
+	for _, pass := range []string{"after one rescan", "after two", "after three"} {
+		if _, _, err := s.UpsertMovieByPath(ctx, scanned(path)); err != nil {
+			t.Fatalf("%s: rescan: %v", pass, err)
+		}
+		got, err := s.GetMovie(ctx, m.ID)
+		if err != nil {
+			t.Fatalf("%s: GetMovie: %v", pass, err)
+		}
+		if got.TMDBID == nil || *got.TMDBID != 299536 {
+			t.Errorf("%s: tmdb_id = %v, want the corrected 299536", pass, got.TMDBID)
+		}
+		if got.TMDBYear == nil || *got.TMDBYear != 2018 {
+			t.Errorf("%s: tmdb_year = %v, want the corrected 2018", pass, got.TMDBYear)
+		}
+		if got.Year != scanned(path).Year {
+			t.Errorf("%s: year = %d, want the folder's %d", pass, got.Year, scanned(path).Year)
+		}
+	}
+}
+
+// **This is the measurement behind CorrectMatch being one statement, made
+// executable so the design cannot be simplified back into the bug.**
+//
+// The obvious implementation of "correct a wrong match" is to clear the row and
+// reuse MatchMovie. This test does the clearing half with raw SQL — deliberately,
+// because no exported method does it and none should — and then shows what the
+// row becomes: work for the scan's matching pass, which matches from the folder
+// name. The folder name is what produced the wrong match in the first place, so a
+// scan landing in that window restores exactly the film being corrected away from.
+//
+// The second half asserts the real path never enters that state.
+func TestClearingAMatchWouldHandTheRowBackToTheScan(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const path = "/movies/Avengers - Infinity War (2018)"
+
+	m, _, err := s.UpsertMovieByPath(ctx, scanned(path))
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := s.MatchMovie(ctx, m.ID, TMDBMatch{TMDBID: 1726, Year: ptrInt(2008)}); err != nil {
+		t.Fatalf("MatchMovie: %v", err)
+	}
+
+	// The clear a two-step correction would perform between its two requests.
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE movies SET tmdb_id = NULL, overview = NULL, poster_path = NULL, tmdb_year = NULL
+		WHERE id = ?`, m.ID); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+
+	missing, err := s.MoviesMissingMetadata(ctx)
+	if err != nil {
+		t.Fatalf("MoviesMissingMetadata: %v", err)
+	}
+	var exposed bool
+	for _, row := range missing {
+		if row.ID == m.ID {
+			exposed = true
+		}
+	}
+	if !exposed {
+		t.Fatal("a cleared row is not on the scan's work list — if this ever becomes true, " +
+			"CorrectMatch's single-statement design has lost its reason and this test should say so")
+	}
+
+	// The real path, on a row in the same starting state, never exposes it.
+	again, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Infinity War (2018)"))
+	if err != nil {
+		t.Fatalf("upsert again: %v", err)
+	}
+	if _, err := s.MatchMovie(ctx, again.ID, TMDBMatch{TMDBID: 1726, Year: ptrInt(2008)}); err != nil {
+		t.Fatalf("MatchMovie again: %v", err)
+	}
+	if _, err := s.CorrectMatch(ctx, again.ID, TMDBMatch{TMDBID: 299536, Year: ptrInt(2018)}); err != nil {
+		t.Fatalf("CorrectMatch: %v", err)
+	}
+	missing, err = s.MoviesMissingMetadata(ctx)
+	if err != nil {
+		t.Fatalf("MoviesMissingMetadata after correcting: %v", err)
+	}
+	for _, row := range missing {
+		if row.ID == again.ID {
+			t.Errorf("movie %d is on the scan's work list after a correction — "+
+				"CorrectMatch must never leave tmdb_id NULL", again.ID)
+		}
+	}
+}

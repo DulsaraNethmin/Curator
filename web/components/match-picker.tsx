@@ -6,7 +6,15 @@ import { MovieCard } from '@/components/movie-card';
 import { Empty } from '@/components/states';
 
 /**
- * MatchPicker points a library row with no `tmdb_id` at the right film (T67).
+ * MatchPicker points a library row at the right film — establishing a match on a
+ * row with no `tmdb_id` (T67), or replacing one on a row that has the wrong one
+ * (T69).
+ *
+ * **Which of the two it is comes from the row, not from a prop.** The component
+ * already took the whole `MovieRow`, so `movie.tmdb_id !== null` answers it, and
+ * the caller cannot open the picker in the wrong mode. It decides three things:
+ * the sentence below the heading, the endpoint, and whether the film this row
+ * already holds counts as a collision.
  *
  * **The search is seeded from the row, not typed from scratch.** The folder
  * already carries a title and a year — they are what the scan searched with and
@@ -32,6 +40,10 @@ export function MatchPicker({
   onMatched: (next: MovieRow) => void;
   onCancel: () => void;
 }) {
+  // Which of the two jobs this is, read off the row rather than passed in. The
+  // page that opens the picker does not have to know, and cannot get it wrong.
+  const correcting = movie.tmdb_id !== null;
+
   const [query, setQuery] = useState(movie.title);
   // A year of 0 is "no year", which is a real state for a wanted row. It shows
   // as an empty box rather than a literal 0 nobody typed.
@@ -74,7 +86,15 @@ export function MatchPicker({
     // tmdb_id is UNIQUE, so this is the API's 409 said one step earlier and
     // without a round trip. The card already carries the badge that explains it;
     // this is what happens when somebody clicks it anyway.
-    if (film.library) {
+    //
+    // **`movie_id !== movie.id` is the correction case and it must not be
+    // refused.** In correction mode the film this row already holds is in the
+    // results and carries the badge — it is in the library, under THIS folder —
+    // so a bare `film.library` check would refuse somebody re-picking the film
+    // they are already matched to, and the sentence would name a collision with
+    // their own row. The server draws the same line: CorrectMatch's taken probe
+    // ignores the row being corrected.
+    if (film.library && film.library.movie_id !== movie.id) {
       setFailure('curator already has that film in the library under another folder.');
       return;
     }
@@ -82,7 +102,14 @@ export function MatchPicker({
     setPicking(film.tmdb_id);
     setFailure(null);
     try {
-      onMatched(await api.matchMovie(movie.id, film.tmdb_id));
+      // POST establishes a match and PUT replaces one; which of those this is
+      // depends on the row, not on a prop, so the caller cannot get it wrong by
+      // opening the picker from the wrong place.
+      onMatched(
+        correcting
+          ? await api.correctMatch(movie.id, film.tmdb_id)
+          : await api.matchMovie(movie.id, film.tmdb_id),
+      );
     } catch (cause) {
       // The API's own sentence, verbatim. Both 409s were written to be read —
       // "already matched" and "another folder already holds that film" are
@@ -96,9 +123,24 @@ export function MatchPicker({
   return (
     <section className="matcher">
       <h2>Which film is this?</h2>
+      {/* Two situations, two sentences. The original one describes a search that
+          found nothing, which is a plain falsehood on a row that IS matched —
+          something did resolve, it was simply the wrong film. Saying so also
+          says what will happen, because a correction overwrites rather than
+          clearing: there is no moment where the row has no film. */}
       <p className="lede">
-        curator searched TMDB for <span className="mono">{movie.title}</span> and found nothing it was
-        sure of. Pick the right film and it keeps the match — a later scan will not undo it.
+        {correcting ? (
+          <>
+            This folder is matched to a film. Pick the right one and it replaces the match — the
+            poster, the overview and the Jellyfin link all follow it, and a later scan will not undo
+            it.
+          </>
+        ) : (
+          <>
+            curator searched TMDB for <span className="mono">{movie.title}</span> and found nothing it
+            was sure of. Pick the right film and it keeps the match — a later scan will not undo it.
+          </>
+        )}
       </p>
 
       <form

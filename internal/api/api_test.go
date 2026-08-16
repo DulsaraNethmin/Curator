@@ -36,6 +36,9 @@ type fakeStore struct {
 	missErr   error
 	setErr    error // e.g. the UNIQUE violation two folders matching one TMDB id causes
 	matchErr  error // forces MatchMovie's failure path without staging a row for it
+	// Separate from matchErr so a test cannot force one method's failure and
+	// accidentally assert it against the other — the two answer different 409s.
+	correctErr error
 
 	// The library index behind a TMDB card's "already in your library" badge.
 	library    map[int64]store.LibraryState
@@ -229,6 +232,37 @@ func (f *fakeStore) MatchMovie(_ context.Context, id int64, match store.TMDBMatc
 	row.PosterPath = match.PosterPath
 	// tmdb_year, and deliberately not year — the fake mirrors the real store's
 	// division or the year tests prove nothing (D37).
+	row.TMDBYear = match.Year
+	if match.Title != nil {
+		row.Title = *match.Title
+	}
+	return *row, nil
+}
+
+// CorrectMatch mirrors the real store's refusals for the same reason MatchMovie
+// does — including the one that is deliberately NOT the inverse. ErrAlreadyMatched
+// becomes ErrNotMatched, but the taken probe still ignores this row, so re-picking
+// the film already stored is a refresh rather than a collision with itself.
+func (f *fakeStore) CorrectMatch(_ context.Context, id int64, match store.TMDBMatch) (store.Movie, error) {
+	if f.correctErr != nil {
+		return store.Movie{}, f.correctErr
+	}
+	row, ok := f.byID[id]
+	if !ok {
+		return store.Movie{}, fmt.Errorf("correct movie %d: %w", id, store.ErrNotFound)
+	}
+	if row.TMDBID == nil {
+		return store.Movie{}, fmt.Errorf("correct movie %d: %w", id, store.ErrNotMatched)
+	}
+	for otherID, other := range f.byID {
+		if otherID != id && other.TMDBID != nil && *other.TMDBID == match.TMDBID {
+			return store.Movie{}, fmt.Errorf("correct movie %d: %w", id, store.ErrTMDBIDTaken)
+		}
+	}
+	tmdbID := match.TMDBID
+	row.TMDBID = &tmdbID
+	row.Overview = match.Overview
+	row.PosterPath = match.PosterPath
 	row.TMDBYear = match.Year
 	if match.Title != nil {
 		row.Title = *match.Title

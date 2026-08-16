@@ -31,7 +31,13 @@ type Store interface {
 	// MatchMovie is SetTMDBMetadata's request-facing twin: it refuses a row that
 	// is already matched and an id another row holds, where the scan's write
 	// overwrites because it selected on tmdb_id IS NULL in the first place (T67).
+	//
+	// CorrectMatch is the one write that may replace a match, and it does it in a
+	// single transaction rather than clearing the row first — a row with a NULL
+	// tmdb_id is on MoviesMissingMetadata's list, so a clear would hand it back to
+	// the scan to re-match from the folder name that was wrong to begin with (T69).
 	MatchMovie(ctx context.Context, id int64, match store.TMDBMatch) (store.Movie, error)
+	CorrectMatch(ctx context.Context, id int64, match store.TMDBMatch) (store.Movie, error)
 
 	ListMovies(ctx context.Context) ([]store.Movie, error)
 	GetMovie(ctx context.Context, id int64) (store.Movie, error)

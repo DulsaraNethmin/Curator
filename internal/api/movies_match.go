@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,12 +12,22 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
 )
 
-// RegisterMovieMatch mounts the one route that writes a tmdb_id a human chose.
+// RegisterMovieMatch mounts the two routes that write a tmdb_id a human chose.
 //
 // It is registered separately from Register for the reason RegisterMovieDelete
 // is: phase 1's route set keeps its shape, and a deployment could omit it.
+//
+// **POST establishes a match and PUT replaces one, and they are two methods on
+// one path rather than two paths.** The resource is the same in both cases — the
+// row's match — so the distinction is what is being done to it, which is what a
+// method is for. Go 1.22 routing dispatches on the method, so the pair costs one
+// line. The alternative considered was a flag in the body (`{"replace":true}`),
+// and it loses on the property that matters here: a client that forgets the flag
+// silently gets the safe refusal, whereas a client that sends the wrong method
+// gets a 409 naming the other one.
 func (s *Server) RegisterMovieMatch(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/movies/{id}/match", s.handleMatchMovie)
+	mux.HandleFunc("PUT /api/movies/{id}/match", s.handleCorrectMatch)
 }
 
 // matchRequest is the whole body. Only the id: everything else about the film is
@@ -25,23 +36,76 @@ type matchRequest struct {
 	TMDBID int64 `json:"tmdb_id"`
 }
 
-// handleMatchMovie points a library row at the film a human picked.
-//
-// **It lives under /api/movies/ although it needs the TMDB key**, which is worth
-// stating because browse.go's prefix rule says everything TMDB-backed lives under
-// /api/tmdb/. The subject of this request is a library row — it is addressed by
-// curator's own movies.id, it writes to the library, and it answers a library
-// row. TMDB is an input to it, not what it is about. What the prefix rule
-// actually guarantees is that a keyless install gets a 503 naming the variable
-// instead of a confusing failure, and this route keeps that by calling failTMDB
-// with the same error the /api/tmdb/ handlers use.
-//
-// The catalogue is re-read rather than trusted. The body carries an id and
-// nothing else, and Browser.Movie turns it into the overview and poster the scan
-// would have written — so a row matched by hand and a row matched by the scanner
-// are indistinguishable afterwards, and an id for a film TMDB does not have is a
-// 404 instead of a row pointing at nothing.
+// handleMatchMovie points a library row that has no match at the film a human
+// picked. handleCorrectMatch is the same request against a row that has one.
 func (s *Server) handleMatchMovie(w http.ResponseWriter, r *http.Request) {
+	s.applyMatch(w, r, matchWrite{
+		refuse: func(movie store.Movie) error {
+			if movie.TMDBID != nil {
+				return store.ErrAlreadyMatched
+			}
+			return nil
+		},
+		write:  s.store.MatchMovie,
+		logged: "matched by hand",
+	})
+}
+
+// handleCorrectMatch repoints a row that is already matched at a different film.
+//
+// It is T67's deliberate gap closed. That task refused to correct a match and said
+// why — *"it needs its own way in, because a matched card routes to `/movie/` and
+// never reaches this page"* — so building the write then would have shipped a code
+// path with no caller. The way in exists now: `/movie/` links a film it holds to
+// that film's library row, and the picker on that page opens for a matched row.
+//
+// **The store call is CorrectMatch and not a clear followed by MatchMovie**, and
+// the reason is a race rather than a preference: a row with a NULL tmdb_id is
+// exactly what MoviesMissingMetadata selects, so a scan between the two requests
+// would re-match it from the folder name that produced the wrong match. See
+// store.CorrectMatch, which carries the measurement.
+func (s *Server) handleCorrectMatch(w http.ResponseWriter, r *http.Request) {
+	s.applyMatch(w, r, matchWrite{
+		refuse: func(movie store.Movie) error {
+			if movie.TMDBID == nil {
+				return store.ErrNotMatched
+			}
+			return nil
+		},
+		write:  s.store.CorrectMatch,
+		logged: "match corrected by hand",
+	})
+}
+
+// matchWrite is what separates the two handlers, which is three things: the
+// refusal that decides whether this row is theirs to write, the store call, and
+// the word in the log. Everything else — the key check, the body, the TMDB
+// re-read, the response — is identical, and sharing it is what keeps a match and a
+// correction indistinguishable in the row afterwards.
+type matchWrite struct {
+	refuse func(store.Movie) error
+	write  func(context.Context, int64, store.TMDBMatch) (store.Movie, error)
+	logged string
+}
+
+// applyMatch is both routes: read the row, refuse it if this method is the wrong
+// one for it, re-read the film from TMDB, write, and answer the row.
+//
+// **These live under /api/movies/ although they need the TMDB key**, which is
+// worth stating because browse.go's prefix rule says everything TMDB-backed lives
+// under /api/tmdb/. The subject of the request is a library row — it is addressed
+// by curator's own movies.id, it writes to the library, and it answers a library
+// row. TMDB is an input to it, not what it is about. What the prefix rule actually
+// guarantees is that a keyless install gets a 503 naming the variable instead of a
+// confusing failure, and these routes keep that by calling failTMDB with the same
+// error the /api/tmdb/ handlers use.
+//
+// The catalogue is re-read rather than trusted. The body carries an id and nothing
+// else, and Browser.Movie turns it into the overview and poster the scan would
+// have written — so a row matched by hand, a row corrected by hand and a row
+// matched by the scanner are indistinguishable afterwards, and an id for a film
+// TMDB does not have is a 404 instead of a row pointing at nothing.
+func (s *Server) applyMatch(w http.ResponseWriter, r *http.Request, kind matchWrite) {
 	if s.browser == nil {
 		s.failTMDB(w, errTMDBUnconfigured)
 		return
@@ -68,7 +132,9 @@ func (s *Server) handleMatchMovie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The row is read first so a request naming a row that does not exist, or one
-	// that is already matched, does not spend a TMDB request finding that out.
+	// this method is not the right one for, does not spend a TMDB request finding
+	// that out. The store re-checks the same thing under the write lock; this is
+	// the cheap copy, not the guard.
 	movie, err := s.store.GetMovie(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -78,8 +144,8 @@ func (s *Server) handleMatchMovie(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	if movie.TMDBID != nil {
-		s.failMatch(w, store.ErrAlreadyMatched)
+	if err := kind.refuse(movie); err != nil {
+		s.failMatch(w, err)
 		return
 	}
 
@@ -111,13 +177,13 @@ func (s *Server) handleMatchMovie(w http.ResponseWriter, r *http.Request) {
 		match.Year = &year
 	}
 
-	matched, err := s.store.MatchMovie(r.Context(), id, match)
+	matched, err := kind.write(r.Context(), id, match)
 	if err != nil {
 		s.failMatch(w, err)
 		return
 	}
 
-	s.log.Info("matched by hand", "movie_id", id, "tmdb_id", body.TMDBID, "title", matched.Title)
+	s.log.Info(kind.logged, "movie_id", id, "tmdb_id", body.TMDBID, "title", matched.Title)
 
 	// The same body GET /api/movies/{id} answers, so the page can swap the row it
 	// is holding without a reload — and jellyfin_url really does change, because
@@ -129,19 +195,29 @@ func (s *Server) handleMatchMovie(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, http.StatusOK, out)
 }
 
-// failMatch maps the store's two refusals onto 409, and everything else onto 500.
+// failMatch maps the store's three refusals onto 409, and everything else onto 500.
 //
-// Both are 409 rather than 400 for the reason the delete handler's ErrWrongCategory
-// is: the request is well-formed and the refusal is deliberate. They stay two
-// distinct messages because the remedies differ — one says this is not the row to
-// correct, the other says the film is already in the library somewhere else.
+// All three are 409 rather than 400 for the reason the delete handler's
+// ErrWrongCategory is: the request is well-formed and the refusal is deliberate.
+// They stay three distinct messages because the remedies differ — two of them name
+// the other method, and the third says the film is already in the library
+// somewhere else.
+//
+// **The ErrAlreadyMatched sentence changed with T69 and the old one is worth not
+// restoring.** It read *"…so there is nothing to correct here"*, which was true
+// while a wrong match had no remedy and became a falsehood the moment one did. A
+// message that names the impossible is worse than a terse one, because somebody
+// reads it and stops looking.
 func (s *Server) failMatch(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		s.fail(w, http.StatusNotFound, err)
 	case errors.Is(err, store.ErrAlreadyMatched):
 		s.fail(w, http.StatusConflict,
-			errors.New("this film is already matched to a TMDB film, so there is nothing to correct here"))
+			errors.New("this film is already matched to a TMDB film; correcting that match is a PUT, not a POST"))
+	case errors.Is(err, store.ErrNotMatched):
+		s.fail(w, http.StatusConflict,
+			errors.New("this film has no TMDB match yet, so there is nothing to correct; matching it is a POST, not a PUT"))
 	case errors.Is(err, store.ErrTMDBIDTaken):
 		s.fail(w, http.StatusConflict,
 			errors.New("curator already has that film in the library under another folder"))

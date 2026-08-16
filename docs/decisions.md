@@ -1409,4 +1409,91 @@ not because a screen wants it.
 
 ---
 
+## D38 — A wrong match is corrected by overwriting it, never by clearing it first
+
+**Status:** decided, implemented in [T69](tasks/T69-correct-a-wrong-match.md) · **Closes:**
+[D36](#d36--a-row-tmdb-could-not-match-is-matched-by-hand-and-the-scan-never-takes-it-back), which
+named this case and declined it for want of a way in · **Builds on:**
+[D35](#d35--a-library-row-with-no-tmdb-id-is-addressed-by-curators-own-id-at-libraryfilmid), whose
+page already accepted a matched row on purpose
+
+[D36](#d36--a-row-tmdb-could-not-match-is-matched-by-hand-and-the-scan-never-takes-it-back) let a
+human match a row TMDB could not, and refused the row TMDB matched **wrongly** — *"a different
+feature and needs its own way in — a matched card routes to `/movie/` and never reaches this page —
+so building the server half now would ship a path with no caller."* This is that way in, and the
+write that follows it.
+
+### The way in is a link, because the page was already open to it
+
+A matched card still routes to `/movie/?id=<tmdb_id>` and an unmatched one still routes to
+`/library/film/?id=<movies.id>`. Neither changes. What was missing was an edge from the first back to
+the second, and it turned out to cost nothing: `/movie/` already holds `library.movie_id` — it is
+what the player is handed — and `/library/film/` already declined to refuse a matched row, its own
+comment calling that *"an invented rule"*. Two seams left open by earlier tasks met in the middle.
+
+`/movie/` is also where the doubt arises. Somebody clicks a card in their Library and gets a page
+about a film that is not the one in that folder; the poster, the title and *"curator already has this
+film"* all assert the match is right, so the one control that doubts it belongs beside them rather
+than a screen away.
+
+### The obvious implementation restores the very film being corrected away from
+
+Clear `tmdb_id`, `overview`, `poster_path` and `tmdb_year`, then reuse `MatchMovie`. It reuses code,
+it needs no new store method, and **it is broken**, because a NULL `tmdb_id` is not an inert state:
+
+```
+MoviesMissingMetadata  →  WHERE tmdb_id IS NULL
+```
+
+That is the scan's work list, and every row on it goes to `SetTMDBMetadata`, which overwrites
+unconditionally from a search on **the folder name** — the thing that produced the wrong match to
+begin with. A scan landing between the clear and the match therefore restores exactly the film being
+corrected away from, and reports success while doing it. `adoptTwin` is a second writer through the
+same hole: it sets `tmdb_id` on a row whose own is NULL, so a completing import can repoint a cleared
+row with no request at all.
+
+This needs no unlucky timing to hit. The clear and the match are two HTTP requests with a human
+between them, and a scan is one button on the Library screen.
+
+So `store.CorrectMatch` writes the four columns in one statement inside one transaction, and the row
+goes from the wrong id to the right one without ever being NULL. The cost is a second store method
+rather than a reuse; the window not existing is what is bought.
+
+### POST establishes, PUT replaces
+
+Two methods on one path, not two paths. The resource is the same — the row's match — and what
+differs is whether one is being established or replaced, which is precisely what an HTTP method
+carries. Go 1.22 routing dispatches on it, so the pair costs one line.
+
+A body flag (`{"replace": true}`) was the alternative and it loses on one property: a client that
+forgets the flag gets the destructive behaviour, whereas a client that sends the wrong method gets a
+409 that names the right one. Each method keeps a refusal that is the other's inverse —
+`ErrAlreadyMatched` and `ErrNotMatched` — so neither can quietly do the other's job.
+
+One refusal is deliberately **not** inverted. `CorrectMatch`'s uniqueness probe carries `AND id != ?`,
+so correcting a row onto the film it already holds is allowed and refreshes the overview, poster and
+`tmdb_year`. Without that clause a correction collides with itself, and the sentence handed back
+names a conflict with the user's own row.
+
+### What did not change, which is most of it
+
+`year` is still the folder's and `tmdb_year` still the film's
+([D37](#d37--year-is-the-folders-tmdbs-year-gets-a-column-of-its-own)) — a correction moves the
+second only. The title is still the folder's ([D9](#d9--query-tmdb-with-the-raw-folder-title)). The
+Library grid, `GET /api/movies` and both routing rules are untouched. `MatchMovie` still refuses a
+matched row, and `SetTMDBMetadata` is still the scan's unconditional write, because widening either
+for this feature is what T67 refused one layer down and the refusal still holds.
+
+**There is deliberately no unmatch.** Nothing in the product wants a row naming no film, and the one
+situation that produces one — the film leaving the disk — is
+[D33](#d33--a-folder-with-no-film-in-it-is-not-a-movie-the-row-goes-the-folder-stays)'s and already
+handled. Refusing to build it is also what keeps the paragraph above true.
+
+**One honest edge.** `states.tsx` titles every 409 *"Not finished yet"*, and 409 now covers five
+unrelated refusals. It stays latent because the picker renders the server's sentence inline rather
+than through `<Failure>` — but a screen that ever routes a 409 the other way surfaces it, and fixing
+the title is a task of its own.
+
+---
+
 D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.
