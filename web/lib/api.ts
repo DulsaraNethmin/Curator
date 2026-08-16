@@ -705,6 +705,24 @@ export const api = {
   deleteMovie: (id: number) =>
     request<Deletion>(`/api/movies/${id}`, { method: 'DELETE' }),
 
+  /**
+   * Point a library row at the film a human picked (T67).
+   *
+   * It takes curator's own movies.id and a TMDB id, and answers the same
+   * `MovieRow` the GET does — including a `jellyfin_url` that has changed from
+   * a search into a deep link, because the row now has an id to look up.
+   *
+   * Only the id travels: the server re-reads the film from TMDB rather than
+   * trusting a body, so overview and poster_path come from the same place the
+   * scan takes them from. 409 is the two refusals — the row is already matched,
+   * or another folder already holds that film.
+   */
+  matchMovie: (id: number, tmdbID: number) =>
+    request<MovieRow>(`/api/movies/${id}/match`, {
+      method: 'POST',
+      body: JSON.stringify({ tmdb_id: tmdbID }),
+    }),
+
   logs: (since = 0, level?: string, limit?: number) => {
     const query = new URLSearchParams({ since: String(since) });
     if (level) query.set('level', level);

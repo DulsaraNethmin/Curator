@@ -1260,4 +1260,84 @@ in has to exist first. When it is built it takes a number of its own and cites t
 
 ---
 
+## D36 — A row TMDB could not match is matched by hand, and the scan never takes it back
+
+**Status:** decided, implemented in [T67](tasks/T67-manual-match.md) · **Follows from:**
+[D35](#d35--a-library-row-with-no-tmdb-id-is-addressed-by-curators-own-id-at-libraryfilmid), which
+reserved this number in its closing line · **Narrows:**
+[D9](#d9--query-tmdb-with-the-raw-folder-title)'s "never guess" to "never guess, and let a human say"
+
+[D35](#d35--a-library-row-with-no-tmdb-id-is-addressed-by-curators-own-id-at-libraryfilmid) gave a
+row with no `tmdb_id` a page, and closed by naming what it deliberately did not do: *"Manual
+matching … is not rejected, it is not this … When it is built it takes a number of its own and cites
+this one."* This is that number.
+
+`POST /api/movies/{id}/match` takes curator's own `movies.id` and a TMDB id, and writes `tmdb_id`,
+`overview` and `poster_path`. The picker lives on `/library/film/`, seeded from the title and year
+the folder already carries — the strings the scan searched with and failed on — rather than a blank
+box somebody retypes.
+
+**This does not contradict [D9](#d9--query-tmdb-with-the-raw-folder-title), it completes it.** D9
+refuses to *guess*, because an unconstrained query for a bare title returns a confident wrong answer.
+A human choosing from a grid of posters is not a guess, and
+[D20](#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it) already settled that the person
+looking at the posters is the one who can tell Avengers: Endgame from Avengers: Doomsday. What was
+missing was somewhere to say so.
+
+### It refuses rather than overwrites, and the precedent is already in the codebase
+
+A row that already has a `tmdb_id` is refused with a 409, not corrected.
+[`adoptTwin`](../internal/store/imports.go) decided this for the same column: *"the twin is already
+matched. A match the scanner established from the folder title is not worth overwriting with one a
+client sent."* Correcting a **wrong** match is a different feature and needs its own way in — a
+matched card routes to `/movie/` and never reaches this page — so building the server half now would
+ship a path with no caller.
+
+`tmdb_id` is UNIQUE, so a second refusal sits beside it: another row already holding that id is also
+a 409. Both are decided by `SELECT` inside the transaction rather than by reading the driver's
+constraint message back, because a substring match on a `modernc.org/sqlite` string is a guard that
+stops working on a driver upgrade without failing a test.
+
+### The population is smaller than it sounds, and saying so is the point
+
+Manual matching cannot help the keyless install at all — there is no key to search with, which is
+why those rows are unmatched, and D35 already measured that they heal on a **restart**. It cannot
+help a film TMDB has never indexed either. What is left is one population: a key is in force and the
+folder name did not resolve. That is small, and it is permanent — no rescan will ever change it,
+because the match pass only ever reads `WHERE tmdb_id IS NULL` and a folder name that will never
+resolve is retried for ever.
+
+So the picker is drawn only where a key is **in force**, and `integrations[].configured` is what
+answers that rather than the settings row. Measured on a running instance: after `PUT /api/settings`
+stores a key, `settings[].configured` is `true` while `integrations[].configured` is still `false`
+and the endpoint still answers `503` — the TMDB client is built at startup, which is D35's
+load-bearing restart seen from a third angle. Gating on the settings row would draw a button that
+fails on every click, and would tell somebody their folder name was rejected when no question has
+been put yet.
+
+### What survives a rescan, and the one thing that does not
+
+A manual match is permanent, by three constructions rather than by a promise:
+`UpsertMovieByPath`'s `SET` list does not include `tmdb_id`, `overview` or `poster_path`;
+`store.ScannedMovie` has no field for them; and the scan's match pass reads only
+`WHERE tmdb_id IS NULL`. The only way to lose one is
+[D33](#d33--a-folder-with-no-film-in-it-is-not-a-movie-the-row-goes-the-folder-stays) removing the
+row when the film leaves the disk.
+
+**`year` is the exception, and it was built the other way first.** A hand-matched row is the only way
+to produce a row whose year disagrees with TMDB's, and that disagreement costs the Jellyfin deep
+link, because [D32](#d32--the-jellyfin-link-is-keyed-on-the-tmdb-id-not-on-the-path) narrows its
+lookup with `years=` on the stated premise that *"both sides take the year from TMDB"*. Writing
+TMDB's year fixes the link; it also reverts, because `year` **is** in the scan's `SET` list. Measured
+end to end: a 2019 folder matched to a 2008 film answered `2008` and a deep link, then `2019` and a
+search one rescan later, while `overview` and `poster_path` held. A value that reverts on the next
+scan is worse than one never written, so the year stays the folder's and the link takes D32's search
+fallback, which always lands somewhere useful and never 404s.
+
+Making it stick means moving `year` out of the scan's authority for matched rows. That is a change to
+the division of authority `UpsertMovieByPath` documents — the scan owns title, year, media_type,
+status, quality and size_bytes — and it is a decision of its own rather than a rider on this one.
+
+---
+
 D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.

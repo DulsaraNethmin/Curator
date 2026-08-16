@@ -12,6 +12,7 @@ import {
 } from '@/lib/api';
 import { Empty, Failure } from '@/components/states';
 import { Player } from '@/components/player';
+import { MatchPicker } from '@/components/match-picker';
 
 /**
  * The film's page for a row curator has and TMDB does not: /library/film/?id=7.
@@ -56,6 +57,7 @@ function LibraryFilm() {
   // there is one code path to the row and it keeps the cancellation the effect
   // already has.
   const [attempt, setAttempt] = useState(0);
+  const [matching, setMatching] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -64,6 +66,7 @@ function LibraryFilm() {
     setMovie(null);
     setError(null);
     setWatching(false);
+    setMatching(false);
 
     api
       .movie(id)
@@ -115,7 +118,22 @@ function LibraryFilm() {
   // Only an imported row has a library_path, which is also why this can never
   // reach a partial download. A wanted row is in the database and not on disk.
   const onDisk = movie.library_path !== null;
-  const tmdb = settings?.settings.find((row) => row.key === 'tmdb_api_key');
+
+  // **`integrations`, not `settings`, and the difference is load-bearing.** A key
+  // saved on the Settings screen makes the settings row `configured` immediately,
+  // while the process still has no TMDB client at all — it is built at startup, so
+  // the key does nothing until a restart (D35, and T50's wizard says the same).
+  // `integrations[].configured` is the RUNNING value, so it is the only one that
+  // answers "can curator ask TMDB anything right now".
+  //
+  // Reading the settings row here instead would go wrong in both directions at
+  // once: it would offer a matcher that answers 503, and it would tell somebody
+  // their folder name was rejected when no question has been put yet — which is
+  // the small lie this page was built to avoid.
+  const keyInForce = settings?.integrations.find((row) => row.name === 'tmdb')?.configured ?? false;
+  // undefined until /api/settings answers. The picker must not flash into
+  // existence and out again, and the sentence below must not guess either.
+  const knowKeyState = settings !== null;
 
   return (
     <>
@@ -139,19 +157,19 @@ function LibraryFilm() {
           A keyless install has not asked TMDB anything — saying the match
           failed would blame the folder name for the absence of a key, and the
           remedy is completely different. */}
-      {movie.tmdb_id === null && (
+      {movie.tmdb_id === null && knowKeyState && (
         <p className="lede">
-          {tmdb && !tmdb.configured ? (
+          {!keyInForce ? (
             <>
-              curator has no TMDB key, so it has never asked what this film is. Add one on the{' '}
-              <Link href="/settings/">Settings screen</Link>, restart curator, and scan again — every
-              scan retries the rows that still have no match. The film plays either way.
+              curator has no TMDB key in force, so it has never asked what this film is. Add one on
+              the <Link href="/settings/">Settings screen</Link>, restart curator, and scan again —
+              every scan retries the rows that still have no match. The film plays either way.
             </>
           ) : (
             <>
               TMDB had no match for this folder name, so there is no poster, no overview and no
-              catalogue page — the row is kept and shown rather than guessed at. The film plays
-              either way.
+              catalogue page — the row is kept and shown rather than guessed at. You can point it at
+              the right film below, and the film plays either way.
             </>
           )}
         </p>
@@ -181,7 +199,28 @@ function LibraryFilm() {
             Poster, cast and releases →
           </Link>
         )}
+
+        {/* Only where there is a key in force to search with. A keyless install
+            is the population this cannot help at all — there is no key to ask —
+            and the sentence above sends it to Settings instead (T67, D35). */}
+        {movie.tmdb_id === null && keyInForce && !matching && (
+          <button onClick={() => setMatching(true)}>Find the right film</button>
+        )}
       </div>
+
+      {matching && movie.tmdb_id === null && (
+        <MatchPicker
+          movie={movie}
+          onCancel={() => setMatching(false)}
+          onMatched={(next) => {
+            // The API answers the same body the GET does, so the row is simply
+            // replaced — no refetch, and jellyfin_url arrives already changed
+            // from a search into a deep link.
+            setMovie(next);
+            setMatching(false);
+          }}
+        />
+      )}
 
       {/* The player takes movies.id, which is the id this page is addressed by
           — no translation, and nothing to get wrong. It mounts on the button
