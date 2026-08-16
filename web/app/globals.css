@@ -301,10 +301,12 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   gap: 1rem;
   grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
 }
-/* A card is an <a> wherever there is a film page to open — the TMDB grids, and
-   the Library screen since T57 — and a <div> only for a Library row TMDB never
-   matched, which has no /movie/?id= to go to (D6, D21). The hover rules below
-   are keyed on that difference and need no other switch. */
+/* A card is always an <a> now: since T61 every Library row has a page, an
+   unmatched one at /library/film/?id= addressed by curator's own id (D35) and a
+   matched one at /movie/?id= addressed by TMDB's (D21). The `a.movie` selectors
+   below were written when a card could be a <div> and are kept as they are —
+   they still describe the element the hover applies to, and narrowing them to
+   `.movie` would be a change with no visible effect. */
 .movie { display: block; text-decoration: none; color: inherit; }
 a.movie:hover img, a.movie:hover .noposter { border-color: var(--muted); }
 a.movie:hover .title { color: var(--accent); }

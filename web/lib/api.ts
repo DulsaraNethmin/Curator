@@ -29,6 +29,24 @@ export type Movie = {
   imported_at: string | null;
 };
 
+/**
+ * MovieRow is one library row as `GET /api/movies/{id}` answers it: everything
+ * in `Movie`, plus the one fact that is not in the database.
+ *
+ * The list endpoint answers `Movie` and not this — a Jellyfin lookup costs a
+ * request per film and the Library screen asks for every row at once.
+ */
+export type MovieRow = Movie & {
+  /**
+   * Where to open this film in Jellyfin, absent when there is no link to draw —
+   * no Jellyfin configured, or a film that is not on disk. Exactly the rule
+   * `MovieDetails.jellyfin_url` follows, and for a row TMDB never matched it is
+   * always a Jellyfin *search* (D32's fallback), because there is no id to look
+   * the film up by.
+   */
+  jellyfin_url?: string;
+};
+
 export type DownloadState =
   | 'queued'
   | 'downloading'
@@ -638,6 +656,12 @@ const authLoginPath = '/api/auth/login';
 
 export const api = {
   movies: () => request<Movie[]>('/api/movies'),
+
+  // Addressed by curator's own movies.id, which every library row has and a
+  // TMDB match is not required for — that is the whole point of the route
+  // (D35). Not to be confused with tmdbMovie below, which takes a TMDB id.
+  movie: (id: number) => request<MovieRow>(`/api/movies/${id}`),
+
   scan: () => request<ScanResult>('/api/scan', { method: 'POST' }),
 
   // The release-name search. It asks three indexers what files exist, which is

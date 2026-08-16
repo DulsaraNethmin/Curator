@@ -441,7 +441,30 @@ func (s *Server) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.respond(w, http.StatusOK, movie)
+
+	body := movieBody{Movie: movie}
+	body.JellyfinURL = s.jellyfinLinkFor(
+		r.Context(), movie.TMDBID, movie.Year, movie.Title, movie.Status == store.StatusImported)
+	s.respond(w, http.StatusOK, body)
+}
+
+// movieBody is a library row plus the one fact about it that is not in the
+// database.
+//
+// **store.Movie is embedded, so the JSON keeps exactly the shape this endpoint
+// has always had** and gains one optional key. encoding/json flattens an
+// embedded struct, so every existing field stays at the top level and no client
+// that already reads this route has to change.
+//
+// The LIST endpoint deliberately keeps `store.Movie` itself. jellyfin_url costs
+// a lookup per film against a service that may be switched off, and a library
+// screen asks for every row at once — the movie detail body has always paid
+// that cost for one film at a time and this route now matches it.
+type movieBody struct {
+	store.Movie
+	// Absent rather than empty when there is no link to draw, exactly as on the
+	// catalogue page: no Jellyfin configured, or a film that is not on disk.
+	JellyfinURL string `json:"jellyfin_url,omitempty"`
 }
 
 func (s *Server) respond(w http.ResponseWriter, status int, body any) {

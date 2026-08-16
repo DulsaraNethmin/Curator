@@ -274,18 +274,22 @@ function Card({ movie, onDelete }: { movie: Movie; onDelete: () => void }) {
     // is invalid HTML and double-fires, and Delete is the one destructive
     // control on this screen. So Delete is the anchor's SIBLING.
     <div className="movie-cell">
-      {movie.tmdb_id === null ? (
-        // No page to open. /movie/ is addressed by the TMDB id (D21) and D6
-        // keeps that id null rather than guessing one, so this card is
-        // deliberately not a link — the `unmatched` badge above already says
-        // why, and a second addressing mode for these rows would be worse than
-        // a card that does not link.
-        <div className="movie">{body}</div>
-      ) : (
-        <Link className="movie" href={`/movie/?id=${movie.tmdb_id}`}>
-          {body}
-        </Link>
-      )}
+      {/* Two addressing modes, and which one a card uses is decided by whether
+          the film HAS a catalogue entry rather than by preference. A matched
+          row opens its TMDB page, which is the richer one and is addressed by
+          the TMDB id (D21). An unmatched row opens a page about the ROW,
+          addressed by curator's own movies.id (D35) — it has no catalogue entry
+          to open and it is still a film that plays. */}
+      <Link
+        className="movie"
+        href={
+          movie.tmdb_id === null
+            ? `/library/film/?id=${movie.id}`
+            : `/movie/?id=${movie.tmdb_id}`
+        }
+      >
+        {body}
+      </Link>
       <button className="small" onClick={onDelete}>
         Delete
       </button>
