@@ -31,7 +31,14 @@ func (s *Store) migrate(ctx context.Context) error {
 	// stopped at a log line because the column was phase 7's; this is the
 	// column, and it is deliberately the first passenger of the mechanism above
 	// — nullable, unindexed, and read only with the row it belongs to.
-	return s.addColumn(ctx, "downloads", "reason", "TEXT")
+	if err := s.addColumn(ctx, "downloads", "reason", "TEXT"); err != nil {
+		return err
+	}
+	// T68. TMDB's release year for a row a human matched by hand, which is the
+	// only kind of row whose own `year` — the folder's — can disagree with it.
+	// Nullable on purpose: NULL means the two agree, which is every row the scan
+	// matched, so this backfills to exactly the right answer with no backfill.
+	return s.addColumn(ctx, "movies", "tmdb_year", "INTEGER")
 }
 
 // addColumn adds a column if the table does not already have one by that name.

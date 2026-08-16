@@ -1009,7 +1009,10 @@ func (s *Server) checkFilm(ctx context.Context) (tmdbID, year int, title string)
 		if movie.TMDBID == nil {
 			continue
 		}
-		return int(*movie.TMDBID), movie.Year, movie.Title
+		// MatchYear, not Year: a hand-matched row's folder year is not the one
+		// Jellyfin holds, and proving a good key against it would report the key
+		// as broken (D37).
+		return int(*movie.TMDBID), movie.MatchYear(), movie.Title
 	}
 	return 0, 0, ""
 }

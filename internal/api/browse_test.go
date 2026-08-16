@@ -583,3 +583,40 @@ func TestAMatchedRowStillGetsTheDeepLink(t *testing.T) {
 		t.Errorf("looked up tmdb %d year %d, want 299534 / 2019", media.gotTMDBID, media.gotYear)
 	}
 }
+
+// T68, and the whole reason the column exists: a row matched by hand is looked
+// up by TMDB's year, not by the folder's.
+//
+// D32 narrows the lookup with `years=` because "both sides take the year from
+// TMDB", and a hand-matched row is the only row that breaks that premise — the
+// folder says one year and Jellyfin, which took its ProductionYear from TMDB,
+// says another. Sent the folder's year the query narrows to a year the film is
+// not in, Jellyfin answers nothing, and a perfectly good match silently
+// degrades to a search link. Measured on the real 10.10.7 in T67: a 2011 folder
+// matched to Jaws (1975) answered the search link.
+func TestAHandMatchedRowIsLookedUpByTMDBsYear(t *testing.T) {
+	st := newFakeStore()
+	// The folder says 2011. Jaws is 1975, and Jellyfin holds it under 1975.
+	row := st.seedOnDisk("/library/Some Home Video (2011)", "Some Home Video", 2011)
+	tmdbID := int64(578)
+	row.TMDBID = &tmdbID
+	row.TMDBYear = ptrInt(1975)
+	media := &fakeMediaServer{item: jellyfin.Item{ID: "jaws", ServerID: "srv"}}
+
+	var body movieBody
+	getJSON(t, movieRowServer(t, st, media, "http://192.168.1.26:8096"),
+		fmt.Sprintf("/api/movies/%d", row.ID), &body)
+
+	if media.gotYear != 1975 {
+		t.Errorf("looked up year %d, want TMDB's 1975 — the folder's 2011 finds nothing", media.gotYear)
+	}
+	const want = "http://192.168.1.26:8096/web/index.html#/details?id=jaws&serverId=srv"
+	if body.JellyfinURL != want {
+		t.Errorf("jellyfin_url = %q, want the deep link %q", body.JellyfinURL, want)
+	}
+	// The row still reports the folder's year, because that is still what the
+	// folder is called and what the importer would write.
+	if body.Year != 2011 {
+		t.Errorf("year = %d, want the folder's 2011", body.Year)
+	}
+}

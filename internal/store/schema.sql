@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS movies (
   id           INTEGER PRIMARY KEY,
   tmdb_id      INTEGER UNIQUE,              -- nullable: see decisions.md D6
   title        TEXT NOT NULL,
-  year         INTEGER NOT NULL,
+  year         INTEGER NOT NULL,             -- the FOLDER's year: see store.Movie
+  tmdb_year    INTEGER,                      -- TMDB's, only when it differs (T68)
   media_type   TEXT NOT NULL DEFAULT 'movie',
   overview     TEXT,
   poster_path  TEXT,
