@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/DulsaraNethmin/curator/internal/download"
@@ -109,5 +110,84 @@ func TestDeleteRouteDoesNotShadowGet(t *testing.T) {
 	}
 	if fake.deletes != 0 {
 		t.Error("a GET reached the delete handler")
+	}
+}
+
+// The refusal is a sentence somebody wrote, and the chain that produced it is
+// not on the wire (T71, D40).
+//
+// The string this replaced was three packages of prefixes ending in the info
+// hash twice in two different cases — "delete movie 7: removing torrent
+// 2B6A…: the torrent client: qbit torrents/delete: 2b6a… is in category
+// "radarr", not "curator": the torrent is not in the required category" — so
+// what is asserted is mostly an ABSENCE. Every one of these substrings was in
+// the body before and none of them is a thing a reader can act on.
+func TestDeleteRefusalIsWrittenForAHuman(t *testing.T) {
+	leaks := []string{
+		"delete movie", "removing torrent", "the torrent client",
+		"qbit", "engine:", "torrents/delete", deleteHash, "required category",
+	}
+
+	// With the category: the one word a reader can act on survives.
+	fake := &fakeDispatcher{deleteErr: fmt.Errorf("delete movie 7: removing torrent %s: %w: %w",
+		deleteHash, download.ErrClient, fmt.Errorf("qbit torrents/delete: %w", torrent.WrongCategory{
+			Hash: deleteHash, Actual: "radarr", Required: "curator",
+		}))}
+	rec := deleteMovie(t, deleteServer(t, fake), "/api/movies/7")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (%s)", rec.Code, rec.Body)
+	}
+	got := errorBody(t, rec)
+	if !strings.Contains(got, `"radarr"`) {
+		t.Errorf("body does not name the owning category, which is the only actionable word in it: %q", got)
+	}
+	// Nothing was deleted, and the sentence has to say so — the sentinel alone
+	// reads like a partial delete.
+	if !strings.Contains(got, "still in your library") {
+		t.Errorf("body does not say the film survived: %q", got)
+	}
+	for _, leak := range leaks {
+		if strings.Contains(got, leak) {
+			t.Errorf("body leaks %q from the error chain: %q", leak, got)
+		}
+	}
+
+	// Without it: a bare wrapped sentinel is what six other callers produce and
+	// what every pre-T71 test constructs, and the sentence must still be true.
+	fake = &fakeDispatcher{deleteErr: fmt.Errorf("delete: %w", torrent.ErrWrongCategory)}
+	rec = deleteMovie(t, deleteServer(t, fake), "/api/movies/7")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("fallback: status = %d, want 409 (%s)", rec.Code, rec.Body)
+	}
+	got = errorBody(t, rec)
+	if !strings.Contains(got, "another application") || !strings.Contains(got, "still in your library") {
+		t.Errorf("fallback sentence is not the written one: %q", got)
+	}
+	for _, leak := range leaks {
+		if strings.Contains(got, leak) {
+			t.Errorf("fallback body leaks %q: %q", leak, got)
+		}
+	}
+}
+
+// Both backends must produce the same sentence. Before T71 they wrapped the
+// sentinel with their own prefixes — "qbit torrents/delete: " and "engine: " —
+// so which words a user was shown depended on TORRENT_BACKEND.
+func TestDeleteRefusalReadsTheSameOnBothBackends(t *testing.T) {
+	sentence := func(prefix string) string {
+		fake := &fakeDispatcher{deleteErr: fmt.Errorf("%s: %w", prefix, torrent.WrongCategory{
+			Hash: deleteHash, Actual: "radarr", Required: "curator",
+		})}
+		rec := deleteMovie(t, deleteServer(t, fake), "/api/movies/7")
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s: status = %d, want 409", prefix, rec.Code)
+		}
+		return errorBody(t, rec)
+	}
+
+	if qbit, engine := sentence("qbit torrents/delete"), sentence("engine"); qbit != engine {
+		t.Errorf("the backend changes what the user reads:\n qbit:   %q\n engine: %q", qbit, engine)
 	}
 }

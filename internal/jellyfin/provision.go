@@ -266,7 +266,9 @@ func (p *Provisioner) requireUnconfigured(ctx context.Context) error {
 		return err
 	}
 	if status.WizardCompleted {
-		return fmt.Errorf("jellyfin provision: jellyfin %s at %s is already set up: %w",
+		// No "is already set up" here: ErrAlreadyConfigured says exactly that,
+		// and the two together stated one fact twice in one sentence.
+		return fmt.Errorf("jellyfin provision: jellyfin %s at %s: %w",
 			status.Version, p.baseURL, ErrAlreadyConfigured)
 	}
 	return nil

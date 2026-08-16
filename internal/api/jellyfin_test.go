@@ -1080,3 +1080,65 @@ func TestProvisionNeverAnswers401(t *testing.T) {
 		}
 	}
 }
+
+// Provisioning refusals answer with a sentence, not with the chain that reached
+// them (T71, D40).
+//
+// The fakes elsewhere in this file fail with a bare sentinel, which is exactly
+// the case that never leaked. These wrap it the way internal/jellyfin actually
+// does, so the prefixes are present in the error the handler is handed and the
+// assertion is that they do not survive into the body.
+func TestProvisionFailuresAreWrittenForAHuman(t *testing.T) {
+	t.Run("already set up", func(t *testing.T) {
+		p := &fakeProvisioner{key: "k", failAt: "Configure", failWith: fmt.Errorf(
+			"jellyfin provision: jellyfin 10.10.7 at http://jellyfin:8096: %w",
+			jellyfin.ErrAlreadyConfigured)}
+		h, _ := setupServer(t, p, nil)
+
+		rec := postProvision(t, h, `{"username":"a","password":"b"}`)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body)
+		}
+		body := failureBody(t, rec)
+		if body.Error != detailAlreadyConfigured {
+			t.Errorf("error = %q, want the probe's own sentence for the same condition", body.Error)
+		}
+		// It used to say it twice — "is already set up" wrapping a sentinel
+		// reading "has already completed its startup wizard".
+		if strings.Count(strings.ToLower(body.Error), "already") != 1 {
+			t.Errorf("the fact is stated more than once: %q", body.Error)
+		}
+		if strings.Contains(body.Error, "jellyfin provision") {
+			t.Errorf("error leaks the package prefix: %q", body.Error)
+		}
+		if !body.Adopt {
+			t.Error("adopt = false: the flag is what the screen branches on, not the prose")
+		}
+	})
+
+	t.Run("jellyfin refused the account curator made", func(t *testing.T) {
+		p := &fakeProvisioner{key: "k", failAt: "Authenticate", failWith: fmt.Errorf(
+			"jellyfin provision: /Users/AuthenticateByName: %w", jellyfin.ErrBadCredentials)}
+		h, _ := setupServer(t, p, nil)
+
+		rec := postProvision(t, h, `{"username":"a","password":"b"}`)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422: %s", rec.Code, rec.Body)
+		}
+		body := failureBody(t, rec)
+		// Assigned, not appended. The `+` that used to build this put an
+		// upstream HTTP path after a sentence that had already said it better.
+		for _, leak := range []string{"AuthenticateByName", "jellyfin provision", "/Users/"} {
+			if strings.Contains(body.Error, leak) {
+				t.Errorf("error leaks %q: %q", leak, body.Error)
+			}
+		}
+		if !strings.Contains(body.Error, "curator had just created") {
+			t.Errorf("error no longer says whose account it was: %q", body.Error)
+		}
+		// The step survives — in its own field, which is where it belongs.
+		if body.Step != "signing in" {
+			t.Errorf("step = %q, want %q", body.Step, "signing in")
+		}
+	})
+}

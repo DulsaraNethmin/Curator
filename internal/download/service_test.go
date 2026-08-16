@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sort"
@@ -512,5 +513,28 @@ func TestDispatchProceedsWhenTheGuardPasses(t *testing.T) {
 	}
 	if asked != 1 {
 		t.Errorf("the guard was asked %d times, want exactly 1", asked)
+	}
+}
+
+// NotCompleted must answer errors.Is(err, ErrNotCompleted) through Import's own
+// wrap, or the API answers 500 for a download that has simply not finished.
+func TestNotCompletedIsStillTheSentinel(t *testing.T) {
+	err := fmt.Errorf("import ABC: %w", NotCompleted{State: store.DownloadStalled})
+	if !errors.Is(err, ErrNotCompleted) {
+		t.Fatal("errors.Is lost the sentinel, and the API answers 500 instead of 409")
+	}
+
+	var pending NotCompleted
+	if !errors.As(err, &pending) || pending.State != store.DownloadStalled {
+		t.Errorf("errors.As recovered %+v, want the state back", pending)
+	}
+
+	// "stalled" and "downloading" are different things to be told to wait for,
+	// which is the whole reason the state is carried rather than dropped.
+	if !strings.Contains(err.Error(), store.DownloadStalled) {
+		t.Errorf("the state is not in the message: %q", err)
+	}
+	if strings.Contains(NotCompleted{}.Error(), ErrNotCompleted.Error()) {
+		t.Error("Error() restates the sentinel it unwraps to")
 	}
 }

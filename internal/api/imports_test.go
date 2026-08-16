@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,5 +143,97 @@ func TestImportRouteDoesNotShadowDispatch(t *testing.T) {
 	}
 	if fake.dispatches != 1 {
 		t.Errorf("importing dispatched %d times, want the one from above", fake.dispatches)
+	}
+}
+
+// Every import refusal is a sentence somebody wrote, and the chain that
+// produced it is not on the wire (T71, D40).
+//
+// The absences matter more than the presences. `import <hash>: ` came from
+// internal/importer/importer.go:95 and duplicates a "hash" attribute the log
+// line already carries; `find feature in <path>` and `destination folder for`
+// name a path on curator's own download disk that no reader can act on.
+func TestImportRefusalsAreWrittenForAHuman(t *testing.T) {
+	leaks := []string{
+		"import " + importHash, "find feature in", "destination folder",
+		"destination file", importHash, "cannot be a folder name: ",
+	}
+
+	cases := []struct {
+		name   string
+		err    error
+		want   int
+		expect []string
+	}{{
+		name: "still downloading, with the state",
+		err: fmt.Errorf("import %s: %w", importHash,
+			download.NotCompleted{State: "stalled"}),
+		want:   http.StatusConflict,
+		expect: []string{`"stalled"`, "has not finished"},
+	}, {
+		// The state is what a bare sentinel cannot carry, so the sentence drops
+		// the clause rather than the truth.
+		name:   "still downloading, sentinel only",
+		err:    fmt.Errorf("import %s: %w", importHash, download.ErrNotCompleted),
+		want:   http.StatusConflict,
+		expect: []string{"has not finished"},
+	}, {
+		name: "the title cannot be a folder, with the reason",
+		err: fmt.Errorf("import %s: %w", importHash,
+			library.BadTitle{Title: "Dune", Reason: "it is empty"}),
+		want:   http.StatusUnprocessableEntity,
+		expect: []string{`"Dune"`, "it is empty", "nowhere to put"},
+	}, {
+		name:   "the title cannot be a folder, sentinel only",
+		err:    fmt.Errorf("import %s: %w", importHash, library.ErrBadTitle),
+		want:   http.StatusUnprocessableEntity,
+		expect: []string{"nowhere to put"},
+	}, {
+		name:   "nothing in the download is a film",
+		err:    fmt.Errorf("import %s: find feature in /downloads/x: %w", importHash, library.ErrNoVideo),
+		want:   http.StatusUnprocessableEntity,
+		expect: []string{"no video file", "nothing to import"},
+	}}
+
+	for _, c := range cases {
+		fake := &fakeDispatcher{importErr: c.err}
+		rec := post(t, newDownloadServer(t, fake), "/api/downloads/"+importHash+"/import", "")
+
+		if rec.Code != c.want {
+			t.Errorf("%s: status = %d, want %d (%s)", c.name, rec.Code, c.want, rec.Body)
+			continue
+		}
+		got := errorBody(t, rec)
+		for _, want := range c.expect {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: body does not contain %q: %q", c.name, want, got)
+			}
+		}
+		for _, leak := range leaks {
+			if strings.Contains(got, leak) {
+				t.Errorf("%s: body leaks %q from the error chain: %q", c.name, leak, got)
+			}
+		}
+	}
+}
+
+// ErrNoVideo and ErrBadTitle share a status and used to share a sentence. That
+// is the 422 half of D39's finding — "Nothing to import" was false for a film
+// that has something to import and a title that cannot be a folder name — and
+// since the status cannot separate them, the two sentences must.
+func TestTheTwo422sDoNotSayTheSameThing(t *testing.T) {
+	sentence := func(err error) string {
+		fake := &fakeDispatcher{importErr: fmt.Errorf("import %s: %w", importHash, err)}
+		rec := post(t, newDownloadServer(t, fake), "/api/downloads/"+importHash+"/import", "")
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d, want 422 (%s)", rec.Code, rec.Body)
+		}
+		return errorBody(t, rec)
+	}
+
+	noVideo := sentence(library.ErrNoVideo)
+	badTitle := sentence(library.BadTitle{Title: "Dune", Reason: "it is empty"})
+	if noVideo == badTitle {
+		t.Errorf("both 422s say %q — one of them is false", noVideo)
 	}
 }

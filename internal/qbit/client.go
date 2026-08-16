@@ -446,8 +446,9 @@ func (c *Client) DeleteTorrent(ctx context.Context, hash, requireCategory string
 		return nil // already gone; nothing to do and nothing to report
 	}
 	if requireCategory != "" && !strings.EqualFold(existing.Category, requireCategory) {
-		return fmt.Errorf("qbit torrents/delete: %s is in category %q, not %q: %w",
-			wire, existing.Category, requireCategory, torrent.ErrWrongCategory)
+		return fmt.Errorf("qbit torrents/delete: %w", torrent.WrongCategory{
+			Hash: wire, Actual: existing.Category, Required: requireCategory,
+		})
 	}
 
 	form := url.Values{}

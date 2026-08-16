@@ -97,6 +97,21 @@ var ErrUnprotected = errors.New("refusing to dispatch: the download would not be
 // well-formed and will be fine later — rather than 500 or a silent no-op.
 var ErrNotCompleted = errors.New("the torrent has not finished downloading")
 
+// NotCompleted is ErrNotCompleted carrying the state, because "stalled" and
+// "downloading" are different situations to be in and the difference is the
+// whole value of that answer.
+//
+// State is curator's word, not the backend's — the neutral type is what stops
+// qBittorrent's 23 states crossing the interface, and this reports what crossed.
+// Error() leaves ErrNotCompleted's text to Unwrap rather than restating it.
+type NotCompleted struct{ State string }
+
+func (e NotCompleted) Error() string {
+	return fmt.Sprintf("the torrent client reports it as %q", e.State)
+}
+
+func (e NotCompleted) Unwrap() error { return ErrNotCompleted }
+
 // ManualImporter is phase 4's hardlink step as a synchronous caller uses it.
 //
 // It is a different, narrower interface from the Poller's Importer on purpose.
@@ -340,8 +355,7 @@ func (s *Service) Import(ctx context.Context, hash string) (store.Movie, error) 
 	// neutral type cost, and a seventh field to carry it back would be paying
 	// for it in the wrong currency.
 	if t.State != store.DownloadCompleted {
-		return store.Movie{}, fmt.Errorf(
-			"import %s: %w — the torrent client reports it as %q", hash, ErrNotCompleted, t.State)
+		return store.Movie{}, fmt.Errorf("import %s: %w", hash, NotCompleted{State: t.State})
 	}
 
 	return s.importer.Import(ctx, *t, row)

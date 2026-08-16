@@ -1582,4 +1582,87 @@ three sentences is a server task with its own measurements.
 
 ---
 
+## D40 — A refusal's sentence is written at the boundary that answers it
+
+**Status:** decided, implemented in [T71](tasks/T71-a-sentence-written-for-a-human.md) · **Completes:**
+[D39](#d39--a-failure-title-must-be-true-of-every-situation-its-status-covers-or-there-is-no-title),
+whose closing paragraph deferred this and counted it at three · **Applies to** `internal/api`'s five
+classifiers and the three typed errors they read; no envelope changed and no web file changed
+
+D39 removed the browser's false title on the argument that *"the sentence the handler already wrote
+carries the banner"*. For five of the thirteen 409 and 422 answers there was no such sentence. There
+was a `fmt.Errorf` chain, and `internal/api/api.go:508` — `map[string]string{"error": err.Error()}` —
+put the whole flattened thing on the wire.
+
+### It was five, not three, and the two extra were at 422
+
+D39 named three, all at 409. Counting every distinct sentence and reconstructing each from its format
+strings gives 10 at 409 and 3 at 422, of which **8 were written for a human and 5 were chains**. The
+two nobody had counted are both in `provisionFailure`, and one of them is a single character:
+`body.Error = "…" + body.Error` appended the raw chain to a sentence that had already said it better,
+while `adoptFailure` did the same job for the same sentinel with `=` a few hundred lines away.
+
+**That is the third time a count in this area has been wrong** — five in `api.ts`, ten in D39, thirteen
+here — and the reason is the same each time: nothing derives it, so it is re-counted by hand or not at
+all.
+
+### The design question D39 left had a third answer, and both its horns were false
+
+D39 framed the choice as a field on the envelope versus handlers that stop wrapping and cost the log
+its detail. Measured:
+
+- **Nothing logs these.** `internal/api/api.go:505` gates the only log on `status >= 500`. Every 409
+  and every 422 curator answers is written to the client and never written to a log at all. There was
+  no log line to protect — the response was the verbose channel and the log was the silent one.
+- **The one chain that is logged already carries its prefix as a field.**
+  `internal/importer/importer.go:302` logs `"hash", hash` as an attribute, so `importer.go:95`'s
+  `import %s: ` duplicated it.
+
+So neither horn was paid for. The answer is the one `failMatch` has used since T67 and
+`internal/api/imports.go:47-49` uses once for `store.ErrNotFound`: **the handler that identified the
+refusal writes the sentence.** It already knows which refusal it is — that is what its `errors.Is`
+switch is — and it is the last place that knows both the refusal and the reader.
+
+**No package stopped wrapping.** `CLAUDE.md`'s `fmt.Errorf("scan %s: %w", path, err)` convention is
+untouched and every chain is intact. What changed is that `err.Error()` is no longer what the browser
+reads.
+
+### Where a fact would be lost, it travels in a typed error
+
+Three sentences needed a value that only exists deep in the chain, so three types now carry one each —
+`torrent.WrongCategory`, `download.NotCompleted`, `library.BadTitle` — each `Unwrap`ing to the
+sentinel that already existed, so every `errors.Is` in the repo and in the tests keeps answering. That
+is `stepError`'s shape (a field recovered with `errors.As`) with `unreachable`'s discipline (the
+sentinel is reached through `Unwrap` and its text never prints).
+
+`torrent.WrongCategory` also closed a defect nobody had written down: `internal/qbit` wrapped the
+sentinel with `qbit torrents/delete: ` and `internal/engine` with `engine: `, so **which words a user
+was shown depended on `TORRENT_BACKEND`**. Both construct the type now and the sentence is one
+sentence.
+
+**The sentence never depends on the typed error being present.** Each handler writes something true
+from the sentinel alone and the type only adds a clause. This is not caution for its own sake: seven
+existing tests construct their cases as bare `fmt.Errorf("import x: %w", …)`, so the fallback is the
+branch most of the suite exercises.
+
+### What this deliberately did not do
+
+**No `code`, `kind` or `slug` on the envelope**, for the reason D39 gave and which still holds:
+nothing branches on which 409 it got, and `jellyfinFailureBody.Adopt` remains the precedent for the
+day something does.
+
+**The 4xx are still not logged.** Noticing that nothing logs them makes logging them tempting, and it
+is a separate argument with a real cost on the other side — `failFields`
+(`internal/api/settings.go:511-512`) deliberately never logs because its messages can quote a rejected
+value. It was left where it was found.
+
+**The guard is a test that asserts absences.** `make check` proves nothing about prose, and the wrong
+implementation here is invisible rather than broken — passing `err` through compiles, answers the
+right status, and carries a non-empty `{"error": …}`, which is all the pre-T71 tests checked. So the
+tests pin the specific substrings that must NOT appear: `qbit`, `torrents/delete`, `delete movie`, the
+info hash, `find feature in`, `destination folder`, `AuthenticateByName`. Verified by reverting the
+handler and watching them fail.
+
+---
+
 D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.

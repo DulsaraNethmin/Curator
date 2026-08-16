@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -52,7 +53,13 @@ func (s *Server) failDelete(w http.ResponseWriter, id int64, err error) {
 		// The guard fired: something asked curator to delete a torrent that is
 		// not ours. 409, because the request is well-formed and the refusal is
 		// deliberate — the *arr stack shares that qBittorrent until the cutover.
-		s.fail(w, http.StatusConflict, err)
+		//
+		// The sentence is written here rather than passed through, because
+		// `err` is three packages of prefixes ending in the info hash twice in
+		// two different cases. The category is the only word a reader can act
+		// on, so it is recovered — and the sentence is true without it, which
+		// is what a wrapped sentinel with no WrongCategory in it gets.
+		s.fail(w, http.StatusConflict, errors.New(wrongCategorySentence(err)))
 	case errors.Is(err, download.ErrUnconfigured):
 		s.fail(w, http.StatusServiceUnavailable, err)
 	case errors.Is(err, download.ErrClient):
@@ -62,4 +69,20 @@ func (s *Server) failDelete(w http.ResponseWriter, id int64, err error) {
 	default:
 		s.fail(w, http.StatusInternalServerError, err)
 	}
+}
+
+// wrongCategorySentence says what was refused and what it means for the film,
+// naming the owning category when the error carried it.
+//
+// Nothing was deleted when this fires — not the torrent, not the row, not the
+// files — and saying so is the point: the guard is silent about consequences and
+// a bare "not in the required category" reads like a partial delete.
+func wrongCategorySentence(err error) string {
+	var wrong torrent.WrongCategory
+	if errors.As(err, &wrong) {
+		return fmt.Sprintf(
+			"that torrent is in the %q category, not curator's %q — removing it belongs to whatever put it there, so curator deleted nothing and the film is still in your library",
+			wrong.Actual, wrong.Required)
+	}
+	return "that torrent belongs to another application — removing it belongs to whatever put it there, so curator deleted nothing and the film is still in your library"
 }

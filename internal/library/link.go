@@ -28,6 +28,26 @@ var ErrNoVideo = errors.New("no video file to import")
 // of retrying will change it, unlike a full disk or an unmounted library.
 var ErrBadTitle = errors.New("the title cannot be a folder name")
 
+// BadTitle is ErrBadTitle carrying the title and the reason it was refused.
+//
+// Six sites produce this and each already had a sentence saying which of the six
+// it was; the sentence moves into a field rather than into a message, so the API
+// can put it in front of a person without also putting `destination folder for`
+// and a sentinel tail there. Reason is a clause, lower-case and without a full
+// stop, because it is read after a colon.
+//
+// Error() renders both and leaves ErrBadTitle's text to Unwrap.
+type BadTitle struct {
+	Title  string
+	Reason string
+}
+
+func (e BadTitle) Error() string {
+	return fmt.Sprintf("title %q cannot be a folder name: %s", e.Title, e.Reason)
+}
+
+func (e BadTitle) Unwrap() error { return ErrBadTitle }
+
 // ErrOutsideRoot reports that a path is not this library's to touch.
 //
 // It is named for the reason ErrNoVideo is: the caller has to be able to tell a
@@ -129,7 +149,8 @@ func DestFolder(title string, year int) (string, error) {
 	// A year of 0 would produce "Title (0)", which the scanner then skips as
 	// unparseable — a folder curator wrote and cannot read back.
 	if year < 1000 || year > 9999 {
-		return "", fmt.Errorf("destination folder for %q: year %d is not four digits, so %q would not parse back: %w", title, year, fmt.Sprintf("%s (%d)", name, year), ErrBadTitle)
+		return "", BadTitle{Title: title, Reason: fmt.Sprintf(
+			"the year %d is not four digits, so %q would not parse back", year, fmt.Sprintf("%s (%d)", name, year))}
 	}
 	return fmt.Sprintf("%s (%d)", name, year), nil
 }
@@ -148,7 +169,7 @@ func DestName(title string, year int, ext string) (string, error) {
 	}
 	ext = strings.ToLower(strings.TrimSpace(ext))
 	if !videoExtensions[ext] {
-		return "", fmt.Errorf("destination file for %q: %q is not a video extension: %w", title, ext, ErrBadTitle)
+		return "", BadTitle{Title: title, Reason: fmt.Sprintf("%q is not a video extension", ext)}
 	}
 	return folder + ext, nil
 }
@@ -157,17 +178,19 @@ func DestName(title string, year int, ext string) (string, error) {
 func destTitle(title string) (string, error) {
 	trimmed := strings.TrimSpace(title)
 	if trimmed == "" {
-		return "", fmt.Errorf("destination folder: the title is empty: %w", ErrBadTitle)
+		return "", BadTitle{Title: title, Reason: "it is empty"}
 	}
 	// Checked before the substitution, which cannot introduce any of them.
 	// Backslash is rejected as well as "/" because this has to stay correct if
 	// curator is ever run on Windows, and because a backslash in a folder name
 	// is a lie waiting to be told to some other tool.
 	if strings.ContainsAny(trimmed, `/\`+"\x00") {
-		return "", fmt.Errorf("destination folder for %q: a title containing a path separator or NUL would write outside the library: %w", title, ErrBadTitle)
+		return "", BadTitle{Title: title,
+			Reason: "a title containing a path separator or NUL would write outside the library"}
 	}
 	if trimmed == "." || trimmed == ".." {
-		return "", fmt.Errorf("destination folder for %q: a title of %q is a directory reference, not a name: %w", title, trimmed, ErrBadTitle)
+		return "", BadTitle{Title: title,
+			Reason: fmt.Sprintf("%q is a directory reference, not a name", trimmed)}
 	}
 
 	// The inverse of D9: the library's own folders spell an illegal colon " - ".
@@ -189,7 +212,8 @@ func destTitle(title string) (string, error) {
 		}
 	}
 	if len(parts) == 0 {
-		return "", fmt.Errorf("destination folder for %q: nothing is left of the title once the colons are spelled out: %w", title, ErrBadTitle)
+		return "", BadTitle{Title: title,
+			Reason: "nothing is left of it once the colons are spelled out"}
 	}
 	return strings.Join(parts, " - "), nil
 }

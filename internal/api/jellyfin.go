@@ -156,6 +156,12 @@ const (
 	probeConfigured  = "configured"
 )
 
+// detailAlreadyConfigured is the one sentence for the one condition, said in one
+// place. The probe reports it and the provisioner refuses with it, and they are
+// the same fact about the same server — two phrasings of it is how the count in
+// D39 got to ten.
+const detailAlreadyConfigured = "this jellyfin has already been set up, so curator will not run its wizard again"
+
 // jellyfinProbeBody is what GET /api/jellyfin/probe reports.
 type jellyfinProbeBody struct {
 	State string `json:"state"`
@@ -218,7 +224,7 @@ func (s *Server) handleJellyfinProbe(w http.ResponseWriter, r *http.Request) {
 		body.Version = status.Version
 		if status.WizardCompleted {
 			body.State = probeConfigured
-			body.Detail = "this jellyfin has already been set up, so curator will not run its wizard again"
+			body.Detail = detailAlreadyConfigured
 		} else {
 			body.State = probeNeedsSetup
 			body.Detail = "this jellyfin has never been set up"
@@ -474,6 +480,12 @@ func (s *Server) provisionFailure(err error, setup *JellyfinSetup) (int, jellyfi
 		// Not a failure of curator's and not one manual steps fix: this server
 		// is already somebody's, and adding to it is T66's branch.
 		status = http.StatusConflict
+		// The probe route already wrote this sentence for this exact condition
+		// (see handleJellyfinProbe), so it is reused rather than phrased a
+		// second way. What it replaces said the same thing twice: the chain was
+		// "jellyfin provision: jellyfin 10.10.7 at … is already set up: jellyfin
+		// has already completed its startup wizard".
+		body.Error = detailAlreadyConfigured
 		body.Adopt = true
 		body.Instructions = []string{
 			"This Jellyfin has already been set up, so curator will not touch its wizard — that is the guard that stops a household being locked out of a server they are watching.",
@@ -510,7 +522,12 @@ func (s *Server) provisionFailure(err error, setup *JellyfinSetup) (int, jellyfi
 		// password to retype. T66's adopt branch is where a genuinely wrong
 		// password arrives.
 		status = http.StatusUnprocessableEntity
-		body.Error = "jellyfin refused a sign-in with the account curator had just created: " + body.Error
+		// Assigned, never appended. What the `+` used to add was
+		// "jellyfin provision: /Users/AuthenticateByName: jellyfin rejected the
+		// username or password" — an upstream HTTP path, after a sentence that
+		// had already said it better. adoptFailure does this with `=` for the
+		// same sentinel a few hundred lines down; this now matches it.
+		body.Error = "jellyfin refused a sign-in with the account curator had just created, which is the server behaving unexpectedly rather than a password to retype"
 		body.Instructions = manualSteps(setup)
 		return status, body
 	}
