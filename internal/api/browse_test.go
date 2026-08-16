@@ -471,3 +471,115 @@ func TestTheJellyfinKeyIsOmittedRatherThanEmpty(t *testing.T) {
 		t.Errorf("the body carries an empty jellyfin_url: %s", rec.Body)
 	}
 }
+
+// --- the same link, for a row with no catalogue entry (T61 / D35) ------------
+
+// movieRowServer mounts the library routes beside a Jellyfin, which is what
+// GET /api/movies/{id} now needs and Register alone does not give it.
+func movieRowServer(t *testing.T, st *fakeStore, m MediaServer, publicURL string) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := New(st, ScannerFunc(nil), nil, fixtureRoot, quiet()).WithJellyfin(m, publicURL)
+	srv.Register(mux)
+	return mux
+}
+
+// The point of T61: an unmatched row is on disk and playable, so it gets a
+// Jellyfin link like any other film — and it can only ever be a search, because
+// there is no TMDB id to look the film up by.
+func TestAnUnmatchedRowGetsAJellyfinSearchLink(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedOnDisk("/library/Some Home Video (2019)", "Some Home Video", 2019)
+	if row.TMDBID != nil {
+		t.Fatalf("fixture is matched; this test is about the unmatched row")
+	}
+	media := &fakeMediaServer{item: jellyfin.Item{ID: "bbb", ServerID: "srv"}}
+
+	var body movieBody
+	rec := getJSON(t, movieRowServer(t, st, media, "http://192.168.1.26:8096"),
+		fmt.Sprintf("/api/movies/%d", row.ID), &body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	const want = "http://192.168.1.26:8096/web/index.html#/search.html?query=Some+Home+Video"
+	if body.JellyfinURL != want {
+		t.Errorf("jellyfin_url = %q, want %q", body.JellyfinURL, want)
+	}
+	// **Nothing was looked up.** A nil tmdb_id is D32's miss known in advance,
+	// so spending a request to rediscover it would be a request that can only
+	// fail — and on a Jellyfin that is switched off it would fail slowly.
+	if media.calls != 0 {
+		t.Errorf("FindMovie called %d times for a row with no tmdb_id, want 0", media.calls)
+	}
+}
+
+// The embedding is the compatibility promise: this route answered a bare
+// store.Movie before T61 and must still answer the same keys at the same level.
+func TestTheRowBodyKeepsItsOldShape(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedOnDisk("/library/Some Home Video (2019)", "Some Home Video", 2019)
+
+	var raw map[string]any
+	rec := getJSON(t, movieRowServer(t, st, nil, ""), fmt.Sprintf("/api/movies/%d", row.ID), &raw)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+
+	for _, key := range []string{
+		"id", "tmdb_id", "title", "year", "media_type", "overview", "poster_path",
+		"status", "library_path", "quality", "size_bytes", "added_at", "imported_at",
+	} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("key %q is missing: %s", key, rec.Body)
+		}
+	}
+	// Absent, not empty, when there is no Jellyfin — the rule the whole UI reads
+	// as "draw nothing at all".
+	if _, ok := raw["jellyfin_url"]; ok {
+		t.Errorf("jellyfin_url is present with no Jellyfin configured: %s", rec.Body)
+	}
+}
+
+// A row that is not on disk gets no link, matched or not: linking a film nobody
+// owns into a media server that certainly does not have it is a search for
+// something that is not there.
+func TestAWantedRowGetsNoJellyfinLink(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedWanted("Some Film", 2019)
+	media := &fakeMediaServer{item: jellyfin.Item{ID: "bbb"}}
+
+	var body movieBody
+	getJSON(t, movieRowServer(t, st, media, "http://192.168.1.26:8096"),
+		fmt.Sprintf("/api/movies/%d", row.ID), &body)
+
+	if body.JellyfinURL != "" {
+		t.Errorf("jellyfin_url = %q for a film that is not on disk, want none", body.JellyfinURL)
+	}
+	if media.calls != 0 {
+		t.Errorf("FindMovie called %d times for a wanted row, want 0", media.calls)
+	}
+}
+
+// A matched row reached through this route still gets the deep link, so the two
+// addressing modes agree about the film rather than each having their own idea
+// of it.
+func TestAMatchedRowStillGetsTheDeepLink(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedOnDisk("/library/Avengers - Endgame (2019)", "Avengers: Endgame", 2019)
+	tmdbID := int64(299534)
+	row.TMDBID = &tmdbID
+	media := &fakeMediaServer{item: jellyfin.Item{ID: "bbb", ServerID: "srv"}}
+
+	var body movieBody
+	getJSON(t, movieRowServer(t, st, media, "http://192.168.1.26:8096"),
+		fmt.Sprintf("/api/movies/%d", row.ID), &body)
+
+	const want = "http://192.168.1.26:8096/web/index.html#/details?id=bbb&serverId=srv"
+	if body.JellyfinURL != want {
+		t.Errorf("jellyfin_url = %q, want %q", body.JellyfinURL, want)
+	}
+	if media.gotTMDBID != 299534 || media.gotYear != 2019 {
+		t.Errorf("looked up tmdb %d year %d, want 299534 / 2019", media.gotTMDBID, media.gotYear)
+	}
+}

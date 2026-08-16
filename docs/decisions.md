@@ -1177,4 +1177,87 @@ its configuration.
 
 ---
 
+## D35 — A library row with no TMDB id is addressed by curator's own id, at `/library/film/?id=…`
+
+**Status:** decided, implemented in [T61](tasks/T61-unmatched-film-has-no-way-in.md) ·
+**Extends:** [D21](#d21--the-movie-page-is-movieid-because-the-ui-is-a-static-export), which it
+deliberately does not amend · **Follows from:** [D6](#d6--tmdb_id-is-nullable)
+
+[D21](#d21--the-movie-page-is-movieid-because-the-ui-is-a-static-export) addresses the film page by
+TMDB's id, and [D6](#d6--tmdb_id-is-nullable) keeps that id NULL for a folder TMDB could not match.
+Together they leave a film curator can play with no URL to play it from:
+[T60](tasks/T60-library-way-in-web.md) made every matched Library card a link and left the unmatched
+one a `<div>`, which is the gap this closes.
+
+**D21 is not amended. It is still true, and it is about a different page.** `/movie/` is a page
+*about a catalogue entry* — every fetch it makes is a TMDB call, and its identity is
+[D20](#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it)'s "the film comes from TMDB".
+A row with no catalogue entry does not get a worse version of that page; it gets a page about the
+**row**, at `/library/film/?id=<movies.id>`, where title, year, size, `library_path`, the Jellyfin
+link and the player all come from `GET /api/movies/{id}` and nothing needs a catalogue at all.
+
+So there are two addressing modes, and **which one a card uses is decided by the data rather than by
+preference**: a row with a `tmdb_id` opens `/movie/?id=<tmdb_id>`, a row without one opens
+`/library/film/?id=<movies.id>`. Adding `?curator_id=` to `/movie/` was the cheaper shape and was
+rejected — it would make every TMDB fetch on that page conditional, which is D20's identity turned
+into a branch.
+
+### The count that was supposed to stop this, and why it did not
+
+[T61](tasks/T61-unmatched-film-has-no-way-in.md) gated itself on a measurement: count the unmatched
+films on the Pi, and if it is zero, say so and stop. **It is zero.** Measured 2026-08-16 against the
+real library, read-only: 16 of the 29 folders hold a file over the 50 MiB feature floor, the other 13
+are empty and are no longer rows at all ([D33](#d33--a-folder-with-no-film-in-it-is-not-a-movie-the-row-goes-the-folder-stays)),
+and all 16 folder names match TMDB on the raw query — `{"scanned":16,"added":16,"matched":16,"unmatched":0}`.
+Not one is unresolvable, including the eight with ` - ` in them that [D9](#d9--query-tmdb-with-the-raw-folder-title)
+exists for.
+
+**The gate was written for a project that no longer exists.** curator stopped being a Raspberry Pi's
+\*arr replacement in phase 6 and is now a tool anybody runs on any server. One library measuring zero
+is a fact about that library, not about the population: a home video, an anime fansub, a documentary
+and a film TMDB has never indexed are all ordinary, and for each of them the card is a dead end for
+ever. The gate is therefore satisfied and overruled in the same breath, and this record is where that
+is said out loud so the zero is not rediscovered and misread as an argument to revert.
+
+### The population that is not zero, and heals
+
+There is a second way a row gets a NULL id, and it is guaranteed rather than incidental: **a scan run
+before a TMDB key is in force marks every film unmatched.** Measured on a clean instance over the
+same 16 folders, `{"matched":0,"unmatched":16}`.
+
+It heals, and the shape of the healing is the part worth recording. `PUT /api/settings` stores the
+key and answers `"source":"stored","pending_change":true,"restart_required":true` — and a rescan
+immediately afterwards still matches **nothing**, because the TMDB client was built at startup. Only
+after a restart does the same scan return `{"matched":16,"unmatched":0}`. So "every scan retries the
+rows that still have no match" is true and incomplete; the restart is load-bearing, and
+[T50](tasks/T50-first-run.md)'s wizard already says so in the one place it matters.
+
+That population is why `/library/film/` explains *which* of the two reasons applies rather than
+asserting the match failed. A keyless install has not asked TMDB anything, and telling somebody their
+folder name was rejected when no question was ever put is the class of small lie this codebase
+refuses elsewhere.
+
+### Jellyfin needed one change, and it was a fallback that already existed
+
+`jellyfin_url` lived only on the TMDB detail body, so an unmatched film had no link *path*, not
+merely no link. `GET /api/movies/{id}` now carries it, through a struct that **embeds**
+`store.Movie` — so the route keeps the exact JSON it has always answered and gains one optional key.
+`GET /api/movies` deliberately does not: the lookup costs a request per film against a service that
+may be switched off, and a library screen asks for every row at once.
+
+For a row with no id there is nothing to look up, so nothing is looked up — it goes straight to
+[D32](#d32--the-jellyfin-link-is-keyed-on-the-tmdb-id-not-on-the-path)'s search link. That is not a
+new fallback: D32 already sends *"a film Jellyfin has not matched to TMDB"* there, and a film
+**curator** has not matched is the same situation seen from the other end.
+
+### What this deliberately does not do
+
+**Manual matching** — a "search TMDB for this folder" action that writes the `tmdb_id` — was T61's
+third option and is the only one that would also fix the poster, the overview and the deep link. It
+is not rejected, it is *not this*: it cannot help the keyless population at all (there is no key to
+search with, which is why the rows are unmatched), it is a feature rather than a way in, and the way
+in has to exist first. When it is built it takes a number of its own and cites this one.
+
+---
+
 D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.

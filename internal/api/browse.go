@@ -325,17 +325,38 @@ func toCard(m tmdb.Match, library map[int64]store.LibraryState) movieCard {
 // library != nil, because a wanted or downloading film is in the database and
 // not on the disk.
 func (s *Server) jellyfinLink(ctx context.Context, body movieDetailBody) string {
+	tmdbID := int64(body.TMDBID)
+	imported := body.Library != nil && body.Library.State == store.StatusImported
+	return s.jellyfinLinkFor(ctx, &tmdbID, body.Year, body.Title, imported)
+}
+
+// jellyfinLinkFor is jellyfinLink's body, reached from the catalogue page above
+// and from a library row that has no catalogue entry at all ([D35]).
+//
+// **A nil tmdbID is not a failure to report.** It is a row TMDB never matched
+// ([D6]), and it is D32's miss arriving one step earlier than a lookup that
+// comes back empty — so it takes the same search link, without a lookup it has
+// no id to make. That is the whole reason this split exists: the fallback was
+// already written for a Jellyfin that has not matched the film, and a curator
+// that has not matched it is the same situation seen from the other end.
+//
+// [D35]: ../../docs/decisions.md
+// [D6]: ../../docs/decisions.md
+func (s *Server) jellyfinLinkFor(ctx context.Context, tmdbID *int64, year int, title string, imported bool) string {
 	if s.jellyfin == nil || strings.TrimSpace(s.jellyfinURL) == "" {
 		return ""
 	}
-	if body.Library == nil || body.Library.State != store.StatusImported {
+	if !imported {
 		return ""
+	}
+	if tmdbID == nil {
+		return jellyfin.WebSearchURL(s.jellyfinURL, title)
 	}
 
 	// The lookup carries its own deadline inside internal/jellyfin, because
 	// this one is in front of a person waiting for a page rather than behind a
 	// poller. Measured against the real 10.10.7 over a LAN: 5.5 ms.
-	item, err := s.jellyfin.FindMovie(ctx, body.TMDBID, body.Year)
+	item, err := s.jellyfin.FindMovie(ctx, int(*tmdbID), year)
 	if err == nil {
 		return jellyfin.WebItemURL(s.jellyfinURL, item)
 	}
@@ -347,9 +368,9 @@ func (s *Server) jellyfinLink(ctx context.Context, body movieDetailBody) string 
 	// in Jellyfin always a search" is otherwise a question with no evidence.
 	if !errors.Is(err, jellyfin.ErrNotFound) {
 		s.log.Warn("jellyfin: could not look this film up, so the link is a search instead",
-			"tmdb_id", body.TMDBID, "err", err)
+			"tmdb_id", *tmdbID, "err", err)
 	}
-	return jellyfin.WebSearchURL(s.jellyfinURL, body.Title)
+	return jellyfin.WebSearchURL(s.jellyfinURL, title)
 }
 
 // errTMDBUnconfigured is the no-key state, phrased the way ErrUnconfigured is
