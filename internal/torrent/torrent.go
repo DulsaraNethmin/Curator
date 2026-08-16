@@ -25,6 +25,7 @@ package torrent
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -57,6 +58,32 @@ const (
 // for an error value is exactly the coupling this package removes. Both backends
 // wrap this one.
 var ErrWrongCategory = errors.New("the torrent is not in the required category")
+
+// WrongCategory is ErrWrongCategory carrying the two category names, because
+// which app owns the torrent is the only actionable word in that refusal and a
+// handler has no other way to reach it.
+//
+// Both backends construct this one, so the sentence stops differing by backend:
+// qbit wrapped the sentinel with "qbit torrents/delete: " and the engine with
+// "engine: ", and a user was shown whichever happened to be running.
+//
+// Error() does NOT restate ErrWrongCategory. The sentinel is reached through
+// Unwrap, so errors.Is keeps answering while its text stays out of the message —
+// the shape jellyfin's `unreachable` uses for the same reason.
+type WrongCategory struct {
+	// Hash is whatever form the backend had. Callers must not render it beside
+	// another copy: the store holds upper-case and qBittorrent's wire form is
+	// lower-case, and the two together read as two different torrents.
+	Hash     string
+	Actual   string
+	Required string
+}
+
+func (e WrongCategory) Error() string {
+	return fmt.Sprintf("%s is in category %q, not %q", e.Hash, e.Actual, e.Required)
+}
+
+func (e WrongCategory) Unwrap() error { return ErrWrongCategory }
 
 // Torrent is one torrent, however it is being downloaded.
 type Torrent struct {

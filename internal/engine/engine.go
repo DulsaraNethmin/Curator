@@ -442,8 +442,9 @@ func (e *Engine) DeleteTorrent(ctx context.Context, hash, requireCategory string
 		return nil
 	}
 	if requireCategory != "" && !strings.EqualFold(e.category, requireCategory) {
-		return fmt.Errorf("engine: %s is in category %q, not %q: %w",
-			ih.HexString(), e.category, requireCategory, torrent.ErrWrongCategory)
+		return fmt.Errorf("engine: %w", torrent.WrongCategory{
+			Hash: ih.HexString(), Actual: e.category, Required: requireCategory,
+		})
 	}
 
 	// The path is read before the drop, because a dropped torrent no longer

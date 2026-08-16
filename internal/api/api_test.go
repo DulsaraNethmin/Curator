@@ -21,6 +21,29 @@ import (
 // fixtureRoot is the 29-folder library fixture, mirroring the real one on the Pi.
 const fixtureRoot = "../../testdata/library/movies"
 
+// deleteHash is an info hash in the store's upper-case form. It exists so the
+// T71 tests can assert it is ABSENT from a refusal: the delete chain used to
+// render it twice, once upper-case from the row and once lower-case from
+// qBittorrent's wire form, reading as two different torrents.
+const deleteHash = "2B6A8D9F3C1E4B7A0D5F8E2C9A4B6D1E3F7C0A85"
+
+// errorBody pulls the one prose field every failure answers with. A body that
+// is not that shape is a failure of its own — phase 1 established
+// {"error": "..."} and web/lib/api.ts parses nothing else.
+func errorBody(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body = %s, want {\"error\": \"...\"}: %v", rec.Body, err)
+	}
+	if body.Error == "" {
+		t.Fatalf("body carries no error sentence: %s", rec.Body)
+	}
+	return body.Error
+}
+
 func ptrInt(n int) *int { return &n }
 
 // fakeStore is an in-memory stand-in for internal/store, keyed on library_path

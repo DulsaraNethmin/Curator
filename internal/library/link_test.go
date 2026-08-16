@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -790,5 +791,50 @@ func TestRemoveMovieFolderIsIdempotent(t *testing.T) {
 
 	if err := RemoveMovieFolder(root, folder); err != nil {
 		t.Errorf("removing a folder that is not there: %v, want success", err)
+	}
+}
+
+// BadTitle must answer errors.Is(err, ErrBadTitle) from every site that builds
+// one, or the API's 422 becomes a 500 with nothing to say. The six reasons are
+// checked as a set because they are what moved: each was a format string and is
+// now a field, and a site that returns a bare ErrBadTitle instead loses the one
+// clause the sentence is built from.
+func TestBadTitleKeepsItsSentinelAndItsReason(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		build func() error
+	}{
+		{"empty", func() error { _, err := DestFolder("   ", 2014); return err }},
+		{"a path separator", func() error { _, err := DestFolder("a/b", 2014); return err }},
+		{"a directory reference", func() error { _, err := DestFolder("..", 2014); return err }},
+		{"only colons", func() error { _, err := DestFolder(":::", 2014); return err }},
+		{"a year that is not four digits", func() error { _, err := DestFolder("Dune", 0); return err }},
+		{"not a video extension", func() error { _, err := DestName("Dune", 2021, ".txt"); return err }},
+	} {
+		err := c.build()
+		if err == nil {
+			t.Errorf("%s: no error at all", c.name)
+			continue
+		}
+		if !errors.Is(err, ErrBadTitle) {
+			t.Errorf("%s: errors.Is lost ErrBadTitle, so the API answers 500: %v", c.name, err)
+		}
+
+		var bad BadTitle
+		if !errors.As(err, &bad) {
+			t.Errorf("%s: not a BadTitle, so the API has no reason to show: %v", c.name, err)
+			continue
+		}
+		if bad.Reason == "" {
+			t.Errorf("%s: carries no reason", c.name)
+		}
+		// The reason is read after a colon, so it is a clause and not a
+		// sentence, and it must not end in a full stop.
+		if strings.HasSuffix(bad.Reason, ".") {
+			t.Errorf("%s: reason is punctuated as a sentence: %q", c.name, bad.Reason)
+		}
+		if strings.Contains(err.Error(), ErrBadTitle.Error()) {
+			t.Errorf("%s: Error() restates the sentinel: %q", c.name, err)
+		}
 	}
 }
