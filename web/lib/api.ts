@@ -543,18 +543,20 @@ export type AuthStatus = {
  *        the system whose correct fix is a user action
  *   503  the integration is unconfigured; say which variable to set
  *   502  a dependency is down; it is not our fault and not the user's
- *   409  a deliberate refusal of a well-formed request: the torrent has not
- *        finished, the torrent is not curator's to delete, curator already has
- *        this film in the library, the row is already matched (POST /match), or
- *        the row has no match to correct (PUT /match)
- *   422  nothing importable, or a title that cannot be a folder name
+ *   409  a deliberate refusal of a well-formed request, and TEN of them across
+ *        eight routes: the torrent has not finished, the torrent is not
+ *        curator's to delete, curator already has this film in the library, the
+ *        row is already matched (POST /match), the row has no match to correct
+ *        (PUT /match), another row already holds that TMDB id (either method),
+ *        the environment owns that setting, and three Jellyfin refusals
+ *   422  four: nothing importable, a title that cannot be a folder name, and
+ *        Jellyfin refusing a sign-in on each of provision and adopt
  *
- * **409 now covers five unrelated situations, and `states.tsx` titles all of
- * them "Not finished yet"** — which is right for the import path it was written
- * for and wrong for the rest. Nothing surfaces it today because the two callers
- * that can provoke the others render `cause.message` inline instead of `<Failure>`,
- * so this is a latent bug and not a live one. A screen that routes a 409 through
- * `<Failure>` has to fix the title first.
+ * **The status is not the situation, and for 409 and 422 nothing derives one
+ * from the other** — so `states.tsx` draws no title for either and the server's
+ * sentence carries the banner alone (D39). Do not add a status→words entry for
+ * them here or there; the count above is why one cannot be right, and it grew
+ * from five to ten without anybody noticing, which is the other half of why.
  */
 export class ApiError extends Error {
   readonly status: number;

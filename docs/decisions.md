@@ -1496,4 +1496,90 @@ the title is a task of its own.
 
 ---
 
+## D39 — A failure title must be true of every situation its status covers, or there is no title
+
+**Status:** decided, implemented in [T70](tasks/T70-a-title-that-is-true.md) · **Corrects:**
+[D38](#d38--a-wrong-match-is-corrected-by-overwriting-it-never-by-clearing-it-first), whose closing
+paragraph called this latent and counted it at five · **Applies to** `web/components/states.tsx`
+alone; no Go file changes
+
+D38 ended by naming one honest edge: *"`states.tsx` titles every 409 'Not finished yet', and 409 now
+covers five unrelated refusals. It stays latent because the picker renders the server's sentence
+inline rather than through `<Failure>`."* Both halves are wrong. It is ten refusals across eight
+routes, and it was never latent: the picker is one caller among several, and the Library screen has
+been titling a refused delete *"Not finished yet"* since `ccd78f1`, which added the delete and its
+`ErrWrongCategory` 409 together. The same paragraph was carried into
+`api.ts` and into the last two handoffs unchecked, which is its own lesson — a count nobody can
+verify cheaply is a count that goes stale silently.
+
+### The status was doing a job it cannot do
+
+`title()` maps an HTTP status onto a sentence about what happened. That works only while the mapping
+is a function, and for two statuses it is not:
+
+```
+409  →  ten sentences, eight routes
+422  →  four sentences, two of which reach the same banner
+```
+
+A delete refused because the torrent belongs to the *arr stack, a dispatch refused because the film
+is already in the library, and an import refused because the torrent is still going are three
+different events, and the browser had one word for all of them — the third one's. `ErrNoVideo` and
+`ErrBadTitle` leave `failImport` as the same 422 and arrive at the same banner, so 422 was wrong
+without even leaving the screen it was written for.
+
+**The count is the argument, not a documentation defect.** It went from five to ten while every
+build passed, because a status→words table in TypeScript is a second vocabulary that has to be kept
+in step with the Go one by hand — precisely what `Download.reason`'s comment refuses two files away,
+in the same words, for the same reason. Nothing makes the eleventh refusal cheaper to notice than the
+tenth was.
+
+### The rule that survives is about categories, not counts
+
+A title is a category and a category may cover many situations, so "one status, one meaning" is the
+wrong test and would have deleted most of the list. The test is narrower: **a title may only say
+something true of every situation its status covers.** 503 keeps *Not configured* because every 503
+is an unconfigured integration; 502 keeps *A dependency is down* for the same reason; 404 and 410
+keep theirs. 409 and 422 have no such sentence, so they get none.
+
+The null is returned explicitly and the cases are not deleted. A deleted case falls through to
+`default` and renders `Failed (409)`, which is the status number dressed as a diagnosis.
+
+**Both ways of getting this wrong compile, and that was measured rather than assumed.** The other is
+drawing the `<strong>` unconditionally: `ReactNode` includes `null`, so `<strong>{heading}</strong>`
+typechecks clean — `npx tsc --noEmit` exits 0 — and renders an empty bold block whose only symptom is
+a stray gap. `web/` has no test runner and `next build`'s type check refuses neither, so this
+decision is enforced by two explicit lines of code and the comments on them, and by nothing else. A
+reader who deletes either as redundant has reintroduced the bug silently, which is why they say so in
+place.
+
+### The caller cannot supply what the status could not
+
+The obvious alternative is a `title` prop, so the screen that knows what the user was doing names it.
+It loses on a fact about this UI: **no error state in it holds a single status.** The Library
+screen's one `error` is set by `load()`, `rescan()` and `remove()` alike, so a fixed word above it is
+wrong for two of the three, and `importError` takes a 500 or a 502 as readily as the 422. A prop
+would be wrong wherever it was used and would leave the guess standing wherever it was not.
+
+So the title comes from neither, and the sentence the handler already wrote carries the banner alone.
+That is not a new pattern: `match-picker.tsx` has rendered its own two 409s as a bare message with no
+title since T67, and its comment gives this decision's reason a task early — *"a generic banner would
+throw away the only part that says which"*.
+
+### What this deliberately did not do
+
+**No `code` field on the error envelope.** It is the durable fix and it was refused on scope, not on
+merit: `s.fail` is the chokepoint for six of the eleven and the other five write their status through
+three different envelopes, so it is a seven-site server change buying a title that the server's
+sentence already carries. If a screen ever has to *branch* on which 409 it received — rather than
+print it — that is the moment to build it, and `jellyfinFailureBody.Adopt` is the precedent for how.
+
+**One honest edge.** Three of the ten sentences leak a Go error chain at a human — `import <hash>: …`
+and `delete movie 7: removing torrent …: the torrent client: qbit torrents/delete: …` among them —
+and the title was the paper over that. Removing the paper makes them more visible, not less, which is
+the correct direction and is why this was not deferred until after they are rewritten. Writing those
+three sentences is a server task with its own measurements.
+
+---
+
 D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.
