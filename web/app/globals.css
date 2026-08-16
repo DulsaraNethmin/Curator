@@ -301,15 +301,28 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   gap: 1rem;
   grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
 }
-/* A card is always an <a> now: since T61 every Library row has a page, an
-   unmatched one at /library/film/?id= addressed by curator's own id (D35) and a
-   matched one at /movie/?id= addressed by TMDB's (D21). The `a.movie` selectors
-   below were written when a card could be a <div> and are kept as they are —
-   they still describe the element the hover applies to, and narrowing them to
-   `.movie` would be a change with no visible effect. */
+/* A card is a link or a button, never a <div>: since T61 every Library row has
+   a page, an unmatched one at /library/film/?id= addressed by curator's own id
+   (D35) and a matched one at /movie/?id= addressed by TMDB's (D21). Since T67 a
+   card in the manual matcher is a <button> instead, because picking one answers
+   a question rather than navigating. Both get the hover, which is why these
+   selectors name the two elements rather than `.movie` — a card that is neither
+   is not clickable, and it should not look as though it is. */
 .movie { display: block; text-decoration: none; color: inherit; }
-a.movie:hover img, a.movie:hover .noposter { border-color: var(--muted); }
-a.movie:hover .title { color: var(--accent); }
+a.movie:hover img, a.movie:hover .noposter,
+button.movie:hover img, button.movie:hover .noposter { border-color: var(--muted); }
+a.movie:hover .title, button.movie:hover .title { color: var(--accent); }
+/* A button carries none of an anchor's inherited typography, and it centres its
+   text where every other card is left-aligned. */
+button.movie {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 
 /* The Library card's wrapper. Delete has to be OUTSIDE the anchor — a <button>
    inside an <a> is invalid and double-fires — so the grid child is this and the
@@ -430,6 +443,17 @@ a.movie:hover .title { color: var(--accent); }
 .player .banner { margin-top: .75rem; }
 
 .actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+
+/* The manual matcher (T67). It sits below the actions on /library/film/ and
+   borrows the grid, so the posters are the same size they are everywhere else. */
+.matcher { margin-top: 1.5rem; }
+.matcher h2 { margin: 0 0 .3rem; }
+.matcher .grid { margin-top: 1rem; }
+.matcher-search { display: flex; gap: .5rem; flex-wrap: wrap; margin: .8rem 0; }
+/* The title grows and the year does not: a year is four characters and an input
+   sized for it says so without a label taking a line of its own. */
+.matcher-search input:first-child { flex: 1 1 16rem; }
+.matcher-search input:nth-child(2) { flex: 0 0 5rem; }
 
 .vlc { margin-top: .75rem; padding: 1rem 1.1rem; }
 .vlc h3 { margin: 0 0 .3rem; font-size: 1rem; }

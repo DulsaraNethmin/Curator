@@ -27,6 +27,12 @@ import (
 type Store interface {
 	UpsertMovieByPath(ctx context.Context, m store.ScannedMovie) (store.Movie, bool, error)
 	SetTMDBMetadata(ctx context.Context, id int64, match store.TMDBMatch) error
+
+	// MatchMovie is SetTMDBMetadata's request-facing twin: it refuses a row that
+	// is already matched and an id another row holds, where the scan's write
+	// overwrites because it selected on tmdb_id IS NULL in the first place (T67).
+	MatchMovie(ctx context.Context, id int64, match store.TMDBMatch) (store.Movie, error)
+
 	ListMovies(ctx context.Context) ([]store.Movie, error)
 	GetMovie(ctx context.Context, id int64) (store.Movie, error)
 	MoviesMissingMetadata(ctx context.Context) ([]store.Movie, error)

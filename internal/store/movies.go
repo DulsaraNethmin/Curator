@@ -24,6 +24,18 @@ const MediaTypeMovie = "movie"
 // turn a missing id into a 404 with errors.Is.
 var ErrNotFound = errors.New("movie not found")
 
+// ErrAlreadyMatched and ErrTMDBIDTaken are MatchMovie's two refusals, and they are
+// separate errors because they are two different mistakes with two different
+// remedies: the first means this row is not the one to correct, the second means
+// this film is already in the library under another folder.
+//
+// Both are 409s in internal/api — the request is well-formed and the refusal is
+// deliberate.
+var (
+	ErrAlreadyMatched = errors.New("movie is already matched to a tmdb id")
+	ErrTMDBIDTaken    = errors.New("another movie already holds that tmdb id")
+)
+
 // Movie is one row of the movies table.
 //
 // The nullable columns are pointers rather than sql.NullInt64 / sql.NullString
@@ -70,6 +82,18 @@ type ScannedMovie struct {
 //
 // Title is optional: nil keeps the title parsed off the folder name, so a caller
 // that does not trust a match enough to rename the row is not forced to.
+//
+// **There is deliberately no Year field, and it was tried.** A hand-matched row
+// is the only way to produce a row whose year disagrees with TMDB's — the scan
+// cannot, because SearchMovie rejects a match whose year disagrees — and that
+// disagreement costs the Jellyfin deep link, since D32 narrows its lookup with
+// `years=`. Writing TMDB's year here fixes the link and then loses it again on
+// the next scan: UpsertMovieByPath's SET list includes `year`, so the folder's
+// year is rewritten every time. Measured on a real library: matched to a 2008
+// film, the row answered 2008 and a deep link, and after one rescan answered
+// 2019 and a search again. A value that reverts on the next scan is worse than
+// one that was never written, so the year stays the folder's and the link falls
+// back to D32's search, which always lands somewhere useful.
 type TMDBMatch struct {
 	TMDBID     int64
 	Title      *string
@@ -177,6 +201,77 @@ func (s *Store) SetTMDBMetadata(ctx context.Context, id int64, match TMDBMatch) 
 		return fmt.Errorf("set tmdb metadata %d: %w", id, ErrNotFound)
 	}
 	return nil
+}
+
+// MatchMovie records a match a human chose, against a row that has none.
+//
+// It is deliberately not SetTMDBMetadata. That one serves the scan, where the row
+// was selected by `WHERE tmdb_id IS NULL` and overwriting unconditionally is
+// therefore correct; widening its contract for this caller would change phase 1's
+// write for a phase 9 feature. This one is reached from a request, where every
+// argument is somebody's typing, so it refuses instead of overwriting.
+//
+// The two refusals are decided by SELECT inside the transaction rather than by
+// reading the UNIQUE violation back off the driver. adoptTwin does the same for
+// the same column (imports.go), and a substring match on a modernc.org/sqlite
+// message is a guard that stops working on a driver upgrade without failing a
+// test — the row would silently 500 instead of 409.
+//
+// _txlock=immediate means the transaction holds the write lock throughout, so a
+// concurrent scan cannot match this row between the check and the write.
+func (s *Store) MatchMovie(ctx context.Context, id int64, match TMDBMatch) (Movie, error) {
+	fail := func(err error) (Movie, error) {
+		return Movie{}, fmt.Errorf("match movie %d to tmdb %d: %w", id, match.TMDBID, err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fail(err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	var existing *int64
+	switch err := tx.QueryRowContext(ctx, `SELECT tmdb_id FROM movies WHERE id = ?`, id).Scan(&existing); {
+	case errors.Is(err, sql.ErrNoRows):
+		return fail(ErrNotFound)
+	case err != nil:
+		return fail(err)
+	case existing != nil:
+		// Not "overwrite it": a row that already names a film is not the row this
+		// request is about, and saying so is cheaper than undoing it afterwards.
+		return fail(ErrAlreadyMatched)
+	}
+
+	var other int64
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT id FROM movies WHERE tmdb_id = ?`, match.TMDBID).Scan(&other); {
+	case errors.Is(err, sql.ErrNoRows):
+		// The only outcome that proceeds.
+	case err != nil:
+		return fail(err)
+	default:
+		return fail(ErrTMDBIDTaken)
+	}
+
+	// The same columns SetTMDBMetadata writes, and deliberately not `year` — see
+	// TMDBMatch. The scan owns that column and rewrites it from the folder on
+	// every pass, so writing it here would revert.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE movies
+		SET tmdb_id = ?, title = COALESCE(?, title), overview = ?, poster_path = ?
+		WHERE id = ?`,
+		match.TMDBID, match.Title, match.Overview, match.PosterPath, id); err != nil {
+		return fail(err)
+	}
+
+	row, err := scanMovie(tx.QueryRowContext(ctx, selectMovie+` WHERE id = ?`, id))
+	if err != nil {
+		return fail(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fail(err)
+	}
+	return row, nil
 }
 
 // ListMovies returns every movie, newest first. id breaks ties on added_at

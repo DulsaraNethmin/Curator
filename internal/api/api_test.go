@@ -33,6 +33,7 @@ type fakeStore struct {
 	listErr   error
 	missErr   error
 	setErr    error // e.g. the UNIQUE violation two folders matching one TMDB id causes
+	matchErr  error // forces MatchMovie's failure path without staging a row for it
 
 	// The library index behind a TMDB card's "already in your library" badge.
 	library    map[int64]store.LibraryState
@@ -198,6 +199,36 @@ func (f *fakeStore) SetTMDBMetadata(_ context.Context, id int64, match store.TMD
 		row.Title = *match.Title
 	}
 	return nil
+}
+
+// MatchMovie mirrors the real store's refusals rather than just writing, because
+// the handler's job is almost entirely deciding which of them applies: a fake that
+// always succeeded would let every 409 test pass against a handler that had lost
+// the check.
+func (f *fakeStore) MatchMovie(_ context.Context, id int64, match store.TMDBMatch) (store.Movie, error) {
+	if f.matchErr != nil {
+		return store.Movie{}, f.matchErr
+	}
+	row, ok := f.byID[id]
+	if !ok {
+		return store.Movie{}, fmt.Errorf("match movie %d: %w", id, store.ErrNotFound)
+	}
+	if row.TMDBID != nil {
+		return store.Movie{}, fmt.Errorf("match movie %d: %w", id, store.ErrAlreadyMatched)
+	}
+	for otherID, other := range f.byID {
+		if otherID != id && other.TMDBID != nil && *other.TMDBID == match.TMDBID {
+			return store.Movie{}, fmt.Errorf("match movie %d: %w", id, store.ErrTMDBIDTaken)
+		}
+	}
+	tmdbID := match.TMDBID
+	row.TMDBID = &tmdbID
+	row.Overview = match.Overview
+	row.PosterPath = match.PosterPath
+	if match.Title != nil {
+		row.Title = *match.Title
+	}
+	return *row, nil
 }
 
 func (f *fakeStore) ListMovies(context.Context) ([]store.Movie, error) {

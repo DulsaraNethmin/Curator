@@ -405,6 +405,7 @@ func run() error {
 	apiSrv.RegisterSettings(mux)
 	apiSrv.RegisterLogs(mux)
 	apiSrv.RegisterMovieDelete(mux)
+	apiSrv.RegisterMovieMatch(mux)
 	apiSrv.RegisterBrowse(mux)
 	apiSrv.RegisterStream(mux)
 	apiSrv.RegisterJellyfin(mux)
