@@ -312,3 +312,214 @@ func TestMatchMoviePassesTheStoresRefusalsThrough(t *testing.T) {
 		})
 	}
 }
+
+func putMatch(t *testing.T, h http.Handler, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, target, strings.NewReader(body)))
+	return rec
+}
+
+// The film a correction moves TO, so the two ids in these tests are visibly
+// different films rather than two numbers.
+func ironMan() tmdb.Match {
+	return tmdb.Match{
+		TMDBID: 1726, Title: "Iron Man", Year: 2008,
+		Overview: "Tony Stark builds an armored suit…", PosterPath: "/iron.jpg",
+	}
+}
+
+// The happy path of the correction route: a row matched to the wrong film is
+// repointed, every TMDB column is re-read rather than patched, and the folder's
+// title and year do not move — the same division a first match keeps (D37).
+func TestCorrectMatchRepointsAMatchedRow(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedOnDisk("/media/movies/Avengers - Endgame (2019)", "Avengers - Endgame", 2019)
+	wrong := int64(1726)
+	row.TMDBID = &wrong
+	stale := ironMan().Overview
+	row.Overview = &stale
+	browser := &fakeBrowser{details: &tmdb.Details{Match: endgame()}}
+
+	rec := putMatch(t, matchServer(t, browser, st),
+		fmt.Sprintf("/api/movies/%d/match", row.ID), `{"tmdb_id":299534}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if browser.gotID != 299534 {
+		t.Errorf("asked TMDB for id %d, want 299534 — the body must not be trusted", browser.gotID)
+	}
+
+	var got movieBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v — body was %s", err, rec.Body)
+	}
+	if got.TMDBID == nil || *got.TMDBID != 299534 {
+		t.Errorf("tmdb_id = %v, want the corrected 299534", got.TMDBID)
+	}
+	// The previous film's overview must not survive the correction: a row naming
+	// one film and describing another is worse than the wrong match was.
+	if got.Overview == nil || *got.Overview != endgame().Overview {
+		t.Errorf("overview = %v, want the new film's", got.Overview)
+	}
+	if got.TMDBYear == nil || *got.TMDBYear != 2019 {
+		t.Errorf("tmdb_year = %v, want the new film's 2019", got.TMDBYear)
+	}
+	if got.Title != "Avengers - Endgame" || got.Year != 2019 {
+		t.Errorf("title/year = %q/%d, want the folder's unchanged", got.Title, got.Year)
+	}
+}
+
+// PUT is for replacing a match, so a row with none is refused rather than quietly
+// treated as a POST — and it is refused before a TMDB request is spent on it.
+func TestCorrectMatchOnAnUnmatchedRowIs409AndNamesPOST(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedOnDisk("/media/movies/Backrooms (2026)", "Backrooms", 2026)
+	browser := &fakeBrowser{details: &tmdb.Details{Match: endgame()}}
+
+	rec := putMatch(t, matchServer(t, browser, st),
+		fmt.Sprintf("/api/movies/%d/match", row.ID), `{"tmdb_id":299534}`)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "POST") {
+		t.Errorf("body %s does not name the method that would have worked", rec.Body)
+	}
+	if row.TMDBID != nil {
+		t.Errorf("tmdb_id = %v, want nothing written", *row.TMDBID)
+	}
+	if browser.gotID != 0 {
+		t.Errorf("asked TMDB for id %d, want no lookup at all", browser.gotID)
+	}
+}
+
+// The mirror of the above, and the reason it is asserted on the SENTENCE rather
+// than only the status: T67's 409 said there was "nothing to correct here", which
+// this task makes false. A message that names the impossible stops somebody
+// looking for the thing that now exists.
+func TestMatchMovieOnAnAlreadyMatchedRowNamesTheCorrectionRoute(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedOnDisk("/media/movies/Avengers - Endgame (2019)", "Avengers - Endgame", 2019)
+	existing := int64(299534)
+	row.TMDBID = &existing
+	browser := &fakeBrowser{details: &tmdb.Details{Match: ironMan()}}
+
+	rec := postMatch(t, matchServer(t, browser, st),
+		fmt.Sprintf("/api/movies/%d/match", row.ID), `{"tmdb_id":1726}`)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "PUT") {
+		t.Errorf("body %s does not point at the correction route", rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "nothing to correct") {
+		t.Errorf("body %s still claims a wrong match cannot be corrected", rec.Body)
+	}
+}
+
+// The collision is the same one a first match answers, reached from the other
+// direction, and it must not leak the driver's constraint message either.
+func TestCorrectMatchToAnIDAnotherRowHoldsIs409(t *testing.T) {
+	st := newFakeStore()
+	taken := st.seedOnDisk("/media/movies/Avengers - Endgame (2019)", "Avengers - Endgame", 2019)
+	held := int64(299534)
+	taken.TMDBID = &held
+	row := st.seedOnDisk("/media/movies/Endgame (2019)", "Endgame", 2019)
+	wrong := int64(1726)
+	row.TMDBID = &wrong
+	browser := &fakeBrowser{details: &tmdb.Details{Match: endgame()}}
+
+	rec := putMatch(t, matchServer(t, browser, st),
+		fmt.Sprintf("/api/movies/%d/match", row.ID), `{"tmdb_id":299534}`)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "UNIQUE") || strings.Contains(rec.Body.String(), "constraint") {
+		t.Errorf("body leaks the driver's constraint message: %s", rec.Body)
+	}
+	if row.TMDBID == nil || *row.TMDBID != 1726 {
+		t.Errorf("tmdb_id = %v, want the original 1726 untouched", row.TMDBID)
+	}
+}
+
+// A keyless install cannot correct a match either, and is told which variable to
+// set rather than shown a picker that answers nothing.
+func TestCorrectMatchWithoutABrowserIs503(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedOnDisk("/media/movies/Backrooms (2026)", "Backrooms", 2026)
+	existing := int64(1726)
+	row.TMDBID = &existing
+
+	rec := putMatch(t, matchServer(t, nil, st),
+		fmt.Sprintf("/api/movies/%d/match", row.ID), `{"tmdb_id":1083381}`)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "TMDB_API_KEY") {
+		t.Errorf("body %s does not name the variable to set", rec.Body)
+	}
+}
+
+// The store's refusals reach the client as themselves on this route too, and
+// ErrNotMatched is the one that only exists here.
+func TestCorrectMatchPassesTheStoresRefusalsThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"not matched", fmt.Errorf("x: %w", store.ErrNotMatched), http.StatusConflict},
+		{"id taken", fmt.Errorf("x: %w", store.ErrTMDBIDTaken), http.StatusConflict},
+		{"row vanished", fmt.Errorf("x: %w", store.ErrNotFound), http.StatusNotFound},
+		{"anything else", errors.New("disk on fire"), http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newFakeStore()
+			row := st.seedOnDisk("/media/movies/Backrooms (2026)", "Backrooms", 2026)
+			existing := int64(1726)
+			row.TMDBID = &existing
+			st.correctErr = tc.err
+			browser := &fakeBrowser{details: &tmdb.Details{Match: endgame()}}
+
+			rec := putMatch(t, matchServer(t, browser, st),
+				fmt.Sprintf("/api/movies/%d/match", row.ID), `{"tmdb_id":299534}`)
+
+			if rec.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.want, rec.Body)
+			}
+		})
+	}
+}
+
+// The two methods are separate routes on one path, and a request must reach the
+// handler its method names. A single handler that ignored the method would pass
+// every test above and still let a POST overwrite a match.
+func TestTheTwoMatchMethodsAreNotInterchangeable(t *testing.T) {
+	st := newFakeStore()
+	matched := st.seedOnDisk("/media/movies/Avengers - Endgame (2019)", "Avengers - Endgame", 2019)
+	existing := int64(299534)
+	matched.TMDBID = &existing
+	unmatched := st.seedOnDisk("/media/movies/Backrooms (2026)", "Backrooms", 2026)
+	h := matchServer(t, &fakeBrowser{details: &tmdb.Details{Match: ironMan()}}, st)
+
+	// POST at the matched row and PUT at the unmatched one: each is the wrong
+	// method for its row, and each must be refused rather than doing the other's
+	// job.
+	if rec := postMatch(t, h, fmt.Sprintf("/api/movies/%d/match", matched.ID), `{"tmdb_id":1726}`); rec.Code != http.StatusConflict {
+		t.Errorf("POST at a matched row = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if rec := putMatch(t, h, fmt.Sprintf("/api/movies/%d/match", unmatched.ID), `{"tmdb_id":1726}`); rec.Code != http.StatusConflict {
+		t.Errorf("PUT at an unmatched row = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if matched.TMDBID == nil || *matched.TMDBID != 299534 {
+		t.Errorf("matched row's tmdb_id = %v, want 299534 untouched", matched.TMDBID)
+	}
+	if unmatched.TMDBID != nil {
+		t.Errorf("unmatched row's tmdb_id = %v, want it still NULL", *unmatched.TMDBID)
+	}
+}

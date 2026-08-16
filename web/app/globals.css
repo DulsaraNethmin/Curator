@@ -142,6 +142,18 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 
+/* The opposite of .primary: an action that has to be findable without competing
+   with the one somebody actually came for. "Not this film?" sits beside Watch
+   here and must never be mistaken for it — a wrong match is rare, and the
+   control that fixes it should look rare too. It keeps the button's hit area,
+   because a doubt somebody is acting on is still a click. */
+.quiet, button.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.quiet:hover, button.quiet:hover:not(:disabled) { color: var(--text); border-color: var(--border); }
+
 /* A button that reads as a link: it changes what the screen does rather than
    where it goes, so it must not be an <a> with a fake href. */
 .linkbutton {

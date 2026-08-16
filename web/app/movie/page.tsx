@@ -191,6 +191,27 @@ function Movie() {
                   Open in Jellyfin
                 </a>
               )}
+
+              {/* **The way in to correcting a wrong match, and the only one
+                  (T69).** This page is where somebody arrives holding the
+                  evidence: they clicked a card in their Library and got a page
+                  about a film that is not the one in that folder. Everything
+                  else on this screen asserts the match is right — the poster,
+                  the title, "curator already has this film" below — so the one
+                  control that doubts it belongs here rather than a screen away.
+
+                  It links by `library.movie_id`, curator's own movies.id, and
+                  NOT the TMDB id this page is addressed by (D21) — the same
+                  distinction the player below depends on.
+
+                  Only for a film on disk. A wanted row has a tmdb_id because a
+                  dispatch gave it one, not because a folder name was resolved,
+                  so there is no wrong match there to correct. */}
+              {onDisk && details.library && (
+                <Link className="button quiet" href={`/library/film/?id=${details.library.movie_id}`}>
+                  Not this film?
+                </Link>
+              )}
             </div>
           </div>
         </div>
