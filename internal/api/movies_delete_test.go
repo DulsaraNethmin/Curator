@@ -191,3 +191,53 @@ func TestDeleteRefusalReadsTheSameOnBothBackends(t *testing.T) {
 		t.Errorf("the backend changes what the user reads:\n qbit:   %q\n engine: %q", qbit, engine)
 	}
 }
+
+// The 502 one line below the 409 T71 fixed, and it leaked the same chain.
+//
+// It also leaked the same BACKEND DEPENDENCE: `qbit torrents/delete: ` or
+// `engine: ` depending on TORRENT_BACKEND. T71 closed that for the refusal;
+// this closes it for the dependency failure, which is the other half of the
+// same defect.
+func TestDeleteDependencyFailureIsWrittenForAHuman(t *testing.T) {
+	// "the torrent client" is deliberately NOT in this list even though it is
+	// ErrClient's text: it is also the plain English name of the thing, and the
+	// written sentence says it. What must not survive is the chain's furniture —
+	// the prefixes, the hash, the endpoint and the transport error.
+	leaks := []string{
+		"delete movie", "removing torrent", "qbit", "engine:",
+		"torrents/delete", "calling qBittorrent at", deleteHash, "connection refused",
+	}
+
+	log, buffer := captured()
+	mux := http.NewServeMux()
+	chain := fmt.Errorf("delete movie 7: removing torrent %s: %w: %w",
+		deleteHash, download.ErrClient,
+		fmt.Errorf("qbit torrents/delete: calling qBittorrent at http://127.0.0.1:8080: connection refused"))
+	srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, log).
+		WithDownloads(&fakeDispatcher{deleteErr: chain})
+	srv.Register(mux)
+	srv.RegisterMovieDelete(mux)
+
+	rec := deleteMovie(t, mux, "/api/movies/7")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (%s)", rec.Code, rec.Body)
+	}
+
+	got := errorBody(t, rec)
+	// Nothing was deleted, and a failed delete that does not say what survived
+	// reads as a half-finished one.
+	if !strings.Contains(got, "still in your library") {
+		t.Errorf("body does not say the film survived: %q", got)
+	}
+	assertNoLeak(t, "body", got, leaks)
+
+	// The other half, and the half T71 did not have to prove: the chain is not
+	// gone, it moved. An operator reading /api/logs still gets the endpoint, the
+	// base URL and the transport error.
+	logged := flattenLog(buffer)
+	for _, want := range []string{"torrents/delete", "connection refused", deleteHash} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("the log lost %q, so the failure is now undiagnosable:\n%s", want, logged)
+		}
+	}
+}

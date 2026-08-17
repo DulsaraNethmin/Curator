@@ -538,3 +538,40 @@ func TestNotCompletedIsStillTheSentinel(t *testing.T) {
 		t.Error("Error() restates the sentinel it unwraps to")
 	}
 }
+
+// Unprotected must answer errors.Is(err, ErrUnprotected) through Dispatch's own
+// wrap, or a refused dispatch answers 500 instead of 503 — a clean build, a
+// wrong status, and nothing to say. It must ALSO keep answering for whatever the
+// guard failed with, because the wrap it replaces was `%w: %w` and a guard that
+// timed out is a different operational fact from one that refused.
+func TestUnprotectedIsStillTheSentinel(t *testing.T) {
+	guard := fmt.Errorf("could not ask the torrent client where it appears from: %w", context.DeadlineExceeded)
+	err := fmt.Errorf("dispatch yts-1: %w", UnprotectedFor(guard))
+
+	if !errors.Is(err, ErrUnprotected) {
+		t.Fatal("errors.Is lost the sentinel, and the API answers 500 instead of 503")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Error("errors.Is lost the guard's own cause, which the `%w: %w` wrap used to keep")
+	}
+
+	var unprotected Unprotected
+	if !errors.As(err, &unprotected) {
+		t.Fatal("errors.As cannot recover the reason through the wrap")
+	}
+	if unprotected.Reason != guard.Error() {
+		t.Errorf("reason = %q, want the guard's own sentence back", unprotected.Reason)
+	}
+
+	// ErrUnprotected's text is reached through Unwrap and must not be restated:
+	// the two together are what read as one refusal said twice.
+	if strings.Contains(unprotected.Error(), ErrUnprotected.Error()) {
+		t.Errorf("Error() restates the sentinel it unwraps to: %q", unprotected.Error())
+	}
+
+	// A zero value is what an API test constructs when it only needs the class,
+	// and it must not put a nil in the Unwrap slice.
+	if !errors.Is(Unprotected{Reason: "x"}, ErrUnprotected) {
+		t.Error("a zero-cause Unprotected lost the sentinel")
+	}
+}

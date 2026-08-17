@@ -381,3 +381,86 @@ func TestDispatchLibraryLookupFailureIs500(t *testing.T) {
 		t.Error("dispatched despite not knowing whether the film is already there")
 	}
 }
+
+// The two dispatch failures that were not written: the 502 when the client is
+// unreachable, and the 503 when the VPN guard refuses.
+//
+// The 503 is the interesting one. internal/vpn's sentences were always good —
+// they name VPN_CONFIG, or VPN_REQUIRED=false, or the exit address that matched
+// — and the only thing wrong was `dispatch <releaseID>: ` and a second sentinel
+// in front of them. So this asserts the reason SURVIVES while the furniture goes.
+func TestDispatchDependencyFailuresAreWrittenForAHuman(t *testing.T) {
+	const guard = "the VPN tunnel has never completed a handshake with 203.0.113.9:51820"
+
+	t.Run("the torrent client is unreachable", func(t *testing.T) {
+		log, buffer := captured()
+		chain := fmt.Errorf("dispatch yts-1234: %w: %w", download.ErrClient,
+			fmt.Errorf("qbit torrents/add: calling qBittorrent at http://127.0.0.1:8080: connection refused"))
+		mux := http.NewServeMux()
+		srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, log).
+			WithSearch(&fakeSearcher{}).WithDownloads(&fakeDispatcher{err: chain})
+		srv.Register(mux)
+		srv.RegisterSearch(mux)
+		srv.RegisterDownloads(mux)
+
+		rec := post(t, mux, "/api/downloads", dispatchBody)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502 (%s)", rec.Code, rec.Body)
+		}
+		got := errorBody(t, rec)
+		if !strings.Contains(got, "not started") {
+			t.Errorf("body does not say nothing was started: %q", got)
+		}
+		assertNoLeak(t, "body", got, []string{
+			"dispatch yts-1234", "yts-1234", "qbit", "engine:",
+			"torrents/add", "calling qBittorrent at", "connection refused",
+		})
+		if logged := flattenLog(buffer); !strings.Contains(logged, "torrents/add") {
+			t.Errorf("the log lost the endpoint that failed:\n%s", logged)
+		}
+	})
+
+	t.Run("the VPN guard refuses", func(t *testing.T) {
+		log, buffer := captured()
+		chain := fmt.Errorf("dispatch yts-1234: %w",
+			download.UnprotectedFor(errors.New(guard)))
+		mux := http.NewServeMux()
+		srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, log).
+			WithSearch(&fakeSearcher{}).WithDownloads(&fakeDispatcher{err: chain})
+		srv.Register(mux)
+		srv.RegisterSearch(mux)
+		srv.RegisterDownloads(mux)
+
+		rec := post(t, mux, "/api/downloads", dispatchBody)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503 (%s)", rec.Code, rec.Body)
+		}
+		got := errorBody(t, rec)
+		// The actionable half is internal/vpn's, and it has to survive whole.
+		if !strings.Contains(got, guard) {
+			t.Errorf("body lost the guard's own sentence, which is the only actionable part: %q", got)
+		}
+		if !strings.Contains(got, "did not start") {
+			t.Errorf("body does not say nothing was started: %q", got)
+		}
+		assertNoLeak(t, "body", got, []string{
+			"dispatch yts-1234", "yts-1234", "refusing to dispatch",
+		})
+		if logged := flattenLog(buffer); !strings.Contains(logged, "dispatch yts-1234") {
+			t.Errorf("the log lost the release id:\n%s", logged)
+		}
+	})
+
+	// The fallback, which is the branch most of the suite exercises: a bare
+	// sentinel with no Unprotected in it must still answer 503 with a true
+	// sentence rather than an empty one.
+	t.Run("a bare sentinel", func(t *testing.T) {
+		rec := post(t, newDownloadServer(t, &fakeDispatcher{err: download.ErrUnprotected}), "/api/downloads", dispatchBody)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503 (%s)", rec.Code, rec.Body)
+		}
+		if got := errorBody(t, rec); !strings.Contains(got, "protected") {
+			t.Errorf("fallback sentence is not the written one: %q", got)
+		}
+	})
+}

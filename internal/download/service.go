@@ -92,6 +92,45 @@ var ErrClient = errors.New("the torrent client")
 // VPN that fails open is not one (docs/decisions.md D27).
 var ErrUnprotected = errors.New("refusing to dispatch: the download would not be protected")
 
+// Unprotected is ErrUnprotected carrying internal/vpn's own sentence.
+//
+// The guard's sentences are already the actionable half of this refusal — they
+// name VPN_CONFIG, or VPN_REQUIRED=false, or the exit address that matched — and
+// nothing was ever wrong with them. What the wire carried in front of them was
+// `dispatch <releaseID>: ` and a second sentinel, so the reason travels in a
+// field and the prefixes stay in the log (docs/decisions.md D41).
+//
+// Unwrap returns both errors, in `unreachable`'s shape, because the wrap this
+// replaces was `%w: %w` and a guard that failed with a timeout must keep
+// answering errors.Is(err, context.DeadlineExceeded).
+type Unprotected struct {
+	// Reason is the guard's sentence, already written for a person.
+	Reason string
+
+	cause error
+}
+
+// UnprotectedFor wraps a guard's refusal, keeping its sentence as the reason and
+// the error itself as the cause. It is the only way to build one with a cause,
+// which is deliberate: the reason must be the guard's own words, never a
+// paraphrase written somewhere that cannot see the tunnel.
+func UnprotectedFor(cause error) Unprotected {
+	return Unprotected{Reason: cause.Error(), cause: cause}
+}
+
+// Error is the reason alone. ErrUnprotected's text is reached through Unwrap and
+// never prints, which is what stopped the two sentinels reading as one sentence.
+func (e Unprotected) Error() string { return e.Reason }
+
+func (e Unprotected) Unwrap() []error {
+	// A zero-value Unprotected is what a test constructs when it only needs the
+	// class, and a nil in this slice is not every Go version's problem to skip.
+	if e.cause == nil {
+		return []error{ErrUnprotected}
+	}
+	return []error{e.cause, ErrUnprotected}
+}
+
 // ErrNotCompleted reports that an import was asked for a torrent that is still
 // downloading. It is separated so the API can answer 409 — the request is
 // well-formed and will be fine later — rather than 500 or a silent no-op.
@@ -224,7 +263,7 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 			// class. It also means a guard that cannot ANSWER is refused too:
 			// "I could not establish that this is protected" and "this is not
 			// protected" have the same consequence for a mandatory tunnel.
-			return store.Download{}, fmt.Errorf("dispatch %s: %w: %w", req.ReleaseID, ErrUnprotected, err)
+			return store.Download{}, fmt.Errorf("dispatch %s: %w", req.ReleaseID, UnprotectedFor(err))
 		}
 	}
 

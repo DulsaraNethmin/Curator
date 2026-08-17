@@ -1611,9 +1611,15 @@ all.
 D39 framed the choice as a field on the envelope versus handlers that stop wrapping and cost the log
 its detail. Measured:
 
-- **Nothing logs these.** `internal/api/api.go:505` gates the only log on `status >= 500`. Every 409
-  and every 422 curator answers is written to the client and never written to a log at all. There was
-  no log line to protect — the response was the verbose channel and the log was the silent one.
+- **Nothing logs these chains.** `internal/api/api.go:505` gates the only log on `status >= 500`, so no
+  409 or 422 error chain is ever written to a log. There was no log line to protect — the response was
+  the verbose channel and the log was the silent one.
+  **Precision added by [T72](tasks/T72-the-chain-belongs-in-the-log.md):** as first written this said
+  *"every 409 and every 422 curator answers is written to the client and never written to a log at
+  all"*, and that sweeping form is false. Two 4xx paths log independently, before reaching `fail` —
+  `internal/api/downloads.go:142` logs the already-have-this-film 409 at Info, and
+  `internal/api/stream.go:215` logs a 404 at Warn. Neither logs a chain, so the argument stands; the
+  sentence did not.
 - **The one chain that is logged already carries its prefix as a field.**
   `internal/importer/importer.go:302` logs `"hash", hash` as an attribute, so `importer.go:95`'s
   `import %s: ` duplicated it.
@@ -1662,6 +1668,94 @@ right status, and carries a non-empty `{"error": …}`, which is all the pre-T71
 tests pin the specific substrings that must NOT appear: `qbit`, `torrents/delete`, `delete movie`, the
 info hash, `find feature in`, `destination folder`, `AuthenticateByName`. Verified by reverting the
 handler and watching them fail.
+
+---
+
+## D41 — A dependency's failure has two readers, and the chain belongs to the second one
+
+**Status:** decided, implemented in [T72](tasks/T72-the-chain-belongs-in-the-log.md) · **Extends:**
+[D40](#d40--a-refusals-sentence-is-written-at-the-boundary-that-answers-it) from the refusals to the
+dependency failures, where its central measurement does not hold · **Applies to** `internal/api`'s
+twelve 502/503 sites and one 200, plus `failCause`/`logCause` and `download.Unprotected`; no envelope
+changed and no web file changed
+
+D40 stopped five 409 and 422 answers rendering a `fmt.Errorf` chain at a person. It deliberately left
+the 5xx alone. There were twelve of those, not the two that had been measured, and one more at 200.
+
+### D40's argument does not transfer, and inverts
+
+D40 turned on a measurement: `internal/api/api.go:505` gates the only log on `status >= 500`, so a
+refusal's chain was written to the client and to nobody else. **Losing it cost nothing because it was
+already lost.** At 502 and 503 that gate is open, and the same investigation produces the opposite
+result in two different ways:
+
+- **The `fail` sites already log the chain**, so writing a sentence through `fail` would have put the
+  sentence in both channels and *destroyed* the diagnostic — the precise inverse of D40's case.
+- **The seven Jellyfin sites log nothing**, because `provisionFailure` and `adoptFailure` answer
+  through `respond` rather than `fail`. They were 5xx written to **nobody**: a chain sitting in a body
+  where no human could read it, and in no log where an operator could.
+
+So the answer is not "move the chain" but **split the readers**. `failCause(w, status, sentence,
+cause)` writes the sentence and logs the cause. `fail` is untouched — D40's *Do not* refused a fourth
+parameter on it because at 409 the second channel was dead, and this is a second function for the
+case where both channels are live.
+
+`internal/api/stream.go:299-301` has done this since T44 and `stream_test.go:945-966` pins both
+halves. It is the precedent, and the rule is a generalisation of it rather than a new idea.
+
+### The count was wrong for the fourth time, and the thirteenth site was found by accident
+
+Ten 502 sites, fifteen 503, of which **twelve leaked**. Six of the ten and nine of the fifteen are
+outside `jellyfin.go`, so the two measured strings — both from `POST /api/jellyfin/provision` — were
+samples from one route in one package.
+
+**`internal/api/browse.go:177` was the thirteenth, and it answers 200.** A failed discover rail set
+`rows[i].Error = errs[i].Error()`, under a comment arguing the chain was *"exactly what the operator
+needs"* — which is true, and is exactly why it now goes to the log. It was found by hitting a live
+instance with a key TMDB refuses, not by any grep: every audit of this surface has keyed on a status
+constant, and this site has none. **A count derived from statuses cannot find a leak that is not at a
+status**, which is the fourth distinct reason a count in this area has been wrong.
+
+### What the sentence may not contain
+
+`snippet` (`internal/jellyfin/client.go:175-184`) quotes **up to 256 bytes of a third party's HTTP
+response body**, and ten templates splice it into a chain. Every one of them reached the JSON `error`
+field that `web/components/states.tsx:48` renders verbatim. Jellyfin's `"Error processing request."`
+and TMDB's `"Invalid API key: You must be granted a valid key."` are not curator's prose and were
+being shown as though they were.
+
+**Which backend answered is also not the reader's business.** `internal/qbit` prefixes `qbit <path>: `
+and `internal/engine` prefixes `engine: `, so which words a user read on a 502 depended on
+`TORRENT_BACKEND`. `torrent.WrongCategory` closed that for the 409 in T71; this closes it for the 502
+one line below, which was the other half of the same defect and had not been written down either.
+
+### Where a fact would be lost, it travels in a typed error
+
+One sentence needed a value only the chain had, and `download.Unprotected{Reason}` carries it in D40's
+shape — `Error()` is the reason alone, `ErrUnprotected` reached through `Unwrap` and never printed.
+`internal/vpn`'s guard sentences were always good; the defect was `dispatch <releaseID>: ` and a
+second sentinel in front of them, so the reason survives whole and the prefixes go to the log.
+
+Its `Unwrap` returns **both** errors, in `unreachable`'s multi-error form, because the wrap it
+replaces was `%w: %w`: a guard that timed out must keep answering
+`errors.Is(err, context.DeadlineExceeded)`.
+
+### What this deliberately did not do
+
+**The 500s still put a chain on the wire.** There the chain is arguably the right answer — it is
+curator's own failure, and there is no other sentence to write — and settling it as a side effect of
+this task would be settling it without an argument.
+
+**The 4xx are still not logged**, for D40's unchanged reason. `logCause`'s gate at 500 is what let the
+Jellyfin handlers — which answer 409 and 422 as well as 5xx — gain logging without reopening it, and
+a test asserts a 409 still reaches no log.
+
+**The guard is a test that asserts an absence and a presence.** Every one of these sites passed the
+whole suite before the rewrite, because passing `err` through compiles and answers the right status.
+The tests pin substrings out of the body — `jellyfin provision`, `jellyfin find movie`,
+`torrents/delete`, `dispatch <id>`, `Invalid API key`, `Error processing request`, both upstream paths
+— **and into the log**, which is the half D40 never needed. Verified by reverting each handler and
+watching both halves fail.
 
 ---
 

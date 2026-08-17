@@ -172,10 +172,23 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 
 	for i := range rows {
 		if errs[i] != nil {
-			// A failed rail is named, never hidden, and never fatal — including a
-			// rejected key, whose message is exactly what the operator needs.
+			// A failed rail is named, never hidden, and never fatal.
+			//
+			// The sentence is the same one failTMDB writes, because this is the
+			// same failure — it is only the envelope that differs, and a reader
+			// should not learn two vocabularies for one dependency. What was here
+			// before was `errs[i].Error()` under a comment calling the chain
+			// "exactly what the operator needs", which is true and is the reason
+			// it now goes to the log instead of onto the home screen (D41).
+			//
+			// Logged here rather than through logCause: this envelope is 200, so
+			// a gate on the status would drop the one 5xx-shaped failure in the
+			// response. Warn rather than Error, because the page still draws and
+			// /api/logs is a screen where red means something is broken.
+			s.log.Warn("discover: a rail failed and is drawn empty",
+				"row", rows[i].ID, "err", errs[i])
 			rows[i].OK = false
-			rows[i].Error = errs[i].Error()
+			rows[i].Error = tmdbSentence(errs[i])
 			rows[i].Results = []movieCard{}
 			continue
 		}
@@ -385,12 +398,30 @@ func (s *Server) failTMDB(w http.ResponseWriter, err error) {
 	case errors.Is(err, tmdb.ErrNotFound):
 		// The id came from a URL a human can type.
 		s.fail(w, http.StatusNotFound, err)
-	case errors.Is(err, tmdb.ErrUnauthorized):
-		// 502, NOT 503. In this codebase 503 means "you did not set the
-		// variable", which would be a lie when it is set and simply wrong — and
-		// it would send someone to check a variable that is already there.
-		s.fail(w, http.StatusBadGateway, err)
 	default:
-		s.fail(w, http.StatusBadGateway, err)
+		// 502 for both, and NOT 503. In this codebase 503 means "you did not set
+		// the variable", which would be a lie when it is set and simply wrong —
+		// and it would send someone to check a variable that is already there.
+		s.failCause(w, http.StatusBadGateway, tmdbSentence(err), err)
 	}
+}
+
+// tmdbSentence is the one place a TMDB failure becomes words.
+//
+// One function rather than two branches because the catalogue answers this
+// failure at two different envelopes — 502 for a whole request, and a named rail
+// inside an otherwise fine 200 on the home screen — and a reader should not have
+// to learn two vocabularies for one dependency being unwell.
+//
+// The distinction it carries is the one the status cannot: a rejected key is not
+// an unset one, and 502 says neither. The chain that says `tmdb <what>: ` and
+// quotes TMDB's own status_message is the operator's half, and it goes to the log.
+func tmdbSentence(err error) string {
+	if errors.Is(err, tmdb.ErrUnauthorized) {
+		return "TMDB rejected curator's API key, so the catalogue cannot be read — the key is set, it is being refused"
+	}
+	// Everything else TMDB can do: a 500, a timeout, a body that is not the JSON
+	// the client expects. One sentence covers them because there is one remedy,
+	// and none of it is the reader's to fix.
+	return "TMDB did not answer in a way curator understands, so the catalogue cannot be read just now — this is TMDB's end, not yours or curator's"
 }

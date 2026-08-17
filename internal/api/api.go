@@ -507,3 +507,32 @@ func (s *Server) fail(w http.ResponseWriter, status int, err error) {
 	}
 	s.respond(w, status, map[string]string{"error": err.Error()})
 }
+
+// failCause writes the sentence to the client and keeps the chain for the log.
+//
+// `fail` puts one error in both places, which is right for every status where
+// the two readers want the same thing. A dependency's failure is where they
+// stop wanting it: the chain names an upstream path, a base URL and — through
+// `snippet` — up to 256 bytes of somebody else's response body, which is
+// precisely what an operator needs and precisely what a browser must not show.
+//
+// This is a second function rather than a fourth parameter on `fail`. T71
+// refused the overload because at 409 and 422 there was no log at all, so the
+// second channel would have been dead. At 502 and 503 both channels are real,
+// and `fail`'s one job is still one job.
+func (s *Server) failCause(w http.ResponseWriter, status int, sentence string, cause error) {
+	s.logCause(status, cause)
+	s.respond(w, status, map[string]string{"error": sentence})
+}
+
+// logCause writes the chain the response body no longer carries.
+//
+// Gated at 500 for the same reason `fail` is, and the gate is the whole reason
+// this is safe to call from the Jellyfin handlers: those answer 409 and 422 as
+// well, and D40 left the 4xx unlogged deliberately — `failFields` never logs
+// because a settings message can quote a rejected value.
+func (s *Server) logCause(status int, cause error) {
+	if status >= http.StatusInternalServerError {
+		s.log.Error("request failed", "status", status, "err", cause)
+	}
+}
