@@ -57,6 +57,56 @@ corrected by this, it is beaten — and [T51](T51-documents.md) owns the sentenc
 - **Re-add anything "just in case".** The backup is the just-in-case, and it has been restored once
   already so it is known to work.
 
+## What happened, 2026-08-18
+
+**The nine are gone and the four remain.** Stopped first and left stopped while curator, Jellyfin
+and a playback check were exercised against the box; only then were the stanzas cut and
+`docker compose up -d --remove-orphans` run to reconcile.
+
+The box now runs **six containers, which is five services**: `jellyfin`, `portainer`, `watchtower`
+and `homepage` from `/opt/docker`, plus `curator` and `minter` from `/opt/curator`. This document
+said five containers because it was written before [T53](T53-run-alongside.md) deployed minter under
+compose's `1337x` profile — minter is the second half of curator's own bundle rather than a
+survivor of the \*arr stack, and D43's count is unaffected.
+
+**The edit removed the nine and nothing else, checked rather than eyeballed.** `docker compose
+config` was rendered for each kept service before and after and diffed: `jellyfin`, `portainer`,
+`watchtower` and `homepage` all resolve **identically**. The file went from 332 lines to 149.
+
+**Verified after the removal:** curator answers, still holds the film T53 imported, and still streams
+it — `ffprobe` over `/api/movies/1/stream` reports `6486.239s`, the same runtime as before. Jellyfin
+is untouched at 10.10.7 with all four libraries (`Shows`, `Movies`, `Home Videos and Photos`,
+`Music`) intact.
+
+**One tunnel and one torrent client**, which is what D26 could not have. No container on the box runs
+a torrent client — curator's engine is in-process — and the only WireGuard interface `ip link` can
+see belongs to the Pi's own NordVPN CLI, which reports `Disconnected`. **curator's tunnel has no host
+interface at all**, because it is a userspace device on a gVisor netstack ([D27](../decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket));
+the correct count here is one visible interface that is idle and one working tunnel that is invisible.
+
+## What the removal broke, and what was done about it
+
+**homepage advertised five services that no longer exist.** Its `services.yaml` listed Sonarr,
+Radarr, Prowlarr, qBittorrent and Seerr beside Jellyfin, and removing the containers leaves the
+box's own front page pointing at five dead tiles. Rewritten to one **Curator** tile plus Jellyfin,
+with the previous file kept as `services.yaml.pre-t54`. Nothing else in homepage's configuration was
+touched.
+
+The `HTTP 400` seen while checking it is **not** a fault introduced here:
+`HOMEPAGE_ALLOWED_HOSTS=100.108.251.229:3000,homepage:3000` predates this task, so a request to the
+LAN address is refused by design and the Tailscale host answers 200.
+
+**A 1337x search failed during the stop-and-watch step and it was not the removal.** minter had a
+browser wedged in-flight — its log read `mint queued 220856ms behind an in-flight browser` — because
+this session had queued several searches against a service that runs one browser at a time. A
+restart cleared it and 1337x reported `ok` again. curator never used flaresolverr or byparr; it uses
+minter, so nothing removed here could have affected that indexer. Worth knowing anyway: **minter
+serialises, and curator's `search_timeout` is 30 s**, so a backlog makes the 1337x indexer fail
+rather than wait.
+
+Also measured while there: minter's `/health` answered in **8.34 s**, against the **5 s**
+`probeTimeout` T53 recorded. The probe bug T53 found is real and consistent, not a one-off.
+
 ## Verify
 
 - `docker ps` shows **five** — jellyfin, portainer, watchtower, homepage, curator
