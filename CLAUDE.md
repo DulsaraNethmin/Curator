@@ -126,11 +126,16 @@ The \*arr configs were backed up and one was restored to prove it
 ([T52](docs/tasks/T52-arr-config-backup.md)); the backup lives outside this repository and holds the
 NordVPN credentials.
 
-What is still true: **all 11 containers are still running**, now pointing at empty directories, and
-none has been removed yet — that is [T54](docs/tasks/T54-remove-what-is-replaced.md), and it removes
-nine. **Jellyfin stays and must not be touched**; curator adopts that server rather than replacing
-it. `ssh pi` reaches the box; `/opt/docker` holds `compose.yml` and 627 MB of configs that are the
-rollback.
+**The cutover is done.** [T54](docs/tasks/T54-remove-what-is-replaced.md) removed the nine on
+2026-08-18 — gluetun, qbittorrent, prowlarr, radarr, sonarr, seerr, flaresolverr, byparr,
+recyclarr — and the box now runs **six containers**: jellyfin, portainer, watchtower and homepage
+from `/opt/docker`, plus curator and minter from `/opt/curator`. Five *services*, six containers;
+D43's "thirteen become five" counts curator's bundle as one, and minter is the second half of it.
+
+**Jellyfin stays and must not be touched**; curator adopts that server rather than replacing it.
+`ssh pi` reaches the box. The rollback is `/opt/docker/configs/` — 627 MB of the removed services'
+configuration, deliberately left on disk — plus `compose.yml.pre-t54` beside the new file and the
+full thirteen-service original in the T52 backup off the box.
 
 ---
 
