@@ -75,9 +75,13 @@ decision about television the honest removal set is **three** — radarr, seerr,
 project's own headline number was wrong in a way no document caught, because every count so far was
 taken against what curator replaces rather than against what still depends on it.
 
-### That decision is [D26](decisions.md), and it is not settled here
+### That decision is [D26](decisions.md#d26--television-keeps-its-stack-the-cutover-removes-only-what-curator-replaces-for-movies), and it is now settled
 
-It is reserved for this phase and stays unwritten until somebody chooses:
+**Television keeps its stack.** The cutover removes radarr, seerr and recyclarr — three, not seven —
+and `gluetun`, `qbittorrent`, `prowlarr` and `flaresolverr` stay up for sonarr, which is live: 3
+series, 40.0 GB, an episode imported 2026-08-17. The accepted cost is two tunnels and two torrent
+clients on one Pi, affordable at 6.2 GB available of 7.9 GB and 4 cores. The options it was chosen
+from were:
 
 1. **Movies-only cutover.** Remove radarr, seerr, recyclarr; keep gluetun, qbittorrent, prowlarr and
    flaresolverr running for sonarr. The cost is concrete and should be measured rather than assumed:
@@ -104,11 +108,7 @@ anything right now either.** That is worth knowing before option 1's cost is pri
 
 T52 is a hard prerequisite for both others and for anything else in this phase.
 
-T53 and T54 have no task file yet, so `make status` lists them under **spikes** — its word for a
-number with neither a commit nor a file, which is otherwise how phase 6's throwaway branches are kept
-from counting as unfinished work. Here it means "not written yet" instead. Writing their files is
-what changes it, and neither should be written before [D26](decisions.md) is settled, because the
-decision is what they do.
+All three have task files, written once D26 settled what T53 and T54 actually do.
 
 ---
 

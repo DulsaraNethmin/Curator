@@ -684,6 +684,60 @@ for a product whose promise is one `docker run`.
 **What this is not.** Not users, not roles, not registration, not OAuth, not TLS, not a second
 credential for scripts. One household, one library, one password.
 
+## D26 — Television keeps its stack; the cutover removes only what curator replaces for movies
+
+**Status:** decided, measured · **Reserved for phase 10** since
+[phase-9.md](phase-9.md):103 and written at the front of it · **Settles** what
+[T53](tasks/T53-run-alongside.md) and [T54](tasks/T54-remove-what-is-replaced.md) do · **Overtakes**
+`roadmap.md`'s "remove seven containers"
+
+The cutover removes **radarr, seerr and recyclarr**, and nothing else. `gluetun`, `qbittorrent`,
+`prowlarr` and `flaresolverr` stay up, because **sonarr needs all four and curator replaces none of
+sonarr.**
+
+### The dependency, measured 2026-08-18
+
+Read-only from both APIs on the running Pi:
+
+- radarr and sonarr have **the same download client** — one `QBittorrent`, enabled, in each.
+- Prowlarr's Applications list is exactly **`Radarr` and `Sonarr`**, so removing it strips sonarr's
+  indexers too; sonarr's are 1337x, EZTV and The Pirate Bay, which also need flaresolverr.
+- **recyclarr is the exception that proves the rule.** It looks shared and is not:
+  `configs/recyclarr/configs/` holds `radarr.yml` and no sonarr file, and its one instance is
+  `base_url: http://radarr:7878`. It goes with radarr.
+
+So the containers curator makes redundant are **not** the containers that can be removed, and every
+count in this project before phase 10 was taken against what curator replaces rather than against
+what still depends on it. Thirteen become **ten**, not six.
+
+### Why television is not retired instead
+
+Retiring sonarr is the only branch where the count collapses, and it was rejected on use rather than
+on principle: sonarr holds **3 monitored series, 9 episode files of 18 monitored episodes, 40.0 GB**,
+and it imported an episode on **2026-08-17**, the day before this was decided. That is a live
+service, not an abandoned one, and the cutover is not the place to end it.
+
+### What it costs, stated up front so nobody discovers it
+
+**Two tunnels and two torrent clients on one Pi.** curator brings up its own WireGuard tunnel and
+runs its own engine ([D22](#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend),
+[D27](#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)), while gluetun keeps its own for
+qbittorrent. That is two NordVPN device slots and two exit addresses, and a download problem now has
+two places to look.
+
+It is affordable, and that is measured too: the Pi 5 has **7.9 GB total with 6.2 GB available**, 4
+cores, and swap untouched at 1.7 GB used. curator's own ceiling is the 400 MB heap budget phase 6
+fixed (`heapBudget`, `internal/engine/live_test.go`). Memory is not what makes this a trade-off;
+having two of everything is.
+
+### The consequence for the documents
+
+`roadmap.md`'s "Cutover — run alongside, confirm parity, remove seven containers" and every
+descendant of "thirteen containers become six" are now wrong in a way that has a number attached.
+[T51](tasks/T51-documents.md) already owns those strings and this is what they become: **13 → 10, and
+television keeps its stack.**
+
+
 ---
 
 ## D27 — The VPN is mandatory, and curator owns the socket
@@ -1819,4 +1873,5 @@ second network call on the path that exists to avoid the first one.
 
 ---
 
-D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.
+D23 remains reserved for phase 9's socket cost and is still unwritten. D26 was written at the
+front of phase 10.
