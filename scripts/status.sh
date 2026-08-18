@@ -67,10 +67,12 @@ phases() {
 	local committed spec
 	committed=$(committed_tasks)
 
-	for doc in docs/phase-*.md; do
+	# Numerically, not by glob: the shell sorts docs/phase-10.md between
+	# phase-1.md and phase-2.md, which put the last phase second in the table.
+	for n in $(ls docs/phase-*.md 2>/dev/null | grep -oE '[0-9]+' | sort -n); do
+		local doc="docs/phase-$n.md"
 		[ -e "$doc" ] || continue
-		local n title ids total done_count missing spikes
-		n=$(basename "$doc" .md | grep -oE '[0-9]+')
+		local title ids total done_count missing spikes
 		title=$(head -1 "$doc" | sed -E 's/^# Phase [0-9]+ (—|-) //')
 		ids=$(tasks_of "$doc")
 		done_count=0
@@ -106,7 +108,15 @@ phases() {
 	for n in $(seq 1 10); do
 		[ -e "docs/phase-$n.md" ] || spec="$spec $n"
 	done
-	[ -n "$spec" ] && say "  not specified yet:$spec  (a phase starts with its doc)"
+	# An `if`, not `[ -n ... ] &&`: this is the last statement in the function, so
+	# under `set -e` a false test makes phases() return non-zero and takes the
+	# whole script down with it. That could only ever fire when every phase has
+	# a document — which is to say, at the end of the project, on the run that
+	# matters most. Found writing docs/phase-10.md, which is the one that made
+	# $spec empty for the first time.
+	if [ -n "$spec" ]; then
+		say "  not specified yet:$spec  (a phase starts with its doc)"
+	fi
 }
 
 # --- everything else ---------------------------------------------------------
