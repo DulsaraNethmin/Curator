@@ -159,7 +159,8 @@ func TestLiveDownloadPeakRSS(t *testing.T) {
 		}
 		return
 	}
-	t.Fatalf("the payload did not complete within %s", budget)
+	t.Fatalf("the payload did not complete within %s\n%s",
+		budget, stallReport(e, torrent.NormalizeHash(debianInfoHash)))
 }
 
 // heapBudget is what this engine may hold in anonymous memory while downloading
@@ -243,13 +244,43 @@ func TestLiveEngineOverTunnel(t *testing.T) {
 	}
 
 	const want = 8 << 20 // enough to prove peers are sending, not enough to be a download
+
+	// stallAfter is how long the payload counter may sit still before this test
+	// stops believing it is watching a slow download. It is deliberately far
+	// shorter than the deadline: T74's signature is zero bytes for the whole
+	// five minutes, and a report taken at 300 s is a report of the wreckage
+	// rather than of the moment peers stopped serving. Snapshot it while the
+	// connections that are refusing are still up.
+	//
+	// 20 s, and the number is measured rather than picked. Under -race on
+	// 2026-08-18 this test sat at 0.1 MB from 4 peers from 4 s to 26 s and then
+	// recovered, finishing in 43 s — T74's shape exactly, but 22 s long. A 60 s
+	// threshold saw none of it. Ten consecutive polls without a download's
+	// worth of payload is not something a healthy run does: the one that passed
+	// the same afternoon in 14 s moved megabytes on every single tick.
+	const stallAfter = 20 * time.Second
+
+	// ...and minProgress is why this is not a test for a FROZEN counter, which
+	// is the mistake the first version of this made. Measured on the second
+	// -race run the same day: the per-tick line sat at "3.0 MB from 6 peers"
+	// from 16 s to 37 s and looked stopped, but BytesReadData was still
+	// creeping — about 200 KB across the whole 21 s — so `read > lastRead` was
+	// true on nearly every tick and the timer reset for ever. The plateau is a
+	// TRICKLE, not a stop, and only a floor on the rate can see it. 256 KB per
+	// 20 s is 12.8 KB/s; the healthy run moved ~600 KB/s.
+	const minProgress = 256 << 10
+
+	hash := torrent.NormalizeHash(debianInfoHash)
 	started := time.Now()
 	var gotMetadata time.Duration
+	var lastRead int64
+	movedAt := started
+	var reportedStall bool
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
 		time.Sleep(2 * time.Second)
 
-		found, err := e.TorrentByHash(ctx, torrent.NormalizeHash(debianInfoHash))
+		found, err := e.TorrentByHash(ctx, hash)
 		if err != nil {
 			t.Fatalf("TorrentByHash: %v", err)
 		}
@@ -275,8 +306,26 @@ func TestLiveEngineOverTunnel(t *testing.T) {
 				float64(read)/(1<<20), time.Since(started).Round(time.Second))
 			return
 		}
+
+		// The stall snapshot (T78). Taken once, the first time the payload
+		// counter has not moved for stallAfter, and only after metadata is in —
+		// before that there is nothing to serve and a flat counter is normal.
+		if read-lastRead >= minProgress {
+			lastRead = read
+			movedAt = time.Now()
+			reportedStall = false
+			continue
+		}
+		if !reportedStall && gotMetadata != 0 && time.Since(movedAt) >= stallAfter {
+			reportedStall = true
+			t.Logf("STALLED: under %d KB of payload in %s (%.2f MB total), metadata in since %s. This is T74's signature;\n%s",
+				minProgress>>10, time.Since(movedAt).Round(time.Second),
+				float64(read)/(1<<20), gotMetadata.Round(time.Millisecond),
+				stallReport(e, hash))
+		}
 	}
-	t.Fatalf("less than %d MB moved through the tunnel in 5 minutes", want>>20)
+	t.Fatalf("less than %d MB moved through the tunnel in 5 minutes\n%s",
+		want>>20, stallReport(e, hash))
 }
 
 func mustHash(t *testing.T, hex string) metainfo.Hash {

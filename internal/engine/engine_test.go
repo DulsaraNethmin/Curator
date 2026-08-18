@@ -209,6 +209,43 @@ func swarmState(e *Engine, hash string) string {
 		out, priorityName(ps.Priority), ps.Ok, ps.Complete, t.PieceStateRuns())
 }
 
+// stallReport is swarmState plus everything the client itself will say, and it
+// exists because swarmState cannot reach the one reading that separates the two
+// remaining explanations for T74's signature.
+//
+// That signature — measured on a real swarm on unmodified main, 2026-08-18 — is
+// metadata through the tunnel in 4.03 s, 3-4 peers connected, and then
+// **0.00 MB of payload for five minutes**. swarmState answers "are we asking?"
+// (piece0 priority, ok, complete) and "did anything arrive?" (read data,
+// metadata chunks). If it comes back priority=normal ok=true active=3 read=0,
+// every one of its four cases is excluded and it has nothing left to say.
+//
+// Client.WriteStatus has the rest, per peer, in one line each:
+//
+//	reqq: <ours>+<cancelled>/(<nominalMax>/<peerMax>):<theirs>/<localReqq>, flags: <us>:<conn>:<them>
+//
+// The last segment is the peer's state and `c` in it means **the peer is
+// choking us** (peerconn.go:1632). Choked by every peer is a swarm answer and
+// not a curator bug; `reqq` starting at 0 with nobody choking is the opposite,
+// and means the requester never asked. Neither is visible from the poller, from
+// swarmState, or from the per-tick line the live tests already print — which is
+// why five minutes of those lines identified nothing.
+//
+// It is only ever called on a failure path. WriteStatus takes the client's read
+// lock and prints every torrent, every peer and the DHT servers, which is far
+// too much for a passing run and exactly enough for a stalled one.
+func stallReport(e *Engine, hash string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", swarmState(e, hash))
+	fmt.Fprintf(&b, "  --- client status, for the choked-vs-never-asked question swarmState cannot answer ---\n")
+	var status strings.Builder
+	e.client.WriteStatus(&status)
+	for _, line := range strings.Split(strings.TrimRight(status.String(), "\n"), "\n") {
+		fmt.Fprintf(&b, "  %s\n", line)
+	}
+	return b.String()
+}
+
 // priorityName spells the priority out, because PiecePriority is a byte with no
 // String method and `priority=0` is the single most important reading in the
 // dump: none means nothing ever asked for this piece.
@@ -228,6 +265,66 @@ func priorityName(p anacrolix.PiecePriority) string {
 		return "now"
 	}
 	return fmt.Sprintf("%d", p)
+}
+
+// The stall report exists for one reading, so that reading is what gets pinned:
+// the per-peer line, which is the only place "the peer is choking us" and "we
+// never asked" are distinguishable. Those two are what is left after swarmState
+// excludes its four cases, and they are the live question in T74.
+//
+// The pair here is two leechers and no seeder, which is the only hermetic shape
+// that stays connected long enough to report on: measured, a real transfer from
+// seed() completes in ~50 ms and anacrolix drops the connection as soon as both
+// ends are done, so polling for a PeerConn on a working download finds nothing
+// even at 20 ms. Two peers that both want the payload and neither has it hold
+// active=2 indefinitely — connected, and moving nothing.
+//
+// What this pins is the report's SHAPE, not T74 itself. These two never get an
+// info dict, where T74's signature has metadata in and payload at zero; the
+// per-peer line is present either way, and it is the line that would silently
+// stop answering the question if anacrolix v1.61.0's `reqq: … flags: …` format
+// ever changed.
+func TestAStallReportReachesThePeerLine(t *testing.T) {
+	_, mi, ih := seed(t)
+	hash := torrent.NormalizeHash(ih.HexString())
+	magnet := magnetFor(t, mi, ih)
+
+	a := start(t, Config{DataDir: t.TempDir(), Category: "curator"})
+	b := start(t, Config{DataDir: t.TempDir(), Category: "curator"})
+	for _, e := range []*Engine{a, b} {
+		if err := e.AddMagnet(context.Background(), magnet, "curator"); err != nil {
+			t.Fatalf("AddMagnet: %v", err)
+		}
+	}
+	at, ok := a.client.Torrent(ih)
+	if !ok {
+		t.Fatal("the torrent is not in the client after AddMagnet")
+	}
+	at.AddClientPeer(b.client)
+
+	// Wait for the connection rather than for a result: the report is about a
+	// transfer that is not progressing, so what it needs present is a peer.
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) && len(at.PeerConns()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(at.PeerConns()) == 0 {
+		t.Fatal("no peer connection was established, so there is nothing to report on")
+	}
+
+	report := stallReport(a, hash)
+
+	for _, want := range []struct{ substr, why string }{
+		{"peers active=", "swarmState's half must survive: it is the four-way discriminator"},
+		{"read data=", "the counter the live tests watch has to be in the same dump"},
+		{"# Torrents:", "the client's own status never began"},
+		{"reqq:", "how many pieces WE have outstanding — 0 with nobody choking means we never asked"},
+		{"flags:", "the segment whose trailing c means the peer is choking us"},
+	} {
+		if !strings.Contains(report, want.substr) {
+			t.Errorf("stall report is missing %q — %s. Full report:\n%s", want.substr, want.why, report)
+		}
+	}
 }
 
 // TestDownloadFromAPeer is the whole adapter in one pass: add a magnet, fetch
