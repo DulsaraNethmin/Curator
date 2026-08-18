@@ -468,6 +468,11 @@ func TestYTSReleaseTitleFallbacks(t *testing.T) {
 // request we build is one YTS still accepts — which matters more than usual here,
 // because the base URL in the task file (yts.mx) has already gone NXDOMAIN once.
 //
+// Since T77 it also proves the base URL still RESOLVES, which is the thing that
+// sentence has always implied and did not do: from T73 until T77 an NXDOMAIN
+// host took the transport branch and skipped, so D12 recurring would have been
+// green. The control name is apibay.org — see D42 and live_test.go.
+//
 //	go test -short ./internal/indexer   # never touches the network
 func TestYTSLiveSearchInterstellar(t *testing.T) {
 	if testing.Short() {
@@ -483,13 +488,17 @@ func TestYTSLiveSearchInterstellar(t *testing.T) {
 	// apibay's did, with T73's fix sitting one file away and not applicable.
 	client, rec := liveClient(30 * time.Second)
 
+	dnsWorks := liveDNSWorks(ctx, ytsControlHost)
+
 	releases, err := NewYTS(client).SearchMovie(ctx, "Interstellar", 2014)
 	if err != nil {
 		// Only a transport failure or a refused caller is "no network". A decode
 		// failure or a status YTS should not be returning is a real regression
 		// and must not be skipped past — that is how a dead base URL stays green
-		// for a week. classifyLiveFailure holds both halves; see live_test.go.
-		if verdict, why := classifyLiveFailure(err, rec.lastStatus()); verdict == liveSkip {
+		// for a week. A base URL that does not resolve is that same regression,
+		// and it is caught here only because apibay.org proves DNS works first.
+		// classifyLiveFailure holds all three; see live_test.go.
+		if verdict, why := classifyLiveFailure(err, rec.lastStatus(), dnsWorks); verdict == liveSkip {
 			t.Skipf("skipping live YTS test: %s: %v", why, err)
 		}
 		t.Fatalf("live YTS search: %v", err)

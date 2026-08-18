@@ -171,10 +171,21 @@ Since T76 those two share one rule, in `internal/indexer/live_test.go`:
 a probe, and both tests ask it. A refused caller (403/401/429) or a transport
 failure skips; every other non-200, and any decode failure, still fails loudly.
 Do not add a third live indexer test with its own private rule — that divergence
-is what T76 existed to remove. **One gap is known and open**: a base URL that has
-gone NXDOMAIN takes the transport branch and skips, so D12's own failure would
-not be caught by the guard D12 paid for. See
-[`docs/tasks/T76-a-skip-that-covers-the-call.md`](docs/tasks/T76-a-skip-that-covers-the-call.md).
+is what T76 existed to remove.
+
+**T77 closed the gap T76 measured**: a base URL that has gone NXDOMAIN used to
+take the transport branch and skip, so D12's own failure went green under the
+guard D12 paid for. It now **fails** — but only once a control name has proved
+the machine is online, because `IsNotFound` alone cannot be trusted here. Go maps
+`EAI_NONAME`/`EAI_NODATA` to "no such host" (`net/cgo_unix.go:189`) and macOS
+answers that way with no network at all, so on a laptop with the WiFi off a dead
+host and an offline machine are the **same error value**. The control is the
+other indexer's host — `TestTPBLive` asks `movies-api.accel.li` and
+`TestYTSLiveSearchInterstellar` asks `apibay.org` — which adds no third party and
+makes each test the other's cross-check. A refused host still resolves, so T73's
+403 does not disarm it. See
+[D42](docs/decisions.md#d42--a-dead-base-url-fails-the-build-but-only-once-a-control-name-proves-the-machine-is-online)
+and [`docs/tasks/T77-a-dead-host-fails-loudly.md`](docs/tasks/T77-a-dead-host-fails-loudly.md).
 
 ### What a worktree does not fix, because it is global to the machine
 

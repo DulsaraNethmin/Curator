@@ -508,7 +508,8 @@ func TestTPBNewTPBDefaultsClient(t *testing.T) {
 
 // TestTPBLive is the one test that talks to apibay. It skips under -short, and
 // it skips when this network cannot use apibay — but once apibay answers at all,
-// a wrong answer is a real failure.
+// a wrong answer is a real failure, and apibay's NAME going away is a real
+// failure too.
 //
 // The skip/fail decision lives in live_test.go and is shared with YTS. It is
 // applied to THE SEARCH rather than to a HEAD probe, which is the whole of T76:
@@ -516,6 +517,10 @@ func TestTPBNewTPBDefaultsClient(t *testing.T) {
 // the search that followed could still time out — and this test then called
 // t.Fatalf on a transport error that yts_test.go's own rule says is a skip.
 // Classifying the call needs no probe, because the search is its own probe.
+//
+// The control name (T77, D42) is YTS's host, and it is what lets an unresolvable
+// apibay.org fail loudly instead of skipping: if movies-api.accel.li resolves,
+// DNS works here and apibay is genuinely gone. Until T77 that case skipped.
 func TestTPBLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live apibay search skipped under -short")
@@ -529,9 +534,11 @@ func TestTPBLive(t *testing.T) {
 	defer cancel()
 	tpb := NewTPB(client)
 
+	dnsWorks := liveDNSWorks(ctx, tpbControlHost)
+
 	releases, err := tpb.SearchMovie(ctx, "Interstellar", 2014)
 	if err != nil {
-		if verdict, why := classifyLiveFailure(err, rec.lastStatus()); verdict == liveSkip {
+		if verdict, why := classifyLiveFailure(err, rec.lastStatus(), dnsWorks); verdict == liveSkip {
 			t.Skipf("skipping live apibay test: %s: %v", why, err)
 		}
 		t.Fatalf("live SearchMovie: %v", err)
@@ -551,7 +558,7 @@ func TestTPBLive(t *testing.T) {
 	if err != nil {
 		// Same rule as the search above: apibay can refuse or time out between
 		// the two calls, and neither is this assertion failing.
-		if verdict, why := classifyLiveFailure(err, rec.lastStatus()); verdict == liveSkip {
+		if verdict, why := classifyLiveFailure(err, rec.lastStatus(), dnsWorks); verdict == liveSkip {
 			t.Skipf("skipping live apibay sentinel check: %s: %v", why, err)
 		}
 		t.Fatalf("live SearchMovie (absurd query): %v", err)
