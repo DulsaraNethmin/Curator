@@ -29,7 +29,11 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  # `contents: write` so the tag can become a GitHub Release. It is the release
+  # feed curator's update check reads (docs/decisions.md D44), and until T80
+  # this workflow published an image and left `releases/latest` answering 404 —
+  # a tag is not a release, and the API only knows about the second.
+  contents: write
   packages: write
 
 jobs:
@@ -178,3 +182,26 @@ jobs:
               echo "$platform is missing from $ref"; exit 1; }
           done
           echo "both platforms present in $ref"
+
+      # The release object itself, and the last step on purpose: it is what
+      # tells every running curator that a new version exists, so it must not
+      # announce one that failed to publish or lost an architecture above.
+      #
+      # `--generate-notes` writes the body from the commits since the previous
+      # tag. This repository's commit messages are the change log already, which
+      # is exactly the text somebody wants in front of an Update button.
+      - name: publish the release the update check reads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists, leaving it alone"
+            exit 0
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            --verify-tag
+          echo "published release $tag"

@@ -125,6 +125,14 @@ var registry = []Setting{
 	{Env: "VPN_REQUIRED", Group: "vpn", Kind: KindBool},
 	{Env: "VPN_IP_CHECK_URL", Group: "vpn", Kind: KindURL},
 
+	// Updating. curator reads a version number and asks somebody else to
+	// install it (docs/decisions.md D44), so these three are the whole of it:
+	// whether to look, where to look, and who to ask.
+	{Env: "UPDATE_CHECK", Group: "updates", Kind: KindBool},
+	{Env: "UPDATE_CHECK_URL", Group: "updates", Kind: KindURL},
+	{Env: "UPDATER_URL", Group: "updates", Kind: KindURL},
+	{Env: "UPDATER_TOKEN", Group: "updates", Kind: KindText, Secret: true},
+
 	{Env: "INDEXER_YTS", Group: "indexers", Kind: KindBool},
 	{Env: "INDEXER_TPB", Group: "indexers", Kind: KindBool},
 	{Env: "INDEXER_1337X", Group: "indexers", Kind: KindBool},

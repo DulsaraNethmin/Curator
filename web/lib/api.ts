@@ -320,6 +320,34 @@ export type Deletion = {
   folder_left?: string;
 };
 
+/**
+ * UpdateStatus is what the Updates card renders.
+ *
+ * `available` and `can_install` are two different questions and the card needs
+ * both: a new version can exist with nothing on this box able to install it,
+ * which is the normal state for anyone running curator without watchtower
+ * beside it (docs/decisions.md D44). That case shows `command`, not a button.
+ */
+export type UpdateStatus = {
+  current: string;
+  latest?: string;
+  available: boolean;
+  url?: string;
+  notes?: string;
+  checked_at?: string;
+  can_install: boolean;
+  command?: string;
+  busy: boolean;
+
+  /** False when UPDATE_CHECK is off, which is why `latest` is empty. Without
+   *  this the card cannot tell "up to date" from "never looked". */
+  checking: boolean;
+
+  /** Why the check could not be made. Shown beside the running version rather
+   *  than instead of it: a failed check is not a broken curator. */
+  error?: string;
+};
+
 export type Integration = {
   name: string;
   env: string;
@@ -680,6 +708,17 @@ export const api = {
   movie: (id: number) => request<MovieRow>(`/api/movies/${id}`),
 
   scan: () => request<ScanResult>('/api/scan', { method: 'POST' }),
+
+  // `force` is the "Check again" button. A page load must not spend a request:
+  // GitHub allows 60 an hour to an unauthenticated address and a household may
+  // have more than one curator behind it.
+  update: (force = false) =>
+    request<UpdateStatus>(`/api/update${force ? '?force=true' : ''}`),
+
+  // Answers 202 and then the connection dies, because the updater restarts the
+  // container this request was served by. That is success, not failure — the
+  // caller reloads rather than waiting for a body.
+  updateNow: () => request<{ state: string; detail: string }>('/api/update', { method: 'POST' }),
 
   // The release-name search. It asks three indexers what files exist, which is
   // a different question from tmdbSearch's "which film is this" — and it is the

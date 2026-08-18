@@ -71,9 +71,23 @@ type Config struct {
 	TorrentPort       int
 	TorrentStallAfter time.Duration
 
-	VPNConfig     string
-	VPNRequired   bool
-	VPNIPCheckURL string
+	VPNConfig   string
+	VPNRequired bool
+
+	// Updating. UpdateCheck is whether curator may ask the release feed at all:
+	// it is one unauthenticated GET to a public endpoint, sending nothing about
+	// this install, but it is still a request somebody may not want their media
+	// server making and it is therefore a switch rather than an assumption.
+	//
+	// UpdaterURL and UpdaterToken point at something that holds the Docker
+	// socket. curator never holds it (docs/decisions.md D44), so an empty
+	// UpdaterURL is the normal state and means the screen offers a command to
+	// paste instead of a button.
+	UpdateCheck    bool
+	UpdateCheckURL string
+	UpdaterURL     string
+	UpdaterToken   string
+	VPNIPCheckURL  string
 
 	// Phase 8: playback.
 	//
@@ -360,10 +374,22 @@ func Load(resolved map[string]string) (*Config, error) {
 		DownloadsDir:  r.get("DOWNLOADS_DIR", defaultDownloadsDir),
 		VPNIPCheckURL: r.get("VPN_IP_CHECK_URL", ""),
 
+		// Both empty by default. The check URL falls back to the release feed
+		// inside internal/update rather than being spelled here, so there is
+		// one place that knows where releases live.
+		UpdateCheckURL: r.get("UPDATE_CHECK_URL", ""),
+		UpdaterURL:     r.get("UPDATER_URL", ""),
+		UpdaterToken:   r.get("UPDATER_TOKEN", ""),
+
 		// No default, and empty is meaningful: "look on PATH". A default of
 		// "ffmpeg" here would be the same behaviour spelled twice, and it would
 		// make the settings screen show a value nobody typed.
 		FFmpegPath: r.get("FFMPEG_PATH", ""),
+
+		// On by default, and the opposite of the VPN switch below: knowing a
+		// security fix exists is worth more than the one request it costs, and
+		// an update nobody hears about is the failure this defaults against.
+		UpdateCheck: true,
 
 		// Mandatory by default, and it has to be typed to turn off. A VPN that
 		// defaults to optional is a slogan (docs/decisions.md D27).
@@ -419,6 +445,7 @@ func Load(resolved map[string]string) (*Config, error) {
 		field *bool
 	}{
 		{"VPN_REQUIRED", &cfg.VPNRequired},
+		{"UPDATE_CHECK", &cfg.UpdateCheck},
 		{"INDEXER_YTS", &cfg.IndexerYTS},
 		{"INDEXER_TPB", &cfg.IndexerTPB},
 		{"INDEXER_1337X", &cfg.IndexerX1337},

@@ -31,6 +31,8 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/settings"
 	"github.com/DulsaraNethmin/curator/internal/store"
 	"github.com/DulsaraNethmin/curator/internal/tmdb"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
+	"github.com/DulsaraNethmin/curator/internal/update"
 	"github.com/DulsaraNethmin/curator/internal/vpn"
 	"github.com/DulsaraNethmin/curator/internal/web"
 )
@@ -203,6 +205,21 @@ func run() error {
 	// just switched it on (docs/decisions.md D29). A probe that existed only
 	// when the toggle was already live would go dark exactly when it is needed.
 	minterClient := indexer.NewMinter(cfg.MinterURL)
+
+	// The release feed and the thing that installs from it. Both are plain
+	// HTTP clients on the host's stack: the tunnel carries peer traffic and
+	// nothing else (internal/vpn's package comment), and an update that could
+	// only be found through a working VPN would be unreachable on exactly the
+	// install that needs fixing.
+	//
+	// updateChecker is nil when UPDATE_CHECK is off, and updater is nil when no
+	// UPDATER_URL is set. Both nils are ordinary configurations rather than
+	// failures, and the screen has a sentence for each.
+	var updateChecker *update.Checker
+	if cfg.UpdateCheck {
+		updateChecker = update.NewChecker(Version, cfg.UpdateCheckURL, indexerHTTP)
+	}
+	updater := update.NewUpdater(cfg.UpdaterURL, cfg.UpdaterToken, indexerHTTP)
 
 	var indexers []indexer.Indexer
 	if cfg.IndexerYTS {
@@ -398,6 +415,16 @@ func run() error {
 		WithIndexers(api.IndexerSetup{
 			Minter: minterClient,
 			X1337:  cfg.IndexerX1337,
+		}).
+		// Phase 10's answer to "how does the box get the next version". curator
+		// reads a version number and asks something that holds the Docker
+		// socket to install it; it never holds the socket itself
+		// (docs/decisions.md D44, docs/tasks/T80-update-from-the-app.md).
+		WithUpdates(api.UpdateSetup{
+			Checker: updateChecker,
+			Updater: updater,
+			Command: updateCommand(cfg),
+			Busy:    downloadsInFlight(torrents, cfg.QBitCategory),
 		})
 	apiSrv.Register(mux)
 	apiSrv.RegisterSearch(mux)
@@ -410,6 +437,7 @@ func run() error {
 	apiSrv.RegisterStream(mux)
 	apiSrv.RegisterJellyfin(mux)
 	apiSrv.RegisterIndexers(mux)
+	apiSrv.RegisterUpdates(mux)
 	auth.Register(mux)
 
 	// The UI is mounted last and at "/", so it can never shadow an API pattern.
@@ -672,6 +700,11 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 // resolution instead.
 func effective(cfg *config.Config) map[string]string {
 	return map[string]string{
+		"update_check":     strconv.FormatBool(cfg.UpdateCheck),
+		"update_check_url": cfg.UpdateCheckURL,
+		"updater_url":      cfg.UpdaterURL,
+		"updater_token":    cfg.UpdaterToken,
+
 		"library_movies": cfg.LibraryMovies,
 		"tmdb_api_key":   cfg.TMDBAPIKey,
 
@@ -960,6 +993,41 @@ func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client
 		return nil, nil, err
 	}
 	return built, guard, nil
+}
+
+// updateCommand is what somebody types when there is no updater to press a
+// button on. It names the overlay when one is in play, because a bare
+// `docker compose pull` in a directory with two files silently drops the second
+// and would put this box's media volume back on the wrong disk.
+func updateCommand(_ *config.Config) string {
+	return "docker compose pull && docker compose up -d"
+}
+
+// downloadsInFlight reports whether anything is still being fetched.
+//
+// Advisory only: an update restarts the container, the engine resumes from
+// boltdb, and nothing is lost. It exists because a progress bar vanishing
+// without warning reads as a crash, and one sentence in front of the button
+// costs nothing.
+func downloadsInFlight(torrents download.TorrentClient, category string) func(context.Context) bool {
+	if torrents == nil {
+		return nil
+	}
+	return func(ctx context.Context) bool {
+		rows, err := torrents.Torrents(ctx, category)
+		if err != nil {
+			// Unknown is reported as not busy. This only softens a warning, and
+			// blocking the update path on a failed listing would be the worse
+			// of the two failures.
+			return false
+		}
+		for _, r := range rows {
+			if r.State == torrent.StateDownloading || r.State == torrent.StateQueued {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 func backendDetail(cfg *config.Config) string {
