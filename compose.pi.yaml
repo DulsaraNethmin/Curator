@@ -1,0 +1,99 @@
+# curator on the Pi — an overlay, never a replacement.
+#
+#   docker compose -f compose.yaml -f compose.pi.yaml --profile 1337x up -d
+#
+# The point of T53 is that the SHIPPED artefact runs somewhere that is not a
+# laptop, so the `curator` service below adds to compose.yaml and changes
+# nothing in it. Two facts about this particular box are all that is here.
+#
+# ONE — the media volume has to live on the right disk. compose.yaml names it
+# `curator-media` and lets Docker place it, which on this Pi means
+# /var/lib/docker on `/dev/mmcblk0p2`: a 29 GB SD card with 13 GB free. The
+# films are meant for /dev/sda1, 916 GB with 870 GB free. Left alone this does
+# not fail at `up -d` — it fails three films later, by filling the root
+# filesystem out from under every other container on the box. Rebinding the
+# volume rather than re-declaring the mount is deliberate: the service keeps
+# `media:/media` exactly as published, and only the backing store moves.
+#
+# It also keeps D8's hardlink working, which is the same fact from the other
+# side. /media/movies and /media/downloads are two directories inside ONE bind,
+# so they are one filesystem and `link()` succeeds; two binds would be two
+# mounts, and the importer would fall back to a copy and silently store every
+# film twice — which is precisely the 201 GB D43 just deleted.
+#
+# TWO — the tunnel is a file. curator parses a wg-quick config
+# (internal/vpn/config.go), so VPN_CONFIG_FILE points at one. NORDVPN_USERNAME
+# and NORDVPN_PASSWORD from the T52 backup are NOT this: those are what gluetun
+# consumed, and gluetun derived a NordLynx config from them. Nothing in this
+# repository reads either variable.
+#
+# Not here, on purpose:
+#   - the `jellyfin` profile. This Pi already runs Jellyfin 10.10.7 at :8096 and
+#     T66 adopts that server rather than standing up a second one. A profile is
+#     opt-in, so plain `up -d` cannot start it by accident — but the flag is
+#     easy to type out of habit, and this comment is the reason not to.
+#   - PUID/PGID. /media/storage/media is already 1000:1000 and the image runs as
+#     1000, so the default is correct and an override would only invite drift.
+#   - CURATOR_PORT. 8090 is free on this box; :7878, :8989, :9696, :8080, :8191,
+#     :5055, :3000, :9000 and :9443 are the \*arr stack's and are going away.
+
+services:
+  curator:
+    # T53 deploys a NAMED release, not a moving one. compose.yaml floats
+    # `latest` on purpose — that is the quickstart's contract and T48 publishes
+    # it — but this box is the one place that must not take a new curator
+    # unannounced, for a reason measured on it rather than assumed:
+    #
+    #   watchtower runs here as `--cleanup --interval 86400` with NO
+    #   `--label-enable`, so it watches EVERY container on the Pi and pulls a
+    #   moved tag once a day.
+    #
+    # On `latest` that is a curator which restarts itself mid-download at an
+    # hour nobody chose, and `--cleanup` removes the image it was running. D43
+    # keeps watchtower, so this is permanent rather than a phase-10 detail.
+    # `0.1.0`, and NOT `v0.1.0`: release.yml:64 does `version="${tag#v}"`, so the
+    # git tag carries the v and the image tag does not. Getting this wrong is not
+    # a typo that fails loudly at the registry in a useful way — `docker pull`
+    # answers `manifest unknown`, which reads like a missing release rather than
+    # a missing letter. Published: 0.1.0, 0.1, latest.
+    image: ghcr.io/dulsaranethmin/curator:0.1.0
+
+    # The pin alone is not quite the whole guarantee: watchtower re-pulls on a
+    # changed DIGEST, not on a changed tag string, so it would still move a
+    # release tag that got overwritten. This label is the actual opt-out, and it
+    # says the intent in a way the tag cannot.
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
+
+    # A target that does NOT appear in compose.yaml, which is what makes this
+    # safe to merge: Compose appends volume entries in some versions and keys
+    # them by target in others, and re-declaring `media:/media` here would mean
+    # two mounts on one target under the first rule. Adding a new target is
+    # correct under both.
+    #
+    # Read-only, and outside /data: the database volume is curator's to rewrite
+    # and this file is not curator's at all. Mode 600 owned by 1000 on the host,
+    # because the process reading it is uid 1000 and a root-owned 600 file is a
+    # tunnel that fails to start with a permissions error.
+    volumes:
+      - /opt/curator/wg0.conf:/run/secrets/wg0.conf:ro
+
+    environment:
+      # Fatal if unreadable, by design — settings/resolve.go:66 refuses to fall
+      # through to a stored value, so a typo here is a curator that will not
+      # start rather than a curator quietly running on the wrong tunnel.
+      VPN_CONFIG_FILE: /run/secrets/wg0.conf
+
+      # Explicit, though it is already the default. This is the one box where
+      # being wrong about it means peer traffic leaving on the home address, and
+      # D27 would rather that be stated in the file than inherited.
+      VPN_REQUIRED: "true"
+
+volumes:
+  media:
+    name: curator-media
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /media/storage/media

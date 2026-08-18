@@ -237,8 +237,15 @@ and [`docs/tasks/T77-a-dead-host-fails-loudly.md`](docs/tasks/T77-a-dead-host-fa
 - **`make clean`.** `Makefile:66` runs `go clean -cache -testcache`, which is
   every agent's cache and not this one's.
 - **The tunnel, qBittorrent, and the Pi.** One `wg0.conf` is one private key and
-  one peer session, so two `make live-tunnel`s make the endpoint flap. The
-  qBittorrent category is `curator` for everyone. The Pi is read-only anyway.
+  one peer session, so two `make live-tunnel`s make the endpoint flap — but the
+  flap is about the ENDPOINT, not the key. NordVPN issues one NordLynx key per
+  account, and a WireGuard session is per *(server, client key)* pair, so two
+  boxes on two different servers are two independent sessions. The Pi runs on
+  `187.15.101.96` (Singapore #647) precisely because the laptop holds
+  `187.15.102.104`, and NordVPN's own recommendation API returns the laptop's
+  server first — so a second config has to CHOOSE its endpoint, not accept one.
+  The qBittorrent category is `curator` for everyone.
+  **The Pi is no longer read-only**: T53 deployed curator to it on 2026-08-18.
 
 ### Any timing measured while agents run in parallel is noise
 
