@@ -85,6 +85,17 @@ jobs:
       # internal/engine, one each in internal/vpn and internal/qbit. Nothing
       # reached 192.168.1.26, which CI could not route to anyway.
       #
+      # Ten is not the whole population, and this comment used to imply it was.
+      # TestTPBLive (internal/indexer) and TestYTSLiveSearchInterstellar
+      # (internal/indexer) are live tests for the two indexers that need no
+      # credential, so they have no missing variable to skip on. They gate on
+      # -short, which is not passed here, so these two DO leave the runner for
+      # the public internet on every run. That is deliberate — they are what
+      # catches a dead base URL, which D12 paid for once already — but it is not
+      # what the paragraph above says, and T73 spent three red runs finding out:
+      # apibay answers 200 from a home connection and 403 from a GitHub address
+      # range. TestTPBLive now reads the status and skips on a refusal.
+      #
       # This is also why the gate is run verbatim instead of with -short: the
       # skips do not need it, and adding it here would be the second definition
       # of the gate that the header refuses.
