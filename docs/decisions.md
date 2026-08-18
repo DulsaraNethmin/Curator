@@ -1925,8 +1925,16 @@ titles, the years and the ` - ` colon substitutions that
 [CLAUDE.md's title-parsing trap](../CLAUDE.md) is built on are all still here. A sized inventory was
 captured beside the T52 backup before the delete.
 
-**The T52 backup is still worth having**, and this is why it was not skipped: its `.env` carries
-`NORDVPN_USERNAME` and `NORDVPN_PASSWORD`, which curator needs for its own tunnel.
+**The T52 backup is still worth having**, though not for the reason written here first. This
+paragraph originally read "its `.env` carries `NORDVPN_USERNAME` and `NORDVPN_PASSWORD`, which
+curator needs for its own tunnel," and **that sentence is wrong**, corrected while T53 was being
+prepared. Nothing in this repository reads either variable: `internal/vpn/config.go` parses a
+wg-quick `.conf` and `validate()` demands `PrivateKey`, a peer `PublicKey` and an `Endpoint`.
+gluetun consumed those credentials and *derived* a NordLynx config from them; curator has no such
+step, which is the cost of owning the tunnel in-process rather than delegating it.
+
+The backup is worth having because it is the \*arr rollback, which is what T52 was always for. The
+tunnel is a separate problem and [T53](tasks/T53-run-alongside.md) states it.
 
 What is genuinely gone is **163 GB of media**, which is re-downloadable, and Jellyfin's watch state
 for it. Jellyfin itself is untouched and stays.
