@@ -1948,5 +1948,83 @@ import, play — which is a weaker assertion honestly labelled rather than a mis
 
 ---
 
+## D44 — curator reads the version; something else installs it
+
+**Status:** decided and built · **Settles** [T80](tasks/T80-update-from-the-app.md) · **Asked for**
+after [T53](tasks/T53-run-alongside.md) put curator on the Pi and [T79](tasks/T79-the-download-button.md)
+produced a fix with no way to reach it
+
+A container cannot replace itself. curator's image is `FROM scratch` and its process is uid 1000
+with no shell ([T47](tasks/T47-image.md)), so an in-app Update button has to end somewhere that can
+talk to the Docker daemon. There were three places it could end and the choice is the decision.
+
+### What was rejected, and why it was tempting
+
+**Mounting `/var/run/docker.sock` into curator.** One container, one button, no dependency, works on
+every install. It was refused because that socket is root on the host: it can start a privileged
+container, bind-mount `/`, and read or rewrite anything. curator answers on the LAN, parses
+untrusted HTML from three indexers and renders release names from strangers. Handing that process
+the ability to rewrite every container on the box is a trade nobody would make deliberately, and it
+would undo the exact property T47 built the scratch image to have.
+
+**Watchtower on a timer**, which is what the Pi was already doing to every other container:
+`--cleanup --interval 86400`, no `--label-enable`. T53 turned it off for curator on arrival, because
+an unattended updater restarts the container at an hour nobody chose — possibly mid-download — and
+`--cleanup` then deletes the image it was running. Automatic updating is a different product
+decision from *being able* to update, and only the second was asked for.
+
+### What was chosen
+
+**curator reads a version number over HTTPS and asks an updater to install it.** The privilege lives
+in the updater, which is watchtower under compose's `updater` profile, holding the socket in eight
+readable lines. curator holds nothing.
+
+The bundle's updater runs `--http-api-update --http-api-periodic-polls=false --scope curator
+--cleanup`. The second flag is the one that matters: without it this is the timer that was just
+rejected. The third keeps it to containers carrying `com.centurylinklabs.watchtower.scope=curator`,
+so an updater that *does* hold the socket still cannot reach a household's other containers.
+`UPDATER_TOKEN` is mandatory — `${UPDATER_TOKEN:?…}` makes compose refuse to start rather than leave
+a restart endpoint answering to anyone on the network.
+
+### Three states, and the screen says which
+
+A newer version with an updater configured is a button. A newer version with no updater is **the
+command to paste, and that is not an error** — it is the ordinary state of anyone running curator
+without watchtower, and it must work identically there. No newer version, or checking switched off,
+are also different sentences: "up to date" and "never looked" must never be printed for each other.
+
+### What it costs, stated rather than discovered
+
+**curator cannot report whether the update worked.** Triggering one restarts the container serving
+the request, so the last thing the process does is send it. The screen says "restarting", the
+connection dies, and the answer is a page that loads again on a new version. The UI treats that
+dropped connection as success, because it is.
+
+**A version check is a request to GitHub.** It sends nothing about the install and reads a public
+endpoint, but it is still a request a media server makes on its own, so `UPDATE_CHECK` is a switch.
+It defaults **on**: knowing a security fix exists is worth more than the one request, and the
+failure this defaults against is an update nobody hears about.
+
+### The flaw this design walked into, and the rule that came out
+
+The first implementation probed the updater before offering the button. **watchtower's `/v1/update`
+is a GET, so the probe performed the update** — opening the Settings screen against a tokenless
+updater would pull an image and restart curator. It was caught by running it and watching the
+request counter, not by reading it.
+
+There is no safe read-only endpoint to substitute, so the probe is gone: the button is offered
+whenever a URL is configured, and a wrong token is reported when it is pressed. **An action endpoint
+is touched at the moment the action is wanted and at no other time**, and
+`TestProbingIsRefusedBecauseTheUpdateEndpointIsAGet` pins it.
+
+### One thing that had to be fixed for any of it to work
+
+There were **no GitHub Releases at all** — `release.yml` pushed tags and images and never created a
+release object, so `releases/latest` answered 404 forever. The pipeline now publishes one with
+`--generate-notes`, and the checker reports a 404 as "no releases have been published yet" rather
+than as a fault.
+
+---
+
 D23 remains reserved for phase 9's socket cost and is still unwritten. D26 was written at the
 front of phase 10 and reversed by [D43](#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader) two days later.

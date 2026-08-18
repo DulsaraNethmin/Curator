@@ -135,6 +135,11 @@ type Server struct {
 	// holds minter's probe and nothing that can fetch a page through it.
 	indexers *IndexerSetup
 
+	// updates is the Updates screen's dependencies, attached with WithUpdates.
+	// Nil in any process that was built without them, which is every test that
+	// does not care.
+	updates *UpdateSetup
+
 	// tickets mints phase 8's playback credential, attached with WithTickets.
 	// Nil is the state every install without a password is in, and it is what
 	// makes POST .../playback answer with a plain URL.

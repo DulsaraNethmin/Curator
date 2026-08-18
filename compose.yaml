@@ -111,6 +111,12 @@ services:
     # encrypted with, deliberately together: anything that copies the volume
     # copies both, and a database restored without its key keeps every row and
     # cannot read one secret back (docs/decisions.md D28).
+    # What the `updater` profile's watchtower matches on. Without it a scoped
+    # updater cannot see curator, and the button would answer cheerfully having
+    # updated nothing.
+    labels:
+      com.centurylinklabs.watchtower.scope: curator
+
     volumes:
       - data:/data
       - media:/media
@@ -227,6 +233,45 @@ services:
     # from `up -d` to healthy here, with GET /health then answering
     # {"ok":true,...} and the patched Firefox 151 user agent. Long enough that
     # the screen has to poll rather than check once, the same as Jellyfin.
+
+  updater:
+    # The one container in this file that gets the Docker socket, and the reason
+    # curator does not (docs/decisions.md D44). curator reads a version number
+    # over HTTPS and asks this to install it; the privilege lives here, in eight
+    # lines somebody can read, instead of inside a media manager that answers on
+    # the LAN.
+    image: containrrr/watchtower:1.7.1
+
+    # Opt-in, like Jellyfin and minter. An updater that arrives uninvited is the
+    # same surprise D34 refused for a media server — and this one can restart
+    # things, so it is the last service that should start by default.
+    profiles: [updater]
+    restart: unless-stopped
+
+    # `--http-api-periodic-polls=false` is the line that matters. Without it
+    # this becomes a scheduled updater that restarts curator at an hour nobody
+    # chose, possibly mid-download — which is precisely what T53 turned OFF on
+    # the Pi after finding watchtower there doing exactly that to everything.
+    # With it, watchtower does nothing at all until the button is pressed.
+    #
+    # `--scope curator` keeps it to containers carrying the matching label, so
+    # this cannot reach a household's other containers even though it holds the
+    # socket. `--cleanup` drops the superseded image rather than leaving one
+    # behind on every release.
+    command: --http-api-update --http-api-periodic-polls=false --scope curator --cleanup
+
+    environment:
+      # No default. An empty token would leave an endpoint that restarts
+      # containers answering to anybody on this network, so the bundle refuses
+      # to start rather than pick one — `${VAR:?message}` is compose's own way
+      # of saying a value is mandatory.
+      WATCHTOWER_HTTP_API_TOKEN: ${UPDATER_TOKEN:?set UPDATER_TOKEN in .env to enable the updater}
+
+    # No ports. curator reaches it at http://updater:8080 on this network, and
+    # publishing it would put a restart button on the LAN.
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 # Named outright, so they are `curator-data` and `curator-media` on every host
 # rather than the project directory plus an underscore. The four lines in the

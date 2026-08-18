@@ -222,6 +222,10 @@ Every row is stored, has one environment variable, and takes effect at the next 
 | | `jellyfin_public_url` · `JELLYFIN_PUBLIC_URL` | url | **phase 8**; empty = use `jellyfin_url` |
 | Access | `auth_enabled` · `AUTH_ENABLED` | bool | default `false`; **applies at once** |
 | | `auth_password` · `AUTH_PASSWORD` | **write-only, hashed** | applies at once |
+| Updates | `update_check` · `UPDATE_CHECK` | bool | default `true`; **phase 10** ([D44](decisions.md#d44--curator-reads-the-version-something-else-installs-it)) |
+| | `update_check_url` · `UPDATE_CHECK_URL` | url | empty = the project's own release feed |
+| | `updater_url` · `UPDATER_URL` | url | empty = show the command instead of a button |
+| | `updater_token` · `UPDATER_TOKEN` | **secret** | what the updater's API requires |
 
 **Playback was not in this table when phase 7 shipped**, and the plan's "done when" said it should
 be. Playback settings did not exist until phase 8 built the thing they configure, and inventing a

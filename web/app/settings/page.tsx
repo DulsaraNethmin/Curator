@@ -6,6 +6,7 @@ import { Failure, Working } from '@/components/states';
 import { Section } from '@/components/settings/section';
 import { Playback } from '@/components/settings/playback';
 import { MinterStatus } from '@/components/settings/minter';
+import { Updates } from '@/components/settings/updates';
 import { truthy } from '@/components/settings/field';
 
 /**
@@ -87,6 +88,8 @@ export default function Settings() {
             onSaved={setSettings}
           />
         ))}
+
+      <Updates />
 
       <h2 className="running">What this process is running</h2>
       <p className="small muted" style={{ margin: '0 0 1rem', maxWidth: '52rem' }}>
