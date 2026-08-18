@@ -56,7 +56,7 @@ services:
     # a typo that fails loudly at the registry in a useful way — `docker pull`
     # answers `manifest unknown`, which reads like a missing release rather than
     # a missing letter. Published: 0.1.0, 0.1, latest.
-    image: ghcr.io/dulsaranethmin/curator:0.1.0
+    image: ghcr.io/dulsaranethmin/curator:0.2.0
 
     # The pin alone is not quite the whole guarantee: watchtower re-pulls on a
     # changed DIGEST, not on a changed tag string, so it would still move a
