@@ -1,8 +1,11 @@
 # Working in this repo
 
-`curator` replaces the seven-container *arr layer on a Raspberry Pi with one Go binary and an
-embedded Next.js UI — and **since phase 6 it is being rebuilt into a product anyone runs with one
-`docker run`**, which changes the goal rather than the code written so far. Where a document still
+`curator` replaces the \*arr layer on a Raspberry Pi with one Go binary and an embedded Next.js UI —
+and **since phase 6 it is being rebuilt into a product anyone runs with one `docker run`**, which
+changes the goal rather than the code written so far. The container arithmetic has moved twice and
+the current number is
+[D43](docs/decisions.md#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader)'s:
+**thirteen services become five** — jellyfin, portainer, watchtower, homepage and curator. Where a document still
 describes "13 containers become 6", it is stale: [`docs/phase-6.md`](docs/phase-6.md) is the target,
 and T51 clears the rest. Read [`docs/architecture.md`](docs/architecture.md) for the system,
 [`docs/progress.md`](docs/progress.md) for where we are right now,
@@ -23,10 +26,15 @@ inside the binary
 and verified locally**: settings are writable, secrets are encrypted at rest and write-only across
 the API, and one optional password gates it
 ([D28](docs/decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api),
-[D25](docs/decisions.md#d25--authentication-is-optional-and-off-by-default)). **Phase 8 is
-specified**: [`docs/phase-8.md`](docs/phase-8.md) makes the library something you can press play on —
-direct play, a remux for the containers a browser refuses, and Open in Jellyfin.
+[D25](docs/decisions.md#d25--authentication-is-optional-and-off-by-default)). **Phase 8 is built** —
+direct play, a remux for the containers a browser refuses, and Open in Jellyfin. **Phase 9 is built
+except [T51](docs/tasks/T51-documents.md)**, the documents, which waits on whether this repository
+and its ghcr package go public — `v0.1.0` published, but a private package makes the README's
+quickstart unrunnable for anyone else. **Phase 10, the cutover, has started**: see below, because it
+changes what may be touched.
 Tasks live in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
+`make status` derives the phases, the tasks and the decision gaps — read it rather than this
+paragraph for the current counts.
 
 ### Phase 4 writes to disk, and only ever locally
 
@@ -38,8 +46,11 @@ phase 6.
 
 Two traps worth naming. `syscall.Stat_t.Nlink` is `uint16` on darwin and `uint64` on linux, so read
 it through a converting helper or `GOOS=linux GOARCH=arm64 go vet ./...` breaks on a line that looks
-fine here. And **a folder does not imply a file** — 15 of the 29 library folders on the Pi are empty,
-and only 14 video files exist in total. Since
+fine here. And **a folder does not imply a file.** That rule was learned from the Pi, where 29 folders
+held only 16 films; the Pi's library is now empty
+([D43](docs/decisions.md#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader)),
+so `testdata/library/movies/` is the only place the shape survives — **29 directories, 3 with a video
+file and 26 carrying just a `.gitkeep`.** Since
 [D33](docs/decisions.md#d33--a-folder-with-no-film-in-it-is-not-a-movie-the-row-goes-the-folder-stays)
 the consequence is the opposite of what it used to be: such a folder is **not a movie**, every scan
 removes its row, and the directory itself is left exactly where it is.
@@ -97,11 +108,29 @@ resolves correctly. Before calling a 1337x failure a code bug, check minter is a
 resolve and look plausible but are clone sites running a re-implemented API. Check the base URL before
 concluding the parser broke.
 
-### Do not touch the Pi's running stack
+Since T77 a base URL that has gone NXDOMAIN **fails the live test loudly** rather than skipping, so
+this should not go unnoticed for a week again — but only once a control name proves DNS works
+([D42](docs/decisions.md#d42--a-dead-base-url-fails-the-build-but-only-once-a-control-name-proves-the-machine-is-online)).
+See the population note under *Fanning work out*.
 
-The *arr containers on `npi` keep serving until the cutover, which is **phase 10** — phase 6 builds
-the replacement on a laptop and changes nothing on the Pi. Read from the Pi freely; change nothing.
-`ssh pi` reaches it. The library is `/media/storage/media/movies`.
+### The Pi rule has changed — phase 10 started
+
+**This section used to say "change nothing on the Pi", and that expired on 2026-08-18.** Phases 1–9
+built the replacement on a laptop and touched nothing; phase 10 is the cutover and it has begun.
+
+What has already happened: the media disk was **emptied** — 363 GB deleted, 870 GB free,
+`media/{movies,tv,downloads}` all present and empty — and television was retired
+([D43](docs/decisions.md#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader),
+which reverses [D26](docs/decisions.md#d26--television-keeps-its-stack-the-cutover-removes-only-what-curator-replaces-for-movies)).
+The \*arr configs were backed up and one was restored to prove it
+([T52](docs/tasks/T52-arr-config-backup.md)); the backup lives outside this repository and holds the
+NordVPN credentials.
+
+What is still true: **all 11 containers are still running**, now pointing at empty directories, and
+none has been removed yet — that is [T54](docs/tasks/T54-remove-what-is-replaced.md), and it removes
+nine. **Jellyfin stays and must not be touched**; curator adopts that server rather than replacing
+it. `ssh pi` reaches the box; `/opt/docker` holds `compose.yml` and 627 MB of configs that are the
+rollback.
 
 ---
 
@@ -342,7 +371,7 @@ npx -y @mermaid-js/mermaid-cli@11 -i docs/diagram.mmd -o /tmp/out.svg
 | | |
 |---|---|
 | Pi | `ssh pi` → 192.168.1.26, Pi 5, arm64, Debian 13 |
-| Library | `/media/storage/media/movies` — 29 folders on a 916 GB USB disk |
+| Library | `/media/storage/media/movies` — **empty since D43**; 916 GB USB disk with 870 GB free |
 | Downloads | `/media/storage/media/downloads` — same filesystem, so imports hardlink |
 | TMDB | `TMDB_API_KEY` env var, free key from themoviedb.org |
 | minter | `MINTER_URL`, default `http://127.0.0.1:8191` — IPv4 only, so not `localhost` |
@@ -354,7 +383,15 @@ npx -y @mermaid-js/mermaid-cli@11 -i docs/diagram.mmd -o /tmp/out.svg
 
 ## Known broken upstream
 
-Nothing outstanding. `gluetun` was exited and `qbittorrent` had never started — an unresolved NordVPN
-`AUTH_FAILED` that blocked phases 3–4 verification. Both have been running healthy since 2026-08-12,
-so nothing is blocked. Container state drifts, so confirm with `ssh pi 'docker ps'` before relying
-on it.
+**`qbittorrent` on the Pi is dead and is staying dead.** Exit 255 at `2026-08-18T01:38:35Z` with
+`RestartCount` 0, and the cause is structural rather than a fault to fix: it runs
+`network_mode: "service:gluetun"`, and **`depends_on` binds `docker compose up`, not the Docker
+daemon's restart-on-boot.** The Pi rebooted, the daemon started qbittorrent before gluetun existed,
+it could not join a namespace that was not there, and nothing retried — measured, qbittorrent
+finished at `01:38:35.131Z` and gluetun started at `01:38:40.298Z`. It is the only `network_mode` in
+the file. [D43](docs/decisions.md#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader)
+retires that whole seam rather than repairing it, because curator's tunnel is in-process and has no
+equivalent.
+
+The older NordVPN `AUTH_FAILED` that blocked phases 3–4 is long resolved. Container state drifts, so
+confirm with `ssh pi 'docker ps'` before relying on any of this.
