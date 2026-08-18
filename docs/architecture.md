@@ -1,39 +1,56 @@
 # Architecture
 
-`curator` is one Go binary that does what seven containers do today: take a request for a movie,
-find a release, download it, file it into the library, and tell Jellyfin to pick it up.
+`curator` is one Go binary that does what nine containers used to: take a request for a movie, find a
+release, download it over a tunnel it brought up itself, file it into the library, and tell Jellyfin
+to pick it up.
 
 ## What it replaces
 
-The Pi currently runs 13 containers. Seven of them exist to generalise across 500+ indexers,
-private trackers with ratio rules, custom format scoring and multi-user request queues. The actual
-usage is one user, 29 movies and a handful of public sources.
+The Pi ran 13 containers. Nine of them existed to generalise across 500+ indexers, private trackers
+with ratio rules, custom format scoring and multi-user request queues — or to carry the torrent
+client and its VPN. The actual usage is one user, a few dozen movies and three public sources.
 
 ```mermaid
 flowchart LR
-    subgraph before["today · 13 containers"]
+    subgraph before["before · 13 containers"]
         direction TB
         arr["radarr · sonarr · prowlarr<br/>seerr · recyclarr<br/>flaresolverr · byparr"]
-        infra1["jellyfin · qbittorrent · gluetun"]
+        dl["qbittorrent · gluetun"]
+        infra1["jellyfin"]
         extra["homepage · watchtower · portainer"]
     end
 
-    subgraph after["after · 6 containers"]
+    subgraph after["after · 5 services"]
         direction TB
-        cur["curator<br/>one Go binary + embedded UI"]
+        cur["curator<br/>Go binary + embedded UI<br/>torrent engine + WireGuard, in process"]
         mint["minter<br/>Cloudflare solver"]
-        infra2["jellyfin · qbittorrent · gluetun"]
+        infra2["jellyfin"]
+        extra2["homepage · watchtower · portainer"]
     end
 
     arr -->|"collapse"| cur
     arr -->|"flaresolverr + byparr"| mint
-    infra1 -->|"unchanged"| infra2
-    extra -->|"dropped — the UI is the dashboard"| after
+    dl -->|"move inside the binary — D22, D27"| cur
+    infra1 -->|"kept, and adopted rather than replaced"| infra2
+    extra -->|"kept — they are not the arr problem"| extra2
 ```
 
-Jellyfin and qBittorrent stay because they solve genuinely hard problems — transcoding, client apps
-and subtitles on one side; DHT, peer wire protocol and piece selection on the other. Neither is part
-of the *arr problem, and both expose clean APIs.
+**Jellyfin stays** because transcoding, client apps and subtitles are a genuinely hard problem that
+is not the \*arr problem, and it exposes a clean API. curator adopts an existing one rather than
+replacing it.
+
+**qBittorrent and gluetun did not stay.** They were kept in the original plan for the same reason —
+DHT, the peer wire protocol and piece selection are hard — and phase 6 reversed that
+([D22](decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)):
+a pure-Go engine in curator's own process is what makes one tunnel, one socket and one mandatory-VPN
+promise possible ([D27](decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)).
+qBittorrent remains as the *second* backend for anyone migrating, selected with
+`TORRENT_BACKEND=qbittorrent`, and it is not a dependency.
+
+That count is the Pi's, and it is not the product's number. For anyone else, curator is **one
+container** — plus Jellyfin and minter as opt-in profiles. See
+[`roadmap.md`](roadmap.md#the-container-arithmetic-which-moved-twice) for why the arithmetic moved
+twice.
 
 ## The pipeline
 
@@ -43,7 +60,8 @@ sequenceDiagram
     participant C as curator
     participant T as TMDB
     participant I as indexers
-    participant Q as qBittorrent
+    participant E as torrent engine
+    participant W as WireGuard tunnel
     participant F as filesystem
     participant J as Jellyfin
 
@@ -54,13 +72,20 @@ sequenceDiagram
     C->>I: search YTS · TPB · 1337x
     I-->>C: ranked releases with magnets
     U->>C: pick one
-    C->>Q: add magnet, tag curator
-    loop every 30s
-        C->>Q: poll state
+    C->>E: add magnet
+    Note over E,W: refused unless the tunnel is up
+    E->>W: every peer connection, and only these
+    loop while downloading
+        C->>E: poll state
     end
     C->>F: hardlink into movies/Title (Year)/
     C->>J: refresh library
 ```
+
+**The engine and the tunnel are inside curator's process**, not two more containers — the participant
+boxes are packages, not services. And the tunnel carries the torrent traffic **and nothing else**:
+TMDB, the indexers, Jellyfin and the UI all go out over the host's own connection, so a tunnel that
+drops stops downloads instead of locking somebody out of their library.
 
 Downloads are **manually triggered** — you search, you see ranked releases, you pick one. No
 background monitoring or scoring heuristics. For a single user that is usually better than
@@ -123,7 +148,7 @@ type Indexer interface {
 
 | Source | Access | Cost | Notes |
 |---|---|---|---|
-| YTS | `yts.mx/api/v2` | fast | Returns `quality`, `size_bytes`, `hash` as fields — no name parsing |
+| YTS | `movies-api.accel.li/api/v2` | fast | Returns `quality`, `size_bytes`, `hash` as fields — no name parsing. **Not `yts.mx`**, which is NXDOMAIN ([D12](decisions.md#d12--yts-is-reached-at-movies-apiaccelli-not-ytsmx)); `yts.rs` and `yts.hn` are clone sites running a re-implemented API |
 | The Pirate Bay | `apibay.org/q.php` | fast | JSON; build magnet from `info_hash`, parse quality from the name |
 | 1337x | HTML via `minter` | ~9 s | Broadest catalogue. Behind Cloudflare, so it goes through minter |
 | EZTV | `eztv.re/api` | fast | Structured season/episode — TV, a later phase |
@@ -172,25 +197,44 @@ list — is optional metadata a client can do without.
 
 ## Deployment
 
-One service on the existing `media` network, replacing seven:
+[`compose.yaml`](../compose.yaml) at the repository root is the deployment, and it is also the
+quickstart — a stranger curls that one file and runs `docker compose up -d`. What it contains is
+mostly comments explaining why each line is there; what it *configures* is close to nothing:
 
 ```yaml
 curator:
   image: ghcr.io/dulsaranethmin/curator:latest
+  user: "${PUID:-1000}:${PGID:-1000}"
+  ports:
+    - "${CURATOR_PORT:-8090}:8090"
   environment:
-    TMDB_API_KEY:   ${TMDB_API_KEY}
-    QBIT_URL:       http://gluetun:8080     # qBittorrent shares gluetun's netns
-    MINTER_URL:     http://minter:8191
-    JELLYFIN_URL:   http://jellyfin:8096
-    LIBRARY_MOVIES: /media/storage/media/movies
-    DOWNLOADS_PATH: /media/storage/media/downloads
+    DB_PATH:        /data/curator.db
+    LIBRARY_MOVIES: /media/movies
+    DOWNLOADS_DIR:  /media/downloads
+    MINTER_URL:     http://minter:8191    # where minter is on THIS network
   volumes:
-    - /opt/docker/configs/curator:/config   # SQLite lives here
-    - /media/storage:/media/storage         # identical path — hardlinks resolve
-  networks: [media]
+    - data:/data                          # database + the key its secrets use
+    - media:/media                        # movies/ and downloads/, one filesystem
 ```
 
-Two details carried from the existing stack. qBittorrent is reachable at `gluetun:8080` because it
-shares that network namespace — exactly how Radarr is configured today. And mounting
-`/media/storage` at the *identical* path inside the container is what keeps hardlink source and
-destination on one filesystem.
+Three details, each of which is a decision rather than a default.
+
+**One volume for media, with both directories inside it.** The importer hardlinks and falls back to
+a copy on `EXDEV` ([D8](decisions.md#d8--import-by-hardlink)), so downloads and library must share a
+filesystem — two volumes would put them on two, and the failure is silent until a disk fills.
+
+**`/data` holds the database and the key its secrets are encrypted with, together on purpose.**
+Anything that copies the volume copies both, and a database restored without its key keeps every row
+and cannot read one secret back
+([D28](decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api)).
+
+**No TMDB key, no tunnel, no Jellyfin URL.** Phase 7 made all of those writable from the browser and
+stored encrypted, so putting them here would tell a stranger to edit YAML for the thing the Settings
+screen exists to do. `MINTER_URL` is the exception and the difference is which direction the value
+travels: nothing writes it, because it is a fact about this network's topology rather than a setting.
+`JELLYFIN_URL` is deliberately absent for the opposite reason — curator *writes* that one, and an
+environment value would beat what the provisioning flow just stored.
+
+Jellyfin, minter and the updater are **profiles**, so none of them arrives with a bare `up -d`
+([D34](decisions.md#d34--curator-provisions-a-jellyfin-it-brought-up-and-never-rewrites-one-somebody-is-already-watching),
+[D44](decisions.md#d44--curator-reads-the-version-something-else-installs-it)).

@@ -36,9 +36,15 @@ are phase 1's ported code — read them, do not edit them.
 
 | Source | Endpoint | Cost | Magnet |
 |---|---|---|---|
-| YTS | `yts.mx/api/v2/list_movies.json` | fast | build from `hash` in the response |
+| YTS | `yts.mx/api/v2/list_movies.json` — **now `movies-api.accel.li/api/v2`, see below** | fast | build from `hash` in the response |
 | The Pirate Bay | `apibay.org/q.php` | fast | build from `info_hash` in the response |
 | 1337x | HTML via minter | ~9 s | **lazy** — detail page, only for the release picked |
+
+> **Corrected after this phase shipped.** `yts.mx` went NXDOMAIN and YTS is reached at
+> `https://movies-api.accel.li/api/v2`
+> ([D12](decisions.md#d12--yts-is-reached-at-movies-apiaccelli-not-ytsmx)). The row above is left as
+> written because this document is a record; the host in it does not resolve. `yts.rs` and `yts.hn`
+> do resolve and look plausible while being clone sites running a re-implemented API.
 
 YTS and TPB are plain JSON and need no browser. That asymmetry is the whole reason for the cache and
 for lazy magnet resolution: 1337x costs roughly 9 seconds and a browser per fetch, the other two cost

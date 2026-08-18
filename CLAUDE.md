@@ -5,9 +5,13 @@ and **since phase 6 it is being rebuilt into a product anyone runs with one `doc
 changes the goal rather than the code written so far. The container arithmetic has moved twice and
 the current number is
 [D43](docs/decisions.md#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader)'s:
-**thirteen services become five** — jellyfin, portainer, watchtower, homepage and curator. Where a document still
-describes "13 containers become 6", it is stale: [`docs/phase-6.md`](docs/phase-6.md) is the target,
-and T51 clears the rest. Read [`docs/architecture.md`](docs/architecture.md) for the system,
+**thirteen services become five** — jellyfin, portainer, watchtower, homepage and curator, which is
+five services and six containers because curator's bundle is curator and minter. T51 cleared the
+"13 containers become 6" passages on 2026-08-19; where one survives it is inside a **record** — a
+phase document or a task file — and is marked as corrected in place. None of that is the product's
+number: for anyone who is not this Pi, curator is one container plus optional profiles.
+
+Read [`docs/architecture.md`](docs/architecture.md) for the system,
 [`docs/progress.md`](docs/progress.md) for where we are right now,
 [`docs/roadmap.md`](docs/roadmap.md) for where we are going, and
 [`docs/decisions.md`](docs/decisions.md) before overturning anything — several decisions here
@@ -27,11 +31,10 @@ and verified locally**: settings are writable, secrets are encrypted at rest and
 the API, and one optional password gates it
 ([D28](docs/decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api),
 [D25](docs/decisions.md#d25--authentication-is-optional-and-off-by-default)). **Phase 8 is built** —
-direct play, a remux for the containers a browser refuses, and Open in Jellyfin. **Phase 9 is built
-except [T51](docs/tasks/T51-documents.md)**, the documents, which waits on whether this repository
-and its ghcr package go public — `v0.1.0` published, but a private package makes the README's
-quickstart unrunnable for anyone else. **Phase 10, the cutover, has started**: see below, because it
-changes what may be touched.
+direct play, a remux for the containers a browser refuses, and Open in Jellyfin. **Phase 9 is built**, T51
+included: the repository and its ghcr package are public, `0.2.0` is published, and the README's
+quickstart was run from an empty directory against an anonymous pull before it was written down.
+**Phase 10, the cutover, is done** — see below, because it changes what may be touched.
 Tasks live in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 `make status` derives the phases, the tasks and the decision gaps — read it rather than this
 paragraph for the current counts.
@@ -328,9 +331,10 @@ The shape, in this order:
 Written in the imperative, to the next session, not about it. A handoff that says "I implemented the
 registry" wastes a line that could have said "the registry holds no defaults, and here is why".
 
-**One commit per task**, each of which **builds, vets, tests and cross-compiles on its own**, so a
-bisect lands on one task and not on a half-finished phase. That is `make check`, which runs the UI
-export as well, because since phase 5 the binary embeds it:
+**Every commit builds, vets, tests and cross-compiles on its own**, so a bisect lands on a working
+tree rather than on a half-finished phase. That is the gate per commit, not per branch — this
+paragraph used to say "one commit per task" and that rule was retired above on 2026-08-18. `make
+check` is the gate, and it runs the UI export as well, because since phase 5 the binary embeds it:
 
 ```bash
 make check     # npm run build, go build, go vet, go test -race, arm64 cross-compile

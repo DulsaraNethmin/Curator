@@ -261,11 +261,29 @@ services:
     command: --http-api-update --http-api-periodic-polls=false --scope curator --cleanup
 
     environment:
-      # No default. An empty token would leave an endpoint that restarts
-      # containers answering to anybody on this network, so the bundle refuses
-      # to start rather than pick one — `${VAR:?message}` is compose's own way
-      # of saying a value is mandatory.
-      WATCHTOWER_HTTP_API_TOKEN: ${UPDATER_TOKEN:?set UPDATER_TOKEN in .env to enable the updater}
+      # No default, and the refusal is watchtower's rather than compose's. An
+      # empty token would leave an endpoint that restarts containers answering
+      # to anybody on this network, and watchtower 1.7.1 will not do that:
+      # measured, it logs `api token is empty or has not been set. exiting` and
+      # exits 1 before the API listens.
+      #
+      # This used to be `${UPDATER_TOKEN:?...}`, which said the same thing one
+      # layer too early. **Compose interpolates the whole file before it filters
+      # profiles**, so a `:?` inside an opt-in service is not opt-in at all: a
+      # stranger running the quickstart got `required variable UPDATER_TOKEN is
+      # missing a value` and no curator, even though `docker compose config
+      # --services` proves the updater is not in the default set. T51 found that
+      # by running the quickstart from an empty directory. Do not put `:?` back
+      # in a profiled service — it fails the run that does not want it.
+      #
+      # The cost, measured rather than assumed: opting into this profile WITHOUT
+      # a token now starts a container that exits 1 and, under `restart:
+      # unless-stopped` above, retries forever — `docker compose ps` shows
+      # `Restarting (1)` and the log's last line is the reason. curator itself
+      # comes up healthy beside it. That is the right way round: the person who
+      # asked for an updater gets a loud symptom naming the variable, and the
+      # person who did not gets a working install.
+      WATCHTOWER_HTTP_API_TOKEN: ${UPDATER_TOKEN:-}
 
     # No ports. curator reaches it at http://updater:8080 on this network, and
     # publishing it would put a restart button on the LAN.
