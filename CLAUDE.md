@@ -264,24 +264,39 @@ and is deliberately still cached.
 
 ## Git workflow
 
-**Branch first, never commit to `main`.** Create the branch before the first commit of a piece of
-work and name it for the work — `phase-2-indexers`, not `wip`.
+**Branch first, never commit to `main` directly.** Create the branch before the first commit of a
+piece of work and name it for the work — `phase-2-indexers`, not `wip`. Commits land on `main`
+through a merge, never by committing to it.
 
-**Do not push, and do not merge.** Both are Nethmin's, including the merge into `main` and anything
-that reaches `origin`. Leave the finished branch local and say it is ready.
+**Nethmin is the author of every commit, always.** Not a co-author — the author. No
+`Co-Authored-By` trailer, on any commit, ever, and nothing that credits a model in a message. The
+fourteen such trailers in this history are from 2026-08-12, before the rule existed; they are
+pushed, and rewriting them is Nethmin's call rather than a session's.
 
-**Say what to merge, at the end of every task.** Not at the end of a phase — every task, as soon as
-its commit passes `make check`. Last line of the message, in this shape:
+**Merge into `main` when the work is done and the gate is green. Do not push.** The merge is now a
+session's to make; `origin` is still Nethmin's alone, and nothing reaches it without him. This
+changed on 2026-08-18 — the rule before it was "do not push, and do not merge", and a session
+reading an older document will hold branches back for no reason.
+
+Merge with `--no-ff`, so the branch name survives as a merge commit and the task's commits stay
+grouped under it. A fast-forward loses the shape of the work.
+
+**A branch may carry as many commits as the work has moves.** The old rule was one commit per task,
+and it is retired: splitting a task into "the fix" and "the test that pins it" is clearer than
+wedging both into one message, and a task that turns out to be three things should read as three
+things. What has not changed is that **every commit stands on its own** — the gate passes at each
+one, not just at the tip.
+
+**Say what was merged, and what is waiting to be pushed.** The question at the end of a long day is
+no longer "what do I merge" but "what am I about to push", and it is the same shape:
 
 ```
-merge: phase-7-settings-that-write — 2 commits (caa24ae, <next>), main does not have them
-hold:  nothing else outstanding
+merged: t79-download-button, t80-update-from-the-app — main is 4 commits ahead of origin
+hold:   nothing else outstanding
 ```
 
-Name the branch, count the commits `main` is missing, and say plainly whether it is **ready** or
-**waiting** — and on waiting, what for. `git log --oneline main..HEAD` is the answer and
-`git branch --no-merged main` is the one `make status` reports. It is the question that actually gets
-asked at the end of a long day, and it is not one to reconstruct from a scrollback.
+`git log --oneline origin/main..main` is the answer, and it is the one thing a session must never
+resolve on Nethmin's behalf.
 
 **Then write the handoff, in the same message.** One task is one session: the next one starts in a
 fresh context that knows nothing, and what it is given is the difference between an hour of
@@ -302,8 +317,8 @@ The shape, in this order:
 6. **STILL OUTSTANDING** — the honest list, including the parts of a "done" task that are not.
 7. **NEXT** — the task, its file, and the one design question it will hit first.
 8. **ENVIRONMENT** — what is running, what is in `.env`, what must not be touched.
-9. **The git workflow**, in two lines: branch first, one commit per task, `make check` per commit,
-   no push, no merge, no `Co-Authored-By`.
+9. **The git workflow**, in two lines: branch first, the gate per commit, merge with `--no-ff` when
+   it is green, **never push**, and Nethmin is the author of every commit — no `Co-Authored-By`.
 
 Written in the imperative, to the next session, not about it. A handoff that says "I implemented the
 registry" wastes a line that could have said "the registry holds no defaults, and here is why".
