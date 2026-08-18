@@ -2,8 +2,6 @@ package indexer
 
 import (
 	"context"
-	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -479,15 +477,20 @@ func TestYTSLiveSearchInterstellar(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	releases, err := NewYTS(nil).SearchMovie(ctx, "Interstellar", 2014)
+	// The recorder carries the status of what YTS actually answered to the
+	// classifier. This test used to read transport errors only, which is half
+	// the rule: a 403 from movies-api.accel.li would have failed CI exactly as
+	// apibay's did, with T73's fix sitting one file away and not applicable.
+	client, rec := liveClient(30 * time.Second)
+
+	releases, err := NewYTS(client).SearchMovie(ctx, "Interstellar", 2014)
 	if err != nil {
-		// Only a transport failure is "no network". A decode failure or a status
-		// YTS should not be returning is a real regression and must not be
-		// skipped past — that is how a dead base URL stays green for a week.
-		var netErr net.Error
-		var urlErr *url.Error
-		if errors.As(err, &netErr) || errors.As(err, &urlErr) {
-			t.Skipf("live YTS unreachable: %v", err)
+		// Only a transport failure or a refused caller is "no network". A decode
+		// failure or a status YTS should not be returning is a real regression
+		// and must not be skipped past — that is how a dead base URL stays green
+		// for a week. classifyLiveFailure holds both halves; see live_test.go.
+		if verdict, why := classifyLiveFailure(err, rec.lastStatus()); verdict == liveSkip {
+			t.Skipf("skipping live YTS test: %s: %v", why, err)
 		}
 		t.Fatalf("live YTS search: %v", err)
 	}

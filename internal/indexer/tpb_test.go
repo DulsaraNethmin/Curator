@@ -506,36 +506,24 @@ func TestTPBNewTPBDefaultsClient(t *testing.T) {
 	}
 }
 
-// TestTPBLive is the one test that talks to apibay. It skips under -short and
-// when the host is unreachable, so an offline machine does not fail the build —
-// but once apibay answers at all, a wrong answer is a real failure.
+// TestTPBLive is the one test that talks to apibay. It skips under -short, and
+// it skips when this network cannot use apibay — but once apibay answers at all,
+// a wrong answer is a real failure.
+//
+// The skip/fail decision lives in live_test.go and is shared with YTS. It is
+// applied to THE SEARCH rather than to a HEAD probe, which is the whole of T76:
+// T73's probe read a status one call too early, so a probe could answer 200 and
+// the search that followed could still time out — and this test then called
+// t.Fatalf on a transport error that yts_test.go's own rule says is a skip.
+// Classifying the call needs no probe, because the search is its own probe.
 func TestTPBLive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live apibay search skipped under -short")
 	}
-	client := &http.Client{Timeout: 20 * time.Second}
-	req, err := http.NewRequest(http.MethodHead, tpbSite+"/q.php?q=probe&cat=201", nil)
-	if err != nil {
-		t.Fatalf("build probe: %v", err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Skipf("apibay unreachable, skipping live test: %v", err)
-	}
-	resp.Body.Close()
 
-	// A 403 is a SUCCESSFUL http transaction, so the check above does not catch
-	// it: err is nil and the test used to walk straight into a search that then
-	// failed on the same 403. That is what turned every release red — apibay
-	// answers 200 to this probe from a home connection and 403 from a GitHub
-	// Actions runner (measured, 2026-08-18), so `make check` was green on a
-	// laptop and could never pass in CI.
-	if refusedTheNetwork(resp.StatusCode) {
-		t.Skipf("apibay answered %s to a probe, so this network may not use it: skipping live test", resp.Status)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("apibay probe answered %s, which is neither a working apibay nor a refused network", resp.Status)
-	}
+	// The recorder is how a refused status reaches the classifier: SearchMovie
+	// formats it into a plain error string, so it cannot be read with errors.As.
+	client, rec := liveClient(20 * time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -543,6 +531,9 @@ func TestTPBLive(t *testing.T) {
 
 	releases, err := tpb.SearchMovie(ctx, "Interstellar", 2014)
 	if err != nil {
+		if verdict, why := classifyLiveFailure(err, rec.lastStatus()); verdict == liveSkip {
+			t.Skipf("skipping live apibay test: %s: %v", why, err)
+		}
 		t.Fatalf("live SearchMovie: %v", err)
 	}
 	if len(releases) == 0 {
@@ -558,6 +549,11 @@ func TestTPBLive(t *testing.T) {
 	// may reach a caller.
 	empty, err := tpb.SearchMovie(ctx, "zzqqxxnosuchmoviezz9999", 0)
 	if err != nil {
+		// Same rule as the search above: apibay can refuse or time out between
+		// the two calls, and neither is this assertion failing.
+		if verdict, why := classifyLiveFailure(err, rec.lastStatus()); verdict == liveSkip {
+			t.Skipf("skipping live apibay sentinel check: %s: %v", why, err)
+		}
 		t.Fatalf("live SearchMovie (absurd query): %v", err)
 	}
 	if len(empty) != 0 {
@@ -569,52 +565,3 @@ func TestTPBLive(t *testing.T) {
 // MagnetResolver: its magnets are built at search time, so there is nothing to
 // resolve.
 var _ Indexer = (*TPB)(nil)
-
-// refusedTheNetwork reports whether a status says THIS NETWORK may not use
-// apibay, as opposed to apibay being broken.
-//
-// The distinction is the one yts_test.go argues for and it must not be lost
-// here: "a status YTS should not be returning is a real regression and must not
-// be skipped past — that is how a dead base URL stays green for a week." D12 is
-// that lesson paid for once already, when yts.mx went NXDOMAIN.
-//
-// These three are not that. They are an access decision about the caller, and
-// they say nothing about whether curator can parse what apibay returns. Every
-// other non-200 still fails the test.
-func refusedTheNetwork(status int) bool {
-	switch status {
-	case http.StatusForbidden, http.StatusUnauthorized, http.StatusTooManyRequests:
-		return true
-	}
-	return false
-}
-
-// The classifier is the whole fix, so it is the thing with a test.
-//
-// A live test cannot assert its own skip — it takes whichever branch the network
-// gives it — so what is pinned here is the decision it makes, both ways round.
-func TestARefusedNetworkIsNotABrokenApibay(t *testing.T) {
-	for _, status := range []int{
-		http.StatusForbidden,       // what a GitHub Actions runner gets
-		http.StatusUnauthorized,    // the same decision, differently worded
-		http.StatusTooManyRequests, // a rate limit is about the caller too
-	} {
-		if !refusedTheNetwork(status) {
-			t.Errorf("%d is apibay refusing the caller, and CI would fail on it forever", status)
-		}
-	}
-
-	// The other half, and the one that keeps yts_test.go's argument true: a
-	// broken apibay must NOT be skipped past, or a dead endpoint stays green.
-	for _, status := range []int{
-		http.StatusOK,
-		http.StatusNotFound,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-	} {
-		if refusedTheNetwork(status) {
-			t.Errorf("%d would be skipped past, which is how a dead base URL stays green for a week", status)
-		}
-	}
-}
