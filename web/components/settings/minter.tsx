@@ -27,7 +27,16 @@ export function MinterStatus({ on }: { on: boolean }) {
 
   useEffect(() => {
     let live = true;
+    // One probe in flight at a time. The server budgets 20 s for minter's
+    // /health (minterProbeTimeout) because a HEALTHY minter takes 6.7-8.6 s to
+    // answer it, and this interval is 5 s — so without this guard a busy minter
+    // collects a new request every tick while the previous one is still queued
+    // behind its browser. That is precisely the state this component exists to
+    // report, and polling harder is the one thing that makes it worse.
+    let inFlight = false;
     async function look() {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const next = await api.minterProbe();
         if (live) setProbe(next);
@@ -36,6 +45,8 @@ export function MinterStatus({ on }: { on: boolean }) {
         // to put a red banner on inside a settings section — the next tick
         // answers, and a real failure arrives as the probe state, which is what
         // this renders anyway.
+      } finally {
+        inFlight = false;
       }
     }
     void look();

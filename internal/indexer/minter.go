@@ -112,9 +112,17 @@ type Health struct {
 // screen calls it on a loop while a container starts.
 //
 // It deliberately does NOT go through Fetch. A probe that rendered a page would
-// wake a real Firefox to answer "are you up", which is ~9 s and a browser for a
-// question /health answers in milliseconds — and it would do it every time
+// wake a real Firefox to answer "are you up", and it would do it every time
 // somebody left the Settings tab open.
+//
+// /health is far cheaper than that, but it is NOT free, and this comment used
+// to claim it answered "in milliseconds". Measured on the Pi, read out of
+// minter's own HEALTHCHECK log: two consecutive healthy checks took 8.61 s and
+// 6.73 s, both returning {"ok":true}. minter serves /health from the process
+// that drives the browser and waits on the same lock, so it answers when the
+// browser is free rather than on demand. A caller has to budget for that — see
+// minterProbeTimeout in internal/api/indexers.go, which was 5 s on the strength
+// of the sentence above and sat below minter's healthy floor.
 //
 // The context bounds it. m.http's own timeout is 240 s, sized for a browser
 // clearing a challenge, so a probe that relied on it would hang a screen for
@@ -128,6 +136,11 @@ func (m *Minter) Probe(ctx context.Context) (Health, error) {
 
 	resp, err := m.http.Do(req)
 	if err != nil {
+		// unreachable{} carries ErrUnreachable AND the transport error, so a
+		// caller that ran out of time can still see context.DeadlineExceeded in
+		// here — but only if it looks for it FIRST. Test the deadline before
+		// ErrUnreachable, or a minter that is merely busy reads as one that was
+		// never started (internal/api/indexers.go's handleMinterProbe).
 		return Health{}, unreachable{fmt.Errorf("calling minter at %s: %w", m.baseURL, err)}
 	}
 	defer resp.Body.Close()
