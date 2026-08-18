@@ -95,7 +95,11 @@ func TestLiveDownloadPeakRSS(t *testing.T) {
 	}
 
 	dataDir := t.TempDir()
-	e := start(t, Config{DataDir: dataDir, Category: "curator"})
+	// startUnconfined, not start: this is the one test in the package that
+	// wants the DHT and the swarm the others are now walled off from, and the
+	// number it exists to take is only comparable to the spike's if it is
+	// downloading from strangers the same way.
+	e := startUnconfined(t, Config{DataDir: dataDir, Category: "curator"})
 
 	ctx := context.Background()
 	if err := e.AddMagnet(ctx, debianMagnet, "curator"); err != nil {
@@ -223,7 +227,12 @@ func TestLiveEngineOverTunnel(t *testing.T) {
 	// rather than produce noise nobody can place.
 	t.Cleanup(func() { _ = tunnel.Close() })
 
-	e := start(t, Config{DataDir: t.TempDir(), Category: "curator", Network: tunnel})
+	// startUnconfined for the same reason TestLiveDownloadPeakRSS uses it. The
+	// sentence above — "metadata from the swarm means DHT or a tracker answered"
+	// — is the thing under test, and a hermetic engine has no swarm to answer:
+	// NoDHT is not even the operative half here, since attachNetwork builds a
+	// DHT server of its own regardless, but the empty DhtStartingNodes is.
+	e := startUnconfined(t, Config{DataDir: t.TempDir(), Category: "curator", Network: tunnel})
 	if e.socket == nil {
 		t.Fatal("no shared uTP socket was opened on the tunnel")
 	}

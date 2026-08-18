@@ -155,6 +155,17 @@ state CI runs in, which is why all ten `TestLive*` take their skip there
 (`.github/workflows/check.yml`). Copying it back in re-imports every shared
 resource below — the tunnel, qBittorrent's `curator` category, the real library.
 
+**The ten are not the whole population**, and T73 found that out the hard way.
+`TestTPBLive` (`internal/indexer/tpb_test.go`) and `TestYTSLiveSearchInterstellar`
+(`internal/indexer/yts_test.go`) are live tests for the two indexers that need no
+credential, so there is no missing variable for them to skip on. They gate on
+`-short` and `make check` does not pass it, which means **two tests do reach the
+public internet from a runner** — and one of them failed the first three workflow
+runs this project ever had, because apibay answers 403 to a GitHub address range.
+A third `-short`-gated test outside the ten, `TestFindMovieGivesUpOnAWedgedJellyfin`
+(`internal/jellyfin/client_test.go`), is slow rather than networked: it waits out
+a timeout against an `httptest` server on loopback.
+
 ### What a worktree does not fix, because it is global to the machine
 
 - **`docker compose`, anything.** `compose.yaml:30` sets `name: curator`, so a

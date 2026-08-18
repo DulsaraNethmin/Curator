@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/rand"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	anacrolix "github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
 
@@ -31,6 +33,13 @@ var _ download.TorrentClient = (*Engine)(nil)
 // generated in t.TempDir(), another downloads it. No swarm, no tracker, no
 // public torrent, and no network beyond loopback — which is the only way a
 // torrent client's test suite can be run a hundred times a day.
+//
+// That claim is asserted by start, not by intent. Until T74 it was prose: every
+// engine here was built from anacrolix's default config, which opens wildcard
+// sockets and bootstraps two DHT servers to the public internet, because the
+// three kill switches live in bindConfig and bindConfig only runs when a
+// Network is supplied. start now sets Config.hermetic, which is what the
+// sentence above describes.
 const (
 	payloadName = "Interstellar (2014)"
 	payloadFile = "Interstellar (2014).mkv"
@@ -78,7 +87,22 @@ func seed(t *testing.T) (*Engine, *metainfo.MetaInfo, metainfo.Hash) {
 	return engine, mi, mi.HashInfoBytes()
 }
 
+// start builds an engine confined to loopback and closes it with the test. The
+// confinement is set here rather than at the call sites so that a test cannot
+// reach the public internet by forgetting something.
 func start(t *testing.T, cfg Config) *Engine {
+	t.Helper()
+	cfg.hermetic = true
+	return startUnconfined(t, cfg)
+}
+
+// startUnconfined is start with the swarm left on. It is a second function
+// rather than a parameter so that "this test downloads from strangers" is
+// legible at the call site instead of being a false somebody has to look up.
+// Its only two callers are TestLiveDownloadPeakRSS and TestLiveEngineOverTunnel,
+// both of which need a real swarm to mean anything, and they need to stay the
+// only two.
+func startUnconfined(t *testing.T, cfg Config) *Engine {
 	t.Helper()
 	if cfg.Log == nil {
 		cfg.Log = quiet()
@@ -104,7 +128,13 @@ func magnetFor(t *testing.T, mi *metainfo.MetaInfo, ih metainfo.Hash) string {
 
 // await polls the engine the way the poller does, because that is the only view
 // of a download the rest of curator ever gets.
-func await(t *testing.T, e *Engine, hash string, want string) torrent.Torrent {
+//
+// On the deadline it dumps swarmState for every engine it was handed, and that
+// is the whole reason others exists. T74's flake printed `State:downloading
+// Progress:0` and nothing else, which is the least informative view this
+// codebase can produce: it is compatible with four different faults, three of
+// which are not "slow", and telling them apart cost a session. See swarmState.
+func await(t *testing.T, e *Engine, hash string, want string, others ...*Engine) torrent.Torrent {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	var last torrent.Torrent
@@ -121,8 +151,83 @@ func await(t *testing.T, e *Engine, hash string, want string) torrent.Torrent {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("torrent never reached %q; last seen %+v", want, last)
+	var b strings.Builder
+	fmt.Fprintf(&b, "torrent never reached %q; last seen %+v", want, last)
+	fmt.Fprintf(&b, "\n  awaited: %s", swarmState(e, hash))
+	for i, other := range others {
+		fmt.Fprintf(&b, "\n  peer %d:  %s", i, swarmState(other, hash))
+	}
+	t.Fatalf("%s", b.String())
 	return last
+}
+
+// swarmState is everything the client will say about a torrent that the
+// poller's view throws away, and it exists because the poller's view cannot
+// tell these four apart:
+//
+//   - ok=false — the piece completion database could not answer, which makes
+//     ignoreForRequests true for that piece for ever (piece.go:299) and is
+//     invisible in every counter above. It is worth reading even though the
+//     accompanying anacrolix line does print: New's
+//     `cc.Logger.FilterLevel(anacrolixQuiet)` is inert, because WithFilterLevel
+//     does not set nonZero and Client.getLoggers then swaps the whole logger for
+//     log.Default at Warning. Measured — a synthetic Error at that call site
+//     reaches the test output. Which is why T74 is NOT this: the CI log for run
+//     32094278975 carried no such line. Keep the field anyway; it is the one
+//     reading that separates "not asking" from "asking and not served", and
+//     under `go test -race` cgo is on, so that database is SQLite where a
+//     CGO_ENABLED=0 build gets boltdb — these tests do not exercise the storage
+//     the release ships.
+//   - priority=None — DownloadAll never ran, so Engine.start's goroutine wedged
+//     somewhere between GotInfo and its own end.
+//   - active=0 with metadata chunks already read — the connection established,
+//     moved the metadata and then died, and nothing re-adds it: openNewConns
+//     pops from a peer set these trackerless magnets give no way to refill.
+//   - all of the above healthy and read data climbing — genuinely slow, and
+//     only then is the deadline the right thing to touch.
+func swarmState(e *Engine, hash string) string {
+	ih, err := parseHash(hash)
+	if err != nil {
+		return "unreadable hash: " + err.Error()
+	}
+	t, ok := e.client.Torrent(ih)
+	if !ok {
+		return "this client is not holding that torrent"
+	}
+	s := t.Stats()
+	out := fmt.Sprintf(
+		"peers active=%d seeders=%d halfopen=%d pending=%d | pieces complete=%d | "+
+			"read data=%d metadata-chunks=%d wasted-chunks=%d bad-pieces=%d",
+		s.ActivePeers, s.ConnectedSeeders, s.HalfOpenPeers, s.PendingPeers, s.PiecesComplete,
+		s.BytesReadData.Int64(), s.MetadataChunksRead.Int64(),
+		s.ChunksReadWasted.Int64(), s.PiecesDirtiedBad.Int64())
+	if t.Info() == nil {
+		return out + " | no info dict yet, so nothing has been asked for"
+	}
+	ps := t.PieceState(0)
+	return fmt.Sprintf("%s | piece0 priority=%s ok=%v complete=%v | runs %v",
+		out, priorityName(ps.Priority), ps.Ok, ps.Complete, t.PieceStateRuns())
+}
+
+// priorityName spells the priority out, because PiecePriority is a byte with no
+// String method and `priority=0` is the single most important reading in the
+// dump: none means nothing ever asked for this piece.
+func priorityName(p anacrolix.PiecePriority) string {
+	switch p {
+	case anacrolix.PiecePriorityNone:
+		return "none"
+	case anacrolix.PiecePriorityNormal:
+		return "normal"
+	case anacrolix.PiecePriorityHigh:
+		return "high"
+	case anacrolix.PiecePriorityReadahead:
+		return "readahead"
+	case anacrolix.PiecePriorityNext:
+		return "next"
+	case anacrolix.PiecePriorityNow:
+		return "now"
+	}
+	return fmt.Sprintf("%d", p)
 }
 
 // TestDownloadFromAPeer is the whole adapter in one pass: add a magnet, fetch
@@ -156,7 +261,7 @@ func TestDownloadFromAPeer(t *testing.T) {
 	}
 	lt.AddClientPeer(seeder.client)
 
-	got := await(t, leecher, hash, torrent.StateCompleted)
+	got := await(t, leecher, hash, torrent.StateCompleted, seeder)
 
 	if got.Hash != hash {
 		t.Errorf("Hash = %q, want curator's upper-case %q", got.Hash, hash)
@@ -215,7 +320,7 @@ func TestDownloadThroughANetwork(t *testing.T) {
 	}
 	lt.AddClientPeer(seeder.client)
 
-	got := await(t, leecher, hash, torrent.StateCompleted)
+	got := await(t, leecher, hash, torrent.StateCompleted, seeder)
 	if got.Progress != 1 {
 		t.Errorf("Progress = %v, want 1", got.Progress)
 	}
@@ -331,7 +436,7 @@ func TestDeleteTorrentRefusesAnotherCategory(t *testing.T) {
 	}
 	lt, _ := e.client.Torrent(ih)
 	lt.AddClientPeer(seeder.client)
-	got := await(t, e, hash, torrent.StateCompleted)
+	got := await(t, e, hash, torrent.StateCompleted, seeder)
 
 	err := e.DeleteTorrent(context.Background(), hash, "radarr", true)
 	if !errors.Is(err, torrent.ErrWrongCategory) {
@@ -352,7 +457,7 @@ func TestDeleteTorrentRemovesItsOwnFiles(t *testing.T) {
 	}
 	lt, _ := e.client.Torrent(ih)
 	lt.AddClientPeer(seeder.client)
-	got := await(t, e, hash, torrent.StateCompleted)
+	got := await(t, e, hash, torrent.StateCompleted, seeder)
 
 	if err := e.DeleteTorrent(context.Background(), hash, "curator", true); err != nil {
 		t.Fatalf("DeleteTorrent: %v", err)
@@ -392,7 +497,7 @@ func TestResumeUsesTheSavedMetainfo(t *testing.T) {
 	magnet := magnetFor(t, mi, ih)
 	dataDir := t.TempDir()
 
-	first, err := New(Config{DataDir: dataDir, Category: "curator", Log: quiet()})
+	first, err := New(Config{DataDir: dataDir, Category: "curator", Log: quiet(), hermetic: true})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -401,7 +506,7 @@ func TestResumeUsesTheSavedMetainfo(t *testing.T) {
 	}
 	lt, _ := first.client.Torrent(ih)
 	lt.AddClientPeer(seeder.client)
-	before := await(t, first, hash, torrent.StateCompleted)
+	before := await(t, first, hash, torrent.StateCompleted, seeder)
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -412,7 +517,7 @@ func TestResumeUsesTheSavedMetainfo(t *testing.T) {
 		t.Fatalf("AddMagnet on resume: %v", err)
 	}
 
-	after := await(t, second, hash, torrent.StateCompleted)
+	after := await(t, second, hash, torrent.StateCompleted, seeder)
 	if after.ContentPath != before.ContentPath {
 		t.Errorf("ContentPath moved across a restart: %q then %q", before.ContentPath, after.ContentPath)
 	}
@@ -433,7 +538,7 @@ func TestResumeVerifiesWhatWasAlreadyOnDisk(t *testing.T) {
 	magnet := magnetFor(t, mi, ih)
 	dataDir := t.TempDir()
 
-	first, err := New(Config{DataDir: dataDir, Category: "curator", Log: quiet()})
+	first, err := New(Config{DataDir: dataDir, Category: "curator", Log: quiet(), hermetic: true})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -442,7 +547,7 @@ func TestResumeVerifiesWhatWasAlreadyOnDisk(t *testing.T) {
 	}
 	lt, _ := first.client.Torrent(ih)
 	lt.AddClientPeer(seeder.client)
-	done := await(t, first, hash, torrent.StateCompleted)
+	done := await(t, first, hash, torrent.StateCompleted, seeder)
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -608,7 +713,7 @@ func TestCompletedIsNeverStalled(t *testing.T) {
 	}
 	lt, _ := e.client.Torrent(ih)
 	lt.AddClientPeer(seeder.client)
-	await(t, e, hash, torrent.StateCompleted)
+	await(t, e, hash, torrent.StateCompleted, seeder)
 
 	at := time.Now().Add(time.Hour)
 	e.now = func() time.Time { return at }

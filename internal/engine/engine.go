@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	dht "github.com/anacrolix/dht/v2"
 	anacrolix "github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/utp"
@@ -142,6 +143,28 @@ type Config struct {
 	// fingerprint and a second instance on the same host failing to start.
 	// Set it when a VPN provider forwards a port.
 	ListenPort int
+
+	// hermetic confines the client to loopback: no DHT, so no bootstrap to the
+	// public internet and no announce of a fixed test info hash; no UPnP, so no
+	// SSDP probe of whatever router the machine is sitting behind; and a
+	// loopback listen host rather than a wildcard one, so a test engine is not
+	// reachable from the LAN and advertises 127.0.0.1 to its peer instead of
+	// 0.0.0.0. It is what makes engine_test.go's opening claim structural
+	// rather than aspirational — see start there, which is the only thing that
+	// sets it.
+	//
+	// Unexported because it is not a deployment option and must never become
+	// one: a real magnet carries no tracker and no peer list, so the DHT is the
+	// only way curator finds anybody at all. On Config rather than in a package
+	// var because live_test.go shares this package, and both of its swarm tests
+	// — TestLiveDownloadPeakRSS and TestLiveEngineOverTunnel — need exactly the
+	// swarm this turns off, so it has to be per-engine rather than per-process.
+	//
+	// Note what it does not set: DisableTrackers. T56's regression test asserts
+	// that a udp4 announcer *was* started (network_test.go), and switching
+	// trackers off would make that test pass for the wrong reason. The hermetic
+	// magnets carry no trackers, so there is nothing to announce to anyway.
+	hermetic bool
 }
 
 // New starts a torrent client.
@@ -182,8 +205,47 @@ func New(cfg Config) (*Engine, error) {
 	cc.MaxUnverifiedBytes = unverifiedBytes
 	// anacrolix logs at its own level through a logger of its own design. Its
 	// output is not curator's log format and there is nothing in it a user of
-	// this app can act on, so it is discarded rather than interleaved.
+	// this app can act on, so the intent here was to discard it rather than
+	// interleave it.
+	//
+	// It does not do that, and T74 measured it rather than assuming it. This
+	// line is INERT. NewDefaultClientConfig leaves Logger at its zero value;
+	// WithFilterLevel copies the struct and sets filterLevel without setting
+	// nonZero (anacrolix/log logger-core.go:44-47, 55-57); and getLoggers then
+	// does `if logger.IsZero() { logger = log.Default }` (client.go:241-243),
+	// throwing this away whole. log.Default filters at Warning onto stderr, so
+	// anacrolix has been writing warnings and errors straight out of every
+	// curator process since phase 6.
+	//
+	// The comment is corrected rather than the code because the fix is a
+	// decision, not a typo: starting from analog.Default makes the filter real,
+	// and then Critical honours the sentence above while Error keeps the line
+	// that says a torrent has been wedged for good — which is what somebody
+	// reporting a stuck download would need to paste. That belongs in a task
+	// that argues it, not in a flake fix. See docs/tasks/T74.
 	cc.Logger = cc.Logger.FilterLevel(anacrolixQuiet)
+
+	// Outside the Network branch below on purpose: bindConfig is the kill
+	// switch for a tunnelled engine and never runs for a nil Network, which is
+	// what every hermetic test builds.
+	if cfg.hermetic {
+		cc.NoDHT = true
+		cc.NoDefaultPortForwarding = true
+		cc.ListenHost = anacrolix.LoopbackListenHost
+
+		// NoDHT alone is not enough, and this is the trap in it. With a Network,
+		// attachNetwork builds a DHT server of its own over the shared socket,
+		// unconditionally, and that server reads DhtStartingNodes rather than
+		// asking whether the DHT is off. Emptying the list is what makes the
+		// tunnelled tests local; without it TestDownloadThroughANetwork — itself
+		// one of the eight sixty-second awaits — still bootstraps to
+		// router.bittorrent.com and still announces the fixed test info hash.
+		// An empty list is a no-op rather than a failure: the announcer finds no
+		// initial nodes, says so once, and sleeps.
+		cc.DhtStartingNodes = func(string) dht.StartingNodesGetter {
+			return func() ([]dht.Addr, error) { return nil, nil }
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
