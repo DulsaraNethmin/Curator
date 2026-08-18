@@ -12,7 +12,10 @@ fields, no name parsing and no browser.
 
 1. `NewYTS(*http.Client)` and a `SearchMovie(ctx, title, year)` satisfying
    [`Indexer`](../architecture.md#indexers). Base `https://yts.mx/api/v2`, overridable so an
-   `httptest.Server` can stand in — same shape as `internal/tmdb`.
+   `httptest.Server` can stand in — same shape as `internal/tmdb`. **That host is now NXDOMAIN**: the
+   base shipped in the code is `https://movies-api.accel.li/api/v2`
+   ([D12](../decisions.md#d12--yts-is-reached-at-movies-apiaccelli-not-ytsmx)), and the overridability
+   this line asked for is what made the correction one constant.
 2. **Capture a real response as a fixture and build the parser against that.** The endpoint is
    `list_movies.json` with a `query_term`, and each movie carries a list of torrents with a hash,
    a quality, a size and a seed count. Do not trust the field names in this sentence over what the

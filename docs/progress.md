@@ -3,13 +3,16 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-14 · **Phases 1 and 2 complete** · phase 3 built, and its outstanding
-dispatch now run against a real qBittorrent locally · phase 4 built and verified locally ·
-phase 5 built, including the TMDB-first redesign (T27–T31) · **phase 6 built and verified locally,
-tunnel included — a real NordLynx endpoint, and a torrent downloading through it** · **phase 7 built
-and verified locally**, settings writable and a password in front of the API · **phase 8 in progress
-— T43 and T44 built and verified locally; the remux is a 2.2 MB ffmpeg, and there is still no Play
-button**
+**Last updated:** 2026-08-19 · **All ten phases are built.** Phases 1–9 built and verified on a
+laptop; **phase 10, the cutover, executed on the Pi on 2026-08-18** — the nine \*arr-stack containers
+removed, curator and minter in their place, and one film taken end to end from an empty disk. `0.2.0`
+is tagged, published and running on the box. [T51](tasks/T51-documents.md), the documents, is the
+last task in the project.
+
+The narrative below is a **record**, kept in the order things were found. Where an entry says
+something is missing that now exists — "there is still no Play button" in the T44 section is the one
+that catches people — it is a record of what was true when that task ran, not a current status.
+The table immediately below is the current status; `make status` derives it from the repository.
 
 ---
 
@@ -24,9 +27,9 @@ button**
 | **5** | Interface — Next.js screens embedded via `embed.FS` | **built** — T22–T26, then T27–T31's TMDB-first redesign, verified locally 2026-08-13 |
 | **6** | Own the download — the torrent engine and a WireGuard tunnel move inside the binary | **built** — T32–T38 done, verified locally 2026-08-14 against a real NordLynx endpoint; one v4-only crash found afterwards and fixed in T56 |
 | **7** | Settings that write — writable config, secrets at rest, optional password | **built** — T39–T42 and T55 done, verified locally 2026-08-14; bcrypt's cost on the Pi is still unmeasured (D25, deferred to phase 10) |
-| 8 | Watch it here — direct play, remux, Open in Jellyfin | **in progress** — T43 (the stream endpoint and the ticket) and T44 (the remux) built and verified locally 2026-08-14; T45 and T46 specified. **There is still no Play button** — nothing in the UI reaches either endpoint yet, and that is T45 |
-| 9 | One command — the image, the release pipeline, and a way to watch on the TV | **specified** — [`phase-9.md`](phase-9.md). T47–T51 keep their cited meanings, plus T62–T66. **T51's double claim is resolved**: it is the stale documents, and the first-run wizard took T50 |
-| 10 | Cutover — run alongside, confirm parity, remove the containers | back up the *arr configs first (T52) |
+| **8** | Watch it here — direct play, remux, Open in Jellyfin | **done** — T43–T46. The Play button landed in T45; T65 gave it a screen |
+| **9** | One command, and a way to watch on the TV — the image, the release pipeline, the bundle | **done except [T51](tasks/T51-documents.md)** — T47–T50 and T62–T66 built; `0.2.0` published to ghcr and installable by a stranger |
+| **10** | Cutover: run alongside, prove parity, remove | **done — executed 2026-08-18.** T52 backed the \*arr configs up, T53 stood curator up on the Pi, T54 removed the nine. D43 voided the parity target by emptying the disk first, so it became "curator works from nothing", and it passed |
 
 ---
 

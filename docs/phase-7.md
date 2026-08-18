@@ -386,7 +386,8 @@ Then driven for real on the laptop, against the running binary:
 - **Fetching minter when 1337x is enabled.** Phase 9, T49 — the toggle this phase stores is what it
   hangs off, and the Docker-socket cost it carries is
   [D23](decisions.md)'s to record, not this phase's.
-- **A first-run wizard.** T51. What phase 7 owes it is that every value it would ask for is
-  writable, which is this phase's whole content.
+- **A first-run wizard.** [T50](tasks/T50-first-run.md) — this line said T51 when it was written,
+  and T51 turned out to be the documents instead. What phase 7 owes the wizard is that every value
+  it would ask for is writable, which is this phase's whole content.
 - **Secrets in an external manager** — Vault, Docker secrets, a KMS. `SECRET_KEY` inline is the seam
   that makes any of them a one-line integration later.
