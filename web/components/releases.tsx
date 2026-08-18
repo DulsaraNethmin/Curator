@@ -64,6 +64,12 @@ export function Releases({
 
   const [downloadsConfigured, setDownloadsConfigured] = useState<boolean | null>(null);
 
+  // Why dispatch is refused, in the API's own words rather than this file's
+  // guess. The backend is a choice (docs/decisions.md D22), so the sentence that
+  // fixes it differs per backend: `embedded` needs no credentials at all, and
+  // telling that user to set QBIT_USER is an instruction that cannot work.
+  const [downloadsDetail, setDownloadsDetail] = useState<string | null>(null);
+
   // Ask once whether dispatch is even possible, rather than letting the button
   // fail with a 503.
   useEffect(() => {
@@ -72,10 +78,26 @@ export function Releases({
       .settings()
       .then((s) => {
         if (cancelled) return;
-        const qbit = s.integrations.find((i) => i.name === 'qbittorrent');
-        setDownloadsConfigured(qbit?.configured ?? false);
+        // `torrents`, which is what the API calls it — NOT `qbittorrent`.
+        // This read `'qbittorrent'` until T79 and the name has been `torrents`
+        // since D22 moved the engine into this binary, so `find` returned
+        // undefined on every install and `?? false` turned that into a hard
+        // "not configured": every Download button disabled, everywhere, for a
+        // backend reporting itself ready. Dispatch worked over the API the
+        // whole time, which is why it survived so long.
+        const torrents = s.integrations.find((i) => i.name === 'torrents');
+        // Missing means the contract changed, not that downloads are off. Fail
+        // OPEN — leave it unknown, let the button work, and let a real dispatch
+        // return a real error. A rename must never silently disable the product
+        // again, which is exactly what the old `?? false` did.
+        setDownloadsConfigured(torrents ? torrents.configured : null);
+        setDownloadsDetail(torrents?.detail ?? null);
       })
-      .catch(() => !cancelled && setDownloadsConfigured(null));
+      .catch(() => {
+        if (cancelled) return;
+        setDownloadsConfigured(null);
+        setDownloadsDetail(null);
+      });
     return () => {
       cancelled = true;
     };
@@ -169,7 +191,9 @@ export function Releases({
                           }
                           title={
                             downloadsConfigured === false
-                              ? 'Downloads are not configured: set QBIT_USER and QBIT_PASS'
+                              ? downloadsDetail
+                                ? `Downloads are not configured: ${downloadsDetail}`
+                                : 'Downloads are not configured'
                               : !film.year
                                 ? noYearReason
                                 : undefined
@@ -191,8 +215,7 @@ export function Releases({
         <div className="banner warn" style={{ marginTop: '1rem' }}>
           <strong>Downloads are not configured</strong>
           <span>
-            Set <span className="mono">QBIT_USER</span> and <span className="mono">QBIT_PASS</span>{' '}
-            to dispatch a release. Search works without them.
+            {downloadsDetail ?? 'No torrent backend can accept a release.'} Search works without it.
           </span>
         </div>
       )}
