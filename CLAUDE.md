@@ -166,6 +166,16 @@ A third `-short`-gated test outside the ten, `TestFindMovieGivesUpOnAWedgedJelly
 (`internal/jellyfin/client_test.go`), is slow rather than networked: it waits out
 a timeout against an `httptest` server on loopback.
 
+Since T76 those two share one rule, in `internal/indexer/live_test.go`:
+`classifyLiveFailure` decides skip-or-fail for a failed live **search**, not for
+a probe, and both tests ask it. A refused caller (403/401/429) or a transport
+failure skips; every other non-200, and any decode failure, still fails loudly.
+Do not add a third live indexer test with its own private rule — that divergence
+is what T76 existed to remove. **One gap is known and open**: a base URL that has
+gone NXDOMAIN takes the transport branch and skips, so D12's own failure would
+not be caught by the guard D12 paid for. See
+[`docs/tasks/T76-a-skip-that-covers-the-call.md`](docs/tasks/T76-a-skip-that-covers-the-call.md).
+
 ### What a worktree does not fix, because it is global to the machine
 
 - **`docker compose`, anything.** `compose.yaml:30` sets `name: curator`, so a
