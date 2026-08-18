@@ -2026,5 +2026,63 @@ than as a fault.
 
 ---
 
+## D45 — A mandatory value belongs to the service that needs it, not to the file that describes it
+
+**Status:** decided and built · **Amends** [D44](#d44--curator-reads-the-version-something-else-installs-it),
+whose property is unchanged · **Found by** [T51](tasks/T51-documents.md) running the quickstart from
+an empty directory, which is the verification T51 was written around
+
+D44 made `UPDATER_TOKEN` mandatory and said so in compose: `${UPDATER_TOKEN:?set UPDATER_TOKEN in
+.env to enable the updater}`. The reasoning was right — an updater that restarts containers must not
+answer to anyone on the network — and the mechanism was in the wrong layer.
+
+**Compose interpolates the entire file before it filters profiles.** So a `:?` inside an opt-in
+service is not opt-in at all. The measured result, from a clean directory with the published
+`compose.yaml` and nothing else:
+
+```
+$ docker compose up -d
+error while interpolating services.updater.environment.WATCHTOWER_HTTP_API_TOKEN:
+required variable UPDATER_TOKEN is missing a value: set UPDATER_TOKEN in .env to enable the updater
+```
+
+No curator. **The quickstart — the one command phase 9 exists to deliver — did not work for anybody
+who had not already opted into the updater**, and the failure names a variable for a feature they
+never asked for. `docker compose config --services` proves the updater is not in the default set;
+compose fails the file anyway.
+
+### The fix is to let the service refuse
+
+`WATCHTOWER_HTTP_API_TOKEN: ${UPDATER_TOKEN:-}`, and watchtower does the refusing. Measured against
+`containrrr/watchtower:1.7.1` with an empty token and the socket mounted:
+
+```
+level=info msg="The HTTP API is enabled at :8080."
+level=fatal msg="api token is empty or has not been set. exiting"     exit 1
+```
+
+It exits **before the API listens**, so there is no window in which a tokenless restart endpoint
+answers. D44's property survives intact; only its enforcement point moved to the one place that can
+express "required *when this service actually runs*", which compose's interpolation cannot.
+
+**The general rule:** a `:?` in a compose file is a requirement on *every* invocation of that file,
+including the ones that do not want the service. Put a profiled service's mandatory values behind
+the service's own validation, and reserve `:?` for what the default run genuinely cannot start
+without.
+
+### What this cost, and why it went unnoticed
+
+T80 verified the updater by configuring one. Every path that exercised this file had a token in the
+environment already, so the one case that mattered — a stranger with no `.env` at all — was the one
+nobody ran. It is the same shape as [T79](tasks/T79-the-download-button.md)'s Download button, which
+was broken in a browser on every install while every API-level test passed: **a default that is only
+ever exercised by someone who is not you.**
+
+---
+
 D23 remains reserved for phase 9's socket cost and is still unwritten. D26 was written at the
 front of phase 10 and reversed by [D43](#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader) two days later.
+D44's `${UPDATER_TOKEN:?…}` was moved into watchtower by
+[D45](#d45--a-mandatory-value-belongs-to-the-service-that-needs-it-not-to-the-file-that-describes-it)
+the day after it shipped; D44's paragraph still shows the compose form it was written with, which is
+what a record does.
