@@ -275,6 +275,14 @@ services:
       # --services` proves the updater is not in the default set. T51 found that
       # by running the quickstart from an empty directory. Do not put `:?` back
       # in a profiled service — it fails the run that does not want it.
+      #
+      # The cost, measured rather than assumed: opting into this profile WITHOUT
+      # a token now starts a container that exits 1 and, under `restart:
+      # unless-stopped` above, retries forever — `docker compose ps` shows
+      # `Restarting (1)` and the log's last line is the reason. curator itself
+      # comes up healthy beside it. That is the right way round: the person who
+      # asked for an updater gets a loud symptom naming the variable, and the
+      # person who did not gets a working install.
       WATCHTOWER_HTTP_API_TOKEN: ${UPDATER_TOKEN:-}
 
     # No ports. curator reaches it at http://updater:8080 on this network, and

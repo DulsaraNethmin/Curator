@@ -2070,6 +2070,23 @@ including the ones that do not want the service. Put a profiled service's mandat
 the service's own validation, and reserve `:?` for what the default run genuinely cannot start
 without.
 
+### What it costs, stated rather than discovered
+
+The refusal is no longer a message from `docker compose up -d`; it is a container that exits 1 and,
+under `restart: unless-stopped`, retries. Measured with the `updater` profile and no token:
+
+```
+SERVICE   STATUS
+curator   Up 12 seconds (healthy)
+updater   Restarting (1) 1 second ago
+```
+
+So somebody who opts in and forgets the token gets a restart loop rather than a refusal to start,
+and has to read a log to find the one fatal line. That is worse **for them** than what D44 had, and
+it is the correct trade anyway: it is paid only by the person who asked for the updater, in exchange
+for the product installing at all for everyone who did not. The old behaviour charged the second
+group for the first group's mistake.
+
 ### What this cost, and why it went unnoticed
 
 T80 verified the updater by configuring one. Every path that exercised this file had a token in the
