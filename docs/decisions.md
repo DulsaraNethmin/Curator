@@ -2097,6 +2097,76 @@ ever exercised by someone who is not you.**
 
 ---
 
+## D46 — A probe budget belongs to the service being probed
+
+**Status:** decided and built · **Found by** [T81](tasks/T81-a-probe-that-outlasts-the-browser.md)
+reading minter's own HEALTHCHECK log on the Pi, after the defect had been carried across three
+handoffs as prose
+
+`probeTimeout` was one constant, 5 s, shared by the settings integrations table, the Jellyfin probe,
+and minter's. The number came from a sentence in `Minter.Probe`:
+
+> a question /health answers in milliseconds
+
+Nobody had measured it. Docker had, every fifteen minutes, and kept the answer:
+
+```
+23:40:54 -> 23:41:02   8.61 s   {"ok":true,…}
+23:56:02 -> 23:56:09   6.73 s   {"ok":true,…}
+```
+
+**A healthy minter never once answered inside curator's budget.** minter serves `/health` from the
+process that drives its browser and waits on the same lock, so the endpoint's latency is a property
+of what the browser is doing — not of the network, and not of whether minter is up. minter's own
+HEALTHCHECK budgets `1m30s` for the identical call. curator budgeted 5 s and called the difference
+"unreachable".
+
+### The rule
+
+**A reachability budget is a claim about the service, so it belongs beside that service and it has to
+come from a measurement.** One shared constant is one claim applied to things that have nothing in
+common: TMDB answers in milliseconds and a headless Firefox does not. `probeTimeout` stays 5 s for
+the integrations table, which asks its question of services that answer immediately;
+`minterProbeTimeout` is 20 s, a little over twice the slowest healthy answer observed, and still far
+inside minter's own.
+
+### The half that matters more
+
+A bigger number would not have fixed the Pi. When T81 looked, minter was `Up 2 hours (unhealthy)`
+with a browser that never finished, and `/health` had stopped answering at all — 30 s, three times,
+zero bytes, on a port that still accepted the connection:
+
+```
+mint queued 854456ms behind an in-flight browser
+```
+
+curator reported that as **"minter is not running"**, above `docker compose --profile 1337x up -d`.
+The container was running; the command was a no-op; the screen was confidently wrong.
+
+The cause is that `indexer.unreachable{}` carries `ErrUnreachable` **alongside** the transport error
+so that both `errors.Is` checks answer truthfully — a deliberate design, documented as such — and
+`handleMinterProbe` tested `ErrUnreachable` first. A `switch` over a value that matches two sentinels
+is order-dependent, and nothing about it looks order-dependent.
+
+**A deadline is not evidence that nothing is listening.** It is evidence that nothing answered *yet*.
+The two states take opposite instructions — start the container, versus wait for the one you have —
+so a probe that collapses them is worse than one that reports neither. The deadline is now tested
+first and reported as `unhealthy`, which the screen already renders as "not ready … until it
+settles".
+
+### What it costs
+
+The screen can now take 20 s to move off "checking", against 5 s before, on an install where minter
+is genuinely absent — a dial to a dead port fails immediately, so this is paid only where something
+accepts the connection and then does not answer. In exchange, the two states that were one are two.
+
+The interval was 5 s and the budget is now 20 s, so the browser polls **one probe at a time**. Left
+alone, a busy minter would have collected a fresh request every tick while the previous sat queued
+behind its browser: raising a timeout without a re-entrancy guard turns one late answer into a queue
+of them, aimed at the service that was already too busy to answer.
+
+---
+
 D23 remains reserved for phase 9's socket cost and is still unwritten. D26 was written at the
 front of phase 10 and reversed by [D43](#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader) two days later.
 D44's `${UPDATER_TOKEN:?…}` was moved into watchtower by

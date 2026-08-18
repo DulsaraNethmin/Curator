@@ -19,7 +19,9 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
 )
@@ -79,6 +81,28 @@ const (
 	minterReady       = "ready"
 )
 
+// minterProbeTimeout bounds the one call this endpoint makes, and it is
+// deliberately NOT settings.go's probeTimeout.
+//
+// That constant is 5 s and correct for what it does: the integrations table
+// asks "is this address answering" of services that reply immediately. minter
+// is not one of them. /health is served by the process that drives the browser
+// and waits on the same lock, so it answers when the browser is free rather
+// than on demand — Minter.Probe's own comment used to say "milliseconds", and
+// this budget was inherited from that sentence rather than from a measurement.
+//
+// Measured on the Pi, read out of the container's own HEALTHCHECK log: two
+// consecutive healthy checks took 8.61 s and 6.73 s, both returning
+// {"ok":true}. The old 5 s budget was therefore BELOW minter's healthy floor —
+// a working minter was reported "not running", beneath a command that would
+// not have helped, every time.
+//
+// 20 s is a little over twice the slowest healthy answer observed and still far
+// inside minter's own HEALTHCHECK timeout of 1m30s for the identical call. It
+// is affordable because the screen polls one probe at a time
+// (web/components/settings/minter.tsx).
+const minterProbeTimeout = 20 * time.Second
+
 // minterCommand is the one line phase 9 accepts as the cost of refusing the
 // Docker socket, for minter's half. The profile is compose.yaml's, and `1337x`
 // is a legal profile name — checked, because profile names must start
@@ -132,7 +156,7 @@ func (s *Server) handleMinterProbe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), minterProbeTimeout)
 	defer cancel()
 
 	body := minterProbeBody{
@@ -154,6 +178,21 @@ func (s *Server) handleMinterProbe(w http.ResponseWriter, r *http.Request) {
 		body.State = minterUnhealthy
 		body.UserAgent = health.UserAgent
 		body.Detail = "minter answered but reports it is not ready — its browser may still be starting"
+	case errors.Is(err, context.DeadlineExceeded):
+		// Tested BEFORE ErrUnreachable, and that order is the whole fix.
+		// unreachable{} carries both sentinels deliberately, so a probe that
+		// ran out of time matched "nothing answered" first and the screen said
+		// "minter is not running" about a container that was running.
+		//
+		// A deadline is not evidence that nothing is listening. The connection
+		// is accepted and the request is queued; no reply arrives in time. On
+		// the Pi that state reads `mint queued 854456ms behind an in-flight
+		// browser` in minter's own log, for a container Docker still reports as
+		// up. Pasting the compose command at that is the wrong instruction.
+		body.State = minterUnhealthy
+		body.Detail = fmt.Sprintf(
+			"minter did not answer within %s — it is up, but a page fetch in flight delays its health check",
+			minterProbeTimeout)
 	case errors.Is(err, indexer.ErrUnreachable):
 		body.State = minterUnreachable
 		body.Detail = "nothing answered"

@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
 )
@@ -171,5 +172,75 @@ func TestMinterProbeWithoutAMinter(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", rec.Code)
+	}
+}
+
+// A minter that is merely BUSY must not be reported as one that was never
+// started. This is the regression T81 exists for.
+//
+// minter serves /health from the process that drives its browser and waits on
+// the same lock, so a page fetch in flight delays the health check. On the Pi
+// that state reads `mint queued 854456ms behind an in-flight browser` in
+// minter's log, for a container Docker still reported as up. The probe times
+// out — and indexer's unreachable{} carries ErrUnreachable ALONGSIDE the
+// transport error, so a handler that tests ErrUnreachable first sees "nothing
+// answered" and the screen renders "minter is not running" above `docker
+// compose --profile 1337x up -d`. That command does nothing for a container
+// that is already running.
+//
+// errors.Join reproduces the real error's shape: both sentinels, exactly as
+// unreachable{} presents them. The order the handler tests them in IS the fix.
+func TestABusyMinterIsNotReportedAsOneThatWasNeverStarted(t *testing.T) {
+	timedOut := errors.Join(context.DeadlineExceeded, indexer.ErrUnreachable)
+
+	// The trap, asserted rather than assumed: this error really does match
+	// both, which is why testing them in the wrong order is silent.
+	if !errors.Is(timedOut, indexer.ErrUnreachable) || !errors.Is(timedOut, context.DeadlineExceeded) {
+		t.Fatal("this error no longer carries both sentinels, so the test proves nothing")
+	}
+
+	h := minterServer(t, IndexerSetup{Minter: &fakeMinter{err: timedOut}, X1337: true})
+	rec, body := minterProbe(t, h)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 — the state is the answer", rec.Code)
+	}
+	if body.State == minterUnreachable {
+		t.Error(`state = "unreachable", which puts "minter is not running" and a compose command in front of a container that is already up`)
+	}
+	if body.State != minterUnhealthy {
+		t.Errorf("state = %q, want %q — a deadline is not evidence that nothing is listening",
+			body.State, minterUnhealthy)
+	}
+	if strings.Contains(body.Detail, "nothing answered") {
+		t.Errorf("detail = %q, but something WAS listening; it just did not finish in time", body.Detail)
+	}
+	if !strings.Contains(body.Detail, minterProbeTimeout.String()) {
+		t.Errorf("detail = %q, want it to name the budget that was exceeded (%s)", body.Detail, minterProbeTimeout)
+	}
+}
+
+// The probe budget has to clear minter's HEALTHY latency, which is seconds
+// rather than the milliseconds Minter.Probe's comment used to claim.
+//
+// Measured on the Pi, out of minter's own HEALTHCHECK log: two consecutive
+// checks returning {"ok":true} took 8.61 s and 6.73 s. The budget was 5 s —
+// under the floor — so a perfectly healthy minter reported itself unreachable
+// on a timer, and waiting never helped because the deadline was the thing
+// failing.
+//
+// Pinned as a floor: raising it is fine, and dropping it back under what minter
+// actually takes is the regression.
+func TestTheProbeBudgetClearsMinterHealthyLatency(t *testing.T) {
+	const slowestHealthyObserved = 8610 * time.Millisecond
+
+	if minterProbeTimeout <= slowestHealthyObserved {
+		t.Errorf("minterProbeTimeout = %s, not above the %s a HEALTHY minter was measured taking — a working minter reports itself unreachable",
+			minterProbeTimeout, slowestHealthyObserved)
+	}
+	// And it must not collapse back into settings.go's budget, which is sized
+	// for services that answer immediately and is deliberately short.
+	if minterProbeTimeout == probeTimeout {
+		t.Errorf("minterProbeTimeout has become probeTimeout (%s); the integrations table's budget is not minter's", probeTimeout)
 	}
 }
