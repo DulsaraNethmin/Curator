@@ -1,79 +1,73 @@
-# T54 — remove radarr, seerr and recyclarr, and nothing else
+# T54 — remove the nine, and leave four plus curator
 
 **Owns:** `/opt/docker/compose.yml` on the Pi, and the removal itself
-**Depends on:** [T52](T52-arr-config-backup.md) (a restored backup) and
-[T53](T53-run-alongside.md) (parity proved). Bounded by
-[D26](../decisions.md#d26--television-keeps-its-stack-the-cutover-removes-only-what-curator-replaces-for-movies)
+**Depends on:** [T52](T52-arr-config-backup.md) (done) and [T53](T53-run-alongside.md) (curator
+proved on the Pi). Bounded by
+[D43](../decisions.md#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader),
+which replaced [D26](../decisions.md#d26--television-keeps-its-stack-the-cutover-removes-only-what-curator-replaces-for-movies)
 
 ## Goal
 
-The three containers curator has actually replaced stop running, television keeps working, and the
-compose file says what the Pi is now.
+Everything curator replaced stops running, and the compose file says what the Pi is now.
 
-## The list, and it is exactly three
+## The list, and it is nine
 
-| Removed | Why it may go |
+D26 bounded this at **three**, because sonarr shared qBittorrent, Prowlarr and flaresolverr and
+television was live. D43 retired television, so the whole dependency chain goes with it:
+
+| Removed | Why it may now go |
 |---|---|
-| `radarr` | curator is the movie manager; T53 proved 29/16 parity |
+| `radarr` | curator is the movie manager |
 | `seerr` | curator's own UI is the request surface |
-| `recyclarr` | measured: its only config is `radarr.yml`, `base_url: http://radarr:7878` |
+| `recyclarr` | its only config is `radarr.yml`, `base_url: http://radarr:7878` |
+| `sonarr` | television retired (D43) |
+| `prowlarr` | it synced to Radarr and Sonarr; both are gone |
+| `flaresolverr` | it existed for those indexers; minter replaces it ([D1](../decisions.md#d1--keep-1337x-build-our-own-cloudflare-solver)) |
+| `qbittorrent` | curator's own engine ([D22](../decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)); also dead since 2026-08-18T01:38:35Z |
+| `gluetun` | curator's own tunnel ([D27](../decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)) |
+| `byparr` | superseded by minter; already exited |
 
-| Kept, and why it may **not** go | |
+| Kept | |
 |---|---|
-| `gluetun`, `qbittorrent` | sonarr's download path — same client, still enabled |
-| `prowlarr` | Prowlarr syncs to `Radarr` **and** `Sonarr`; removing it strips sonarr's indexers |
-| `flaresolverr` | sonarr's indexers need it |
-| `jellyfin` | curator adopts this server rather than replacing it, and it holds the watch history |
-| `sonarr`, `portainer`, `watchtower`, `homepage` | curator never replaced any of them |
+| `jellyfin` | curator adopts this server rather than replacing it; it holds the watch history |
+| `portainer`, `watchtower`, `homepage` | curator never replaced any of them |
+| **curator** | the point |
 
-`byparr` is already exited and was superseded by minter
-([D1](../decisions.md#d1--keep-1337x-build-our-own-cloudflare-solver)); removing its stanza is
-tidying, not a cutover step.
-
-**13 services become 10.** Not six, and not seven — see D26 for why every earlier count was wrong.
+**Thirteen services become five.** The README's original "thirteen become six" is not merely
+corrected by this, it is beaten — and [T51](T51-documents.md) owns the sentence.
 
 ## Do
 
-1. **Stop before deleting.** `docker compose stop radarr seerr recyclarr` and leave the Pi like that
-   long enough to find out what breaks. A stanza deleted is a stanza somebody has to reconstruct from
-   a backup; a stopped container is a decision that reverses in one command.
-2. **Then remove the three stanzas from `compose.yml`**, and `docker compose up -d` to reconcile.
-   The project is `docker` at `/opt/docker` and there is only one, so a stray `-p` reconciles the
-   wrong thing.
-3. **Leave the config directories on disk.** radarr's 136 MB and recyclarr's 78 MB cost nothing next
-   to 13 GB free, and they are the fastest possible rollback. Deleting them is a separate decision
-   nobody needs to take today.
-4. **Say what the Pi is now**, in `compose.yml`'s own comments: which services belong to television
-   and which to curator, because the next reader will not have D26 in their head.
+1. **Stop before deleting.** `docker compose stop` the nine and leave the Pi like that long enough to
+   find out what breaks. A stopped container reverses in one command; a deleted stanza has to be
+   reconstructed.
+2. **Then remove the nine stanzas from `compose.yml`** and `docker compose up -d` to reconcile. The
+   project is `docker` at `/opt/docker` and there is only one, so a stray `-p` reconciles the wrong
+   thing.
+3. **Leave the config directories on disk.** They total 627 MB against 13 GB free on the SD card and
+   are the fastest rollback there is. Deleting them is a separate decision.
+4. **Say what the Pi is now**, in `compose.yml`'s own comments, because the next reader will not have
+   D43 in their head.
 
 ## Do not
 
-- **Remove `prowlarr`, `qbittorrent`, `gluetun` or `flaresolverr`.** D26. Television is live — 3
-  series, 40 GB, an episode imported 2026-08-17.
-- **Remove or edit anything about `jellyfin`.** curator connects to a server somebody is already
-  watching and changes nothing about it.
-- **`docker compose down`.** It takes the whole project, television included.
-- **Delete the library, the downloads, or anything under `/media/storage/media/`.** Nothing in this
-  task touches the USB disk.
-- **Run before T52's restore has been proved and T53's parity has been seen.**
+- **`docker compose down`.** It takes the whole project, Jellyfin included.
+- **Remove or edit `jellyfin`.** Untouched, and it is where the films are watched.
+- **Delete `/opt/docker/configs/*`.** See above — that is the rollback.
+- **Re-add anything "just in case".** The backup is the just-in-case, and it has been restored once
+  already so it is known to work.
 
 ## Verify
 
-- `docker ps` shows **10 services**, and radarr, seerr and recyclarr are not among them
-- **sonarr still downloads**: an episode grabbed and imported after the removal, through the
-  qbittorrent and prowlarr that stayed. This is the assertion the whole decision rests on and it is
-  not optional
-- curator still lists 29/16 and still plays a film
-- Jellyfin is untouched — same libraries, same users, same watch state
-- `compose.yml` in git-or-backup form still exists for the three removed stanzas, so the rollback is
-  a paste rather than a reconstruction
-- **`/opt/docker/backups/` is no longer empty**, because T52 ran
+- `docker ps` shows **five** — jellyfin, portainer, watchtower, homepage, curator
+- curator still serves the library it built in T53, and still plays a film
+- Jellyfin is untouched: same server, same users, same libraries
+- **only one tunnel and one torrent client exist on the box**, which is the thing D26 could not have
+  and D43 bought
+- `compose.yml` for the removed stanzas still exists in the T52 backup, so a rollback is a paste
 
 ## Open
 
-- **`qbittorrent` is exited (255) as of 2026-08-18** and nothing restarted it. Television's download
-  path is therefore already broken independently of this task, and "sonarr still downloads" cannot be
-  verified until somebody starts it. Find out why it stopped before reading a failure here as
-  something T54 caused.
-- **Nothing here reduces the two-tunnel cost** D26 accepted. If that becomes unwanted, the lever is
-  retiring television, and that is a new decision rather than a revision of this task.
+- **Nothing here reduces what a rollback costs.** Restoring television means the backup, the configs
+  and re-downloading 46 GB. That is the accepted price of D43.
+- **`/opt/docker/configs/` keeps 627 MB of dead configuration** until somebody decides otherwise.

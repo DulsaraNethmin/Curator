@@ -75,7 +75,13 @@ decision about television the honest removal set is **three** — radarr, seerr,
 project's own headline number was wrong in a way no document caught, because every count so far was
 taken against what curator replaces rather than against what still depends on it.
 
-### That decision is [D26](decisions.md#d26--television-keeps-its-stack-the-cutover-removes-only-what-curator-replaces-for-movies), and it is now settled
+> **Superseded 2026-08-18 by [D43](decisions.md#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader).**
+> The media disk was emptied — 363 GB deleted, 870 GB free — and television was retired by choice.
+> D26's reading below still stands as a record of what the stack depended on; its *conclusion* does
+> not. The removal set is **nine**, not three, and thirteen services become **five**. T53 has no
+> parity target any more and T54 removes the whole download stack.
+
+### That decision was [D26](decisions.md#d26--television-keeps-its-stack-the-cutover-removes-only-what-curator-replaces-for-movies), and D43 has since reversed it
 
 **Television keeps its stack.** The cutover removes radarr, seerr and recyclarr — three, not seven —
 and `gluetun`, `qbittorrent`, `prowlarr` and `flaresolverr` stay up for sonarr, which is live: 3

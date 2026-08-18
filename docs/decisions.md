@@ -1873,5 +1873,72 @@ second network call on the path that exists to avoid the first one.
 
 ---
 
+## D43 — The Pi is a clean slate; television is retired and curator is the only downloader
+
+**Status:** decided and **executed** 2026-08-18 ·
+**Reverses** [D26](#d26--television-keeps-its-stack-the-cutover-removes-only-what-curator-replaces-for-movies),
+two days after it was written · **Voids** T53's parity target · **Rewrites**
+[T53](tasks/T53-run-alongside.md) and [T54](tasks/T54-remove-what-is-replaced.md)
+
+The Pi's media disk was emptied. **363 GB deleted, 2.2 MB left, 870 GB free**, and the three
+directories kept so the paths still exist:
+
+| | freed |
+|---|---|
+| `downloads/complete/` | 201 GB — a **second copy**, measured `links=1`, never hardlinked to the library |
+| `movies/` | 117 GB — 29 folders, 16 with a file |
+| `tv/` | 46 GB — 4 series |
+
+### Why D26 no longer holds
+
+D26 kept television because television was in use: 3 monitored series, 40 GB, an episode imported
+**2026-08-17**, the day before. That was the whole argument and it was a good one. **The premise is
+gone by choice** — the series are deleted and television is retired deliberately, not because the
+dependency analysis changed. D26's *reading* stands: radarr and sonarr did share one qBittorrent and
+one Prowlarr. What changed is that there is no longer a sonarr to protect.
+
+### The removal set goes from three to nine
+
+`radarr`, `sonarr`, `seerr`, `recyclarr`, `prowlarr`, `flaresolverr`, `qbittorrent`, `gluetun` and
+`byparr`. What remains is `jellyfin`, `portainer`, `watchtower`, `homepage` — **plus curator**.
+
+**Thirteen services become five.** The original README promised "thirteen containers become six" and
+D26 corrected it to ten; this overshoots the original promise rather than missing it, and
+[T51](tasks/T51-documents.md) now has a third number to write instead of a second.
+
+The two-tunnel cost D26 accepted **disappears with it.** curator's own WireGuard is the only tunnel
+on the box and its engine the only torrent client, which is what
+[D22](#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)
+and [D27](#d27--the-vpn-is-mandatory-and-curator-owns-the-socket) were built for.
+
+It also retires a fragility rather than inheriting it: `qbittorrent` had been dead since
+2026-08-18T01:38:35Z because `network_mode: "service:gluetun"` cannot be honoured by Docker's
+restart-on-boot — `depends_on` binds `docker compose up` and not the daemon's own restart policy, so
+a reboot raced qbittorrent ahead of gluetun and nothing retried. curator has no such seam because
+the tunnel is in-process.
+
+### What was kept, and what was actually lost
+
+**The film list survives in the repository.** `testdata/library/movies/` holds 29 fixture
+directories, and they were verified **set-identical** to the 29 folder names deleted from the Pi. The
+titles, the years and the ` - ` colon substitutions that
+[CLAUDE.md's title-parsing trap](../CLAUDE.md) is built on are all still here. A sized inventory was
+captured beside the T52 backup before the delete.
+
+**The T52 backup is still worth having**, and this is why it was not skipped: its `.env` carries
+`NORDVPN_USERNAME` and `NORDVPN_PASSWORD`, which curator needs for its own tunnel.
+
+What is genuinely gone is **163 GB of media**, which is re-downloadable, and Jellyfin's watch state
+for it. Jellyfin itself is untouched and stays.
+
+### What this costs the plan
+
+**T53 loses its parity target.** "curator agrees with radarr about 29 and 16" was the only
+independent check that curator reads a real library correctly, and there is now no radarr library to
+agree with. T53 becomes *"curator works on the Pi from nothing"* — stand it up, search, download,
+import, play — which is a weaker assertion honestly labelled rather than a missing one.
+
+---
+
 D23 remains reserved for phase 9's socket cost and is still unwritten. D26 was written at the
-front of phase 10.
+front of phase 10 and reversed by [D43](#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader) two days later.
