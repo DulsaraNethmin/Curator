@@ -1759,4 +1759,64 @@ watching both halves fail.
 
 ---
 
+## D42 — A dead base URL fails the build, but only once a control name proves the machine is online
+
+**Status:** decided, measured, implemented in [T77](tasks/T77-a-dead-host-fails-loudly.md) ·
+**Completes:** [D12](#d12--yts-is-reached-at-movies-apiaccelli-not-ytsmx), which has been assumed to
+be guarded since it was written and was not · **Applies to** `internal/indexer/live_test.go` and the
+two live indexer tests; no production code changed
+
+D12 was paid for when `yts.mx` went NXDOMAIN and the base URL in the code kept pointing at it. The
+guard that grew out of it — the live indexer tests — **could not have caught it happening again.**
+A dead name produces `*net.DNSError`, a `*net.DNSError` is a `net.Error`, and
+`classifyLiveFailure`'s transport rule reads any `net.Error` as *"this machine has no network"* and
+skips. Measured 2026-08-18: a real live search against `yts.mx` **skipped**, and the suite was green.
+
+### The obvious fix is right on Linux and wrong on darwin
+
+`IsNotFound` is the NXDOMAIN discriminator, and it is a real one: an unreachable resolver gives
+`IsNotFound=false, IsTemporary=true`, and a connection refused is not a `*net.DNSError` at all. On a
+Linux runner, failing on `IsNotFound` would be exactly correct.
+
+It is not correct on the machine this repo is written on. Go maps both `EAI_NONAME` and `EAI_NODATA`
+to `errNoSuchHost` (`net/cgo_unix.go:189`), and macOS's `getaddrinfo` answers that way with no
+network at all — so **a laptop on a plane and a host that has been deleted produce the same error
+value.** The live tests exist under the promise that an offline machine does not fail the build, and
+a rule that cannot tell those apart cannot keep it.
+
+So the discriminator is not the error. It is **whether anything else resolves**: the verdict on a
+name failure is `fail` if a control name resolves and `skip` if it does not.
+
+### The control is the other indexer, and that is what makes this cheap
+
+The alternative designs both cost something this one does not:
+
+- **A third-party control host** (`one.one.one.one`, `cloudflare-dns.com`) puts a new external
+  dependency inside a test, which is the thing [D7](#d7--do-not-adopt-the-knaben-aggregator) declined
+  for the indexer list and is no more attractive here.
+- **CI and a laptop answering differently** (`os.Getenv("CI")`) is cheap and targets the guard where
+  "offline" is not a plausible explanation. It lost because the laptop gate would stop proving what
+  the CI gate proves, and this repo has one definition of the gate on purpose —
+  `.github/workflows/check.yml`'s header refuses a second one for the same reason.
+
+`TestTPBLive` asks `movies-api.accel.li`; `TestYTSLiveSearchInterstellar` asks `apibay.org`. Both are
+hosts the suite already contacts, so the dependency count is unchanged. Two measured properties make
+it work:
+
+- **A refused host still resolves.** apibay answers 403 to a GitHub address range (T73) while its
+  name resolves from that same runner, so the control is intact in the one case CI actually hits.
+- **Each host is guarded by the test that is not it.** If apibay.org dies, `TestTPBLive` asks
+  accel.li, is told DNS works, and fails loudly. Only both dying in one run hides either — which is
+  indistinguishable from an offline machine regardless.
+
+### What this does not change
+
+**"Skip on any non-200" is still the wrong fix**, unchanged since T73: 403/401/429 are a decision
+about the caller, and every other status stays loud. **`IsTemporary` stays a skip** — that is the
+offline machine, and failing it is precisely the outcome this decision was shaped to avoid. And the
+control lookup happens on **one branch only**, because a skip that quietly resolves a name is a
+second network call on the path that exists to avoid the first one.
+
+---
+
 D23 and D26 remain reserved for phases 9 and 10 and are still unwritten.

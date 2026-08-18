@@ -96,6 +96,14 @@ jobs:
       # apibay answers 200 from a home connection and 403 from a GitHub address
       # range. TestTPBLive now reads the status and skips on a refusal.
       #
+      # "They are what catches a dead base URL" was untrue when it was written
+      # and is true now. Until T77 an NXDOMAIN host was a net.Error, so it took
+      # the no-network branch and SKIPPED — measured against the real yts.mx,
+      # the host D12 is about. Since T77 it fails, guarded by a control name so
+      # that an offline laptop still does not go red (D42). The control is the
+      # other indexer's host, and a refused host still resolves, so the 403
+      # above does not disarm it.
+      #
       # This is also why the gate is run verbatim instead of with -short: the
       # skips do not need it, and adding it here would be the second definition
       # of the gate that the header refuses.

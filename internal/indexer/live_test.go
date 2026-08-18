@@ -1,12 +1,14 @@
 package indexer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,6 +37,13 @@ import (
 //
 // So the rule is applied to THE CALL rather than to a probe, and both tests ask
 // the same function.
+//
+// T77 then closed the hole T76 measured and left open: a base URL that has gone
+// NXDOMAIN is a *net.DNSError, which is a net.Error, so it took the transport
+// branch and SKIPPED — D12's own failure going green under the guard D12 paid
+// for. It now fails loudly, but only once a control name has proved that DNS
+// works on this machine, because on darwin an offline laptop produces the same
+// error value as a dead host. See D42.
 
 // refusedTheNetwork reports whether a status says THIS NETWORK may not use the
 // indexer, as opposed to the indexer being broken.
@@ -72,24 +81,20 @@ func (v liveVerdict) String() string {
 	return "fail"
 }
 
-// classifyLiveFailure decides what a failed live search means, given the error
-// and the status of the last response the client actually received (0 when no
-// response arrived at all). It returns the verdict and the reason to print.
+// classifyLiveFailure decides what a failed live search means, given the error,
+// the status of the last response the client actually received (0 when no
+// response arrived at all), and a way to ask whether DNS works on this machine.
+// It returns the verdict and the reason to print.
 //
-// It is a pure function taking a status rather than a *http.Response so that
-// every branch can be asserted directly — a live test cannot assert its own
-// skip, because it takes whichever branch the network gives it.
+// It is a pure function taking a status and a func rather than a *http.Response
+// and a resolver so that every branch can be asserted directly — a live test
+// cannot assert its own skip, because it takes whichever branch the network
+// gives it.
 //
-// KNOWN GAP, measured 2026-08-18 and deliberately left open: a base URL that has
-// gone NXDOMAIN takes the transport branch and SKIPS. `yts.mx` still does not
-// resolve, and a search against it fails with `*net.DNSError{IsNotFound:true}`,
-// which is a net.Error, so the rule above calls it "no network". D12's own
-// failure would therefore not fail loudly today, and neither test's comment says
-// so. NXDOMAIN is distinguishable — connection-refused is not a *net.DNSError at
-// all — but separating "this host is gone" from "this machine is offline" is a
-// decision about whose build goes red, not a mechanical fix, and it is not this
-// task's. See docs/tasks/T76-a-skip-that-covers-the-call.md.
-func classifyLiveFailure(err error, status int) (liveVerdict, string) {
+// dnsWorks is a func, and it is called on exactly one branch: a name that did
+// not resolve. Nothing else needs it, and a lookup nobody reads is a second
+// network call on every skip.
+func classifyLiveFailure(err error, status int, dnsWorks func() bool) (liveVerdict, string) {
 	if err == nil {
 		return liveFail, "no error"
 	}
@@ -99,6 +104,30 @@ func classifyLiveFailure(err error, status int) (liveVerdict, string) {
 	// fall through to the transport check and be misread as a working network.
 	if refusedTheNetwork(status) {
 		return liveSkip, "the indexer answered " + http.StatusText(status) + " to this network, which is a decision about the caller rather than a broken indexer"
+	}
+
+	// The name half (T77, D42). This must be asked BEFORE the transport check
+	// below, because a *net.DNSError IS a net.Error: until T77 an NXDOMAIN base
+	// URL fell into "no network" and skipped, so D12's own failure would have
+	// gone green under the guard D12 paid for.
+	//
+	// IsNotFound is the NXDOMAIN discriminator and nothing else is: measured
+	// 2026-08-18, a resolver that cannot be reached at all gives IsNotFound
+	// false and IsTemporary true, and a connection refused is not a
+	// *net.DNSError in the first place.
+	//
+	// It is not trusted on its own, because on darwin it cannot be. Go maps
+	// both EAI_NONAME and EAI_NODATA to "no such host" (net/cgo_unix.go:189),
+	// and macOS's getaddrinfo answers that way with no network at all — so on a
+	// laptop with the WiFi off, "this host is gone" and "this machine is
+	// offline" are the same error value. The control name is what separates
+	// them, and it is why this is not a one-line IsNotFound check.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+		if dnsWorks() {
+			return liveFail, "the base URL does not resolve, and DNS works on this machine — the host is gone, which is exactly D12 happening again"
+		}
+		return liveSkip, "the base URL does not resolve, and neither does the control name, so this machine has no DNS rather than the indexer being gone"
 	}
 
 	// The transport half (yts_test.go). Nothing was answered, so there is
@@ -112,6 +141,38 @@ func classifyLiveFailure(err error, status int) (liveVerdict, string) {
 	// Everything else — a status the indexer should not be returning, a decode
 	// failure, an API-level error — is a real regression and stays loud.
 	return liveFail, "the indexer answered, and answered wrongly"
+}
+
+// The control name each live test uses to prove DNS works before it calls its
+// own base URL dead. It is the OTHER indexer's host, which makes the two live
+// tests each other's control and adds no third party to the suite.
+//
+// Two properties earned it, both measured 2026-08-18:
+//
+//   - It still resolves when it refuses. apibay answers 403 to a GitHub address
+//     range (T73) and its name resolves from that same runner, so the control
+//     survives the one case CI actually hits.
+//   - A single dead host is always caught by the test that is not it. If
+//     apibay.org goes NXDOMAIN, TestTPBLive asks movies-api.accel.li, gets an
+//     answer, and fails loudly. Only both hosts dying in the same run hides
+//     either, and that is indistinguishable from an offline machine anyway.
+const (
+	tpbControlHost = "movies-api.accel.li" // YTS's host guards TPB's
+	ytsControlHost = "apibay.org"          // and TPB's guards YTS's
+)
+
+// liveDNSWorks returns the dnsWorks func classifyLiveFailure asks on the one
+// branch that needs it: does the control name resolve from here?
+//
+// A lookup error of any kind counts as "no DNS", which is the safe direction —
+// it skips rather than failing a build on a resolver that is merely unwell.
+func liveDNSWorks(ctx context.Context, control string) func() bool {
+	return func() bool {
+		lookupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		addrs, err := net.DefaultResolver.LookupHost(lookupCtx, control)
+		return err == nil && len(addrs) > 0
+	}
 }
 
 // liveRecorder remembers the status of the last response its transport saw, so a
@@ -184,14 +245,47 @@ func TestARefusedNetworkIsNotABrokenIndexer(t *testing.T) {
 	}
 }
 
+// dnsUp and dnsDown stand in for the control lookup. The point of injecting it
+// is that both answers are assertable: the live tests themselves can only ever
+// take the branch the machine they run on happens to give them.
+func dnsUp() bool   { return true }
+func dnsDown() bool { return false }
+
 func TestClassifyLiveFailureCoversTheCallAndNotJustTheProbe(t *testing.T) {
-	// A transport error carrying the shape each indexer actually produces:
+	// The errors below carry the shapes each indexer actually produces:
 	// client.Do's *url.Error, wrapped with %w the way both SearchMovie do.
+
+	// T75's case, and it is a TIMEOUT rather than a name failure — the T76
+	// version of this table called a *net.DNSError "timedOut" and asserted a
+	// skip, which is the same conflation T77 exists to undo.
 	timedOut := fmt.Errorf("tpb search %q: %w", "Interstellar", &url.Error{
 		Op:  "Get",
 		URL: "https://apibay.org/q.php",
-		Err: &net.DNSError{Err: "no such host", IsNotFound: true},
+		Err: context.DeadlineExceeded,
 	})
+
+	// A base URL that is GONE. Measured 2026-08-18 against the real yts.mx:
+	// *net.DNSError{Err:"no such host", IsNotFound:true}, IsTimeout false.
+	nxdomain := fmt.Errorf("yts search %q: %w", "Interstellar", &url.Error{
+		Op:  "Get",
+		URL: "https://yts.mx/api/v2/list_movies.json",
+		Err: &net.DNSError{Err: "no such host", Name: "yts.mx", IsNotFound: true},
+	})
+
+	// An OFFLINE machine, pure-Go resolver. Measured the same day: the resolver
+	// itself could not be dialled, so IsNotFound is FALSE and IsTemporary true.
+	// This is the shape that must never be read as a dead host.
+	offline := fmt.Errorf("yts search %q: %w", "Interstellar", &url.Error{
+		Op:  "Get",
+		URL: "https://movies-api.accel.li/api/v2/list_movies.json",
+		Err: &net.DNSError{
+			Err:         "dial udp: network is unreachable",
+			Name:        "movies-api.accel.li",
+			Server:      "100.64.0.2:53",
+			IsTemporary: true,
+		},
+	})
+
 	refused := errors.New(`tpb search "Interstellar": apibay returned 403 Forbidden`)
 	broken := errors.New(`yts search "Interstellar": unexpected status 500 Internal Server Error: `)
 	decode := fmt.Errorf("yts search %q: decode response: %w", "Interstellar", errors.New("invalid character"))
@@ -200,28 +294,45 @@ func TestClassifyLiveFailureCoversTheCallAndNotJustTheProbe(t *testing.T) {
 		name   string
 		err    error
 		status int
+		dns    func() bool
 		want   liveVerdict
 	}{
-		// The T75 hole: the probe answered, the call did not. This is the case
-		// that turned the gate red and t.Fatalf'd on a timeout.
-		{"transport failure after a 200 probe", timedOut, http.StatusOK, liveSkip},
-		{"transport failure with no response at all", timedOut, 0, liveSkip},
+		// The T75 hole: the probe answered, the call did not.
+		{"transport failure after a 200 probe", timedOut, http.StatusOK, dnsUp, liveSkip},
+		{"transport failure with no response at all", timedOut, 0, dnsUp, liveSkip},
 
-		// The T73 case, now read from the call rather than from a probe.
-		{"refused caller", refused, http.StatusForbidden, liveSkip},
-		{"unauthorized", refused, http.StatusUnauthorized, liveSkip},
-		{"rate limited", refused, http.StatusTooManyRequests, liveSkip},
+		// The T73 case, read from the call rather than from a probe.
+		{"refused caller", refused, http.StatusForbidden, dnsUp, liveSkip},
+		{"unauthorized", refused, http.StatusUnauthorized, dnsUp, liveSkip},
+		{"rate limited", refused, http.StatusTooManyRequests, dnsUp, liveSkip},
 
 		// The T74 open question: YTS had no status escape hatch at all.
-		{"yts refuses the runner", broken, http.StatusForbidden, liveSkip},
+		{"yts refuses the runner", broken, http.StatusForbidden, dnsUp, liveSkip},
 
 		// D12's rule, and the reason "skip on any non-200" is the wrong fix.
-		{"a status the indexer should not return", broken, http.StatusInternalServerError, liveFail},
-		{"the endpoint moved", broken, http.StatusNotFound, liveFail},
-		{"a decode failure is a real regression", decode, http.StatusOK, liveFail},
+		{"a status the indexer should not return", broken, http.StatusInternalServerError, dnsUp, liveFail},
+		{"the endpoint moved", broken, http.StatusNotFound, dnsUp, liveFail},
+		{"a decode failure is a real regression", decode, http.StatusOK, dnsUp, liveFail},
+
+		// T77 / D42. THE GAP T76 MEASURED AND LEFT OPEN. Before this, both of
+		// the next two skipped, so D12's own failure went green under D12's
+		// own guard.
+		{"the base URL is gone and DNS works here", nxdomain, 0, dnsUp, liveFail},
+		{"a dead name after a 200 from an earlier call", nxdomain, http.StatusOK, dnsUp, liveFail},
+
+		// ...and the promise that is not allowed to break: an offline machine
+		// does not fail the build. On darwin these two are the SAME error
+		// value, which is why the control name exists.
+		{"nothing resolves, including the control", nxdomain, 0, dnsDown, liveSkip},
+		{"the resolver itself is unreachable", offline, 0, dnsUp, liveSkip},
+		{"the resolver is unreachable and so is the control", offline, 0, dnsDown, liveSkip},
+
+		// Precedence: a refused status is a successful transaction, so it is
+		// answered before the name is ever questioned.
+		{"a refusal outranks a name failure", nxdomain, http.StatusForbidden, dnsDown, liveSkip},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, why := classifyLiveFailure(tt.err, tt.status)
+			got, why := classifyLiveFailure(tt.err, tt.status, tt.dns)
 			if got != tt.want {
 				t.Errorf("verdict = %s, want %s (reason given: %s)", got, tt.want, why)
 			}
@@ -229,6 +340,50 @@ func TestClassifyLiveFailureCoversTheCallAndNotJustTheProbe(t *testing.T) {
 				t.Error("every verdict must carry a reason: it is what the skip line prints")
 			}
 		})
+	}
+}
+
+// The control lookup is a network call, so it may only happen on the one branch
+// that reads it. Every other verdict is reachable with no DNS at all, and a skip
+// that quietly resolves a name is a second way for a live test to be slow.
+func TestTheControlNameIsOnlyLookedUpForANameFailure(t *testing.T) {
+	nxdomain := &url.Error{Op: "Get", URL: "https://yts.mx/",
+		Err: &net.DNSError{Err: "no such host", Name: "yts.mx", IsNotFound: true}}
+
+	for _, tt := range []struct {
+		name   string
+		err    error
+		status int
+		want   bool
+	}{
+		{"a name failure asks", nxdomain, 0, true},
+		{"a refused caller does not", errors.New("403"), http.StatusForbidden, false},
+		{"a wrong status does not", errors.New("500"), http.StatusInternalServerError, false},
+		{"a timeout does not", &url.Error{Err: context.DeadlineExceeded}, 0, false},
+		{"a nil error does not", nil, 0, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var asked bool
+			classifyLiveFailure(tt.err, tt.status, func() bool { asked = true; return true })
+			if asked != tt.want {
+				t.Errorf("control name looked up = %v, want %v", asked, tt.want)
+			}
+		})
+	}
+}
+
+// The control is the other indexer's host, and that is the whole reason no third
+// party enters the suite. If these two ever name the same host, the arrangement
+// silently stops being a cross-check.
+func TestEachIndexerIsTheOthersControl(t *testing.T) {
+	if tpbControlHost == ytsControlHost {
+		t.Fatalf("both controls are %q: each indexer must be guarded by the other", tpbControlHost)
+	}
+	if !strings.Contains(DefaultYTSBaseURL, tpbControlHost) {
+		t.Errorf("TPB's control is %q, which is not YTS's base URL %q", tpbControlHost, DefaultYTSBaseURL)
+	}
+	if !strings.Contains(tpbSite, ytsControlHost) {
+		t.Errorf("YTS's control is %q, which is not TPB's site %q", ytsControlHost, tpbSite)
 	}
 }
 
