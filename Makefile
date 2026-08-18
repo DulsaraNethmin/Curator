@@ -36,8 +36,16 @@ vet: ## go vet
 test: ## the fast test run
 	go test ./...
 
+# -count=1 is the gate, not a preference. Go's test cache is content-keyed and
+# machine-global, and actions/setup-go restores it between runs, so without this
+# `make check` reports another run's results and passes without executing a
+# thing. Measured 2026-08-18: re-running a green `check` on the same commit
+# returned `(cached)` for thirteen of twenty packages, internal/engine among
+# them, in 1m58s against the 7m15s the run that actually tested took. A gate
+# that can be green without running is not a gate. CLAUDE.md already warns about
+# this cache for parallel agents; it is the same trap on a runner.
 race: ## the test run that counts — the poller and the engine are concurrent
-	go test -race ./...
+	go test -race -count=1 ./...
 
 cross: ## the arm64 build, which is how this ships
 	$(ARM) go build ./...

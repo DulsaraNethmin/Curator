@@ -198,6 +198,13 @@ look like a fast run. **Take timings serially or not at all.** A wrong number in
 a handoff is worse than a missing one, because the next session builds on it
 instead of re-measuring.
 
+**The same cache used to make CI lie**, which is why `make race` passes
+`-count=1` (T75). `actions/setup-go` restores `$GOCACHE` between runs, so a
+re-run of a green `check` returned `(cached)` for thirteen of twenty packages —
+`internal/engine` among them — and passed in 1m58s without executing them. Do
+not remove that flag to make `make check` faster; `make test` is the fast one
+and is deliberately still cached.
+
 ## Git workflow
 
 **Branch first, never commit to `main`.** Create the branch before the first commit of a piece of
