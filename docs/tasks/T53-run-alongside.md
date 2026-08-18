@@ -75,6 +75,12 @@ is worth knowing about before anyone debugs an exit address on this box.
    published bundle, so what runs is still the shipped artefact
    ([T48](T48-release-pipeline.md)) — multi-arch, and the Pi is arm64.
 
+   The image tag is **`0.1.0`, not `v0.1.0`**, which this document said until the
+   pull failed on it. `release.yml:64` strips the prefix (`version="${tag#v}"`), so
+   the git tag is `v0.1.0` and the registry holds `0.1.0`, `0.1` and `latest`. The
+   wrong one answers `manifest unknown` — indistinguishable at a glance from a
+   release that never published.
+
    It exists because `compose.yaml` alone is **wrong on this hardware in a way that does not fail at
    `up -d`**. The `curator-media` volume would land in `/var/lib/docker` on the 29 GB SD card with
    13 GB free, not on the 870 GB at `/media/storage`; the overlay rebinds the volume rather than
@@ -105,6 +111,87 @@ is worth knowing about before anyone debugs an exit address on this box.
    than erroring — that path has only ever been exercised in `t.TempDir()`.
 5. **Then one film, end to end**: search, pick a release, download through curator's own engine over
    curator's own tunnel, hardlink into the library, and play it.
+
+## What happened, measured 2026-08-18
+
+All six checks under Verify pass. curator runs on the Pi and the first film arrived through it.
+
+**Deploy.** `0.1.0`, arm64, `user=1000:1000`, 31 MB, pulled anonymously once the ghcr package was
+made public. The overlay did its job: `curator-media` is bind-backed to `/media/storage/media`, and
+the payload never touched the 29 GB SD card.
+
+**The empty scan, which had only ever run in `t.TempDir()`.**
+`POST /api/scan` → `{"scanned":0,"added":0,"matched":0,"unmatched":0,"empty":0,"removed":0,"missing":0}`
+with HTTP 200, and `/api/movies` → `[]`. Zero films is answered as a number, not an error.
+
+**The tunnel, up on this hardware for the first time.** `vpn tunnel up
+endpoint=187.15.101.96:51820 mtu=1420`, engine `tunnelled=true`, and at dispatch curator said it
+itself: *"vpn check passed: the tunnel is up and traffic leaves from somewhere else."* That sentence
+is the exit-address check — `guard.go:67` runs `CheckExit` before every dispatch, so a tunnel whose
+exit equalled the host's would have refused the download rather than leaked it.
+
+**Three indexers, and minter really was used.** `yts 3, tpb 20, 1337x 20` — 43 releases for
+Deadpool (2016). minter's own access log carries the proof rather than curator's word for it:
+`172.18.0.2 → POST /fetch 200 OK`, `fetched https://1337x.to/... in 12651ms (646570 bytes,
+solved=True)`, where `172.18.0.2` is curator and `solved=True` is Cloudflare cleared.
+
+**The download: 837,272,173 bytes, and the first real-swarm numbers this project has.** Pure-Go uTP
+with boltdb piece completion, `CGO_ENABLED=0`, on arm64 — the combination
+[T78](T78-a-stall-that-says-why.md) warned had never downloaded anything. It downloads. 35 minutes
+wall clock, and the rate did not hold still:
+
+```
+21:28  38.91%   866.7 KB/s
+21:30  45.62%   650.0 KB/s
+21:34  53.70%    79.7 KB/s
+21:38  57.74%     4.1 KB/s   <- plateau begins
+21:41  57.85%     ~5 KB/s
+21:42  63.93%   recovered, then ~1.6 MB/s to completion
+```
+
+**T78's plateau reproduced on real hardware, and it recovered.** Four minutes at 4-6 KB/s — a
+trickle, not a freeze, exactly the shape T78 measured on the laptop. `torrent_stall_after` is
+`5m0s`, so it came within about a minute of firing `stallReport` and did not. The mid-stall snapshot
+is still unread; this run declined to produce one.
+
+**The hardlink, which is what D43 deleted 201 GB to stop paying for.** Both paths are **inode
+35127311** with **`links=2`**, and `df` reports **802 MB used** for an 837 MB file — stored once:
+
+```
+links=2  /media/storage/media/movies/Deadpool (2016)/Deadpool (2016).mp4
+links=2  /media/storage/media/downloads/Deadpool (2016) [YTS.AG]/Deadpool.2016.720p...mp4
+```
+
+**It plays.** `ffprobe` over `/api/movies/1/stream` from the laptop: `h264 1280x534`, `aac` 2ch,
+`duration=6486.24` (108.1 min, Deadpool's real runtime). The endpoint answers `206` with
+`Content-Range: bytes 0-1048575/837272173`, so it is seekable rather than a blob.
+
+**Jellyfin sees it, with no \*arr involved.** `/movies/Deadpool (2016)/Deadpool (2016).mp4`,
+`ProviderIds {"Tmdb":"293660","Imdb":"tt1431045"}`, `ProductionYear 2016` — which is exactly what
+[D32](../decisions.md) keys *Open in Jellyfin* on.
+
+## Two things found here that belong to other tasks
+
+**minter's probe is broken, and the search path hides it.** `GET /api/indexers/minter/probe` reports
+`unreachable / "nothing answered"` for a minter that is up and serving. Measured: minter's `/health`
+takes **6.5 s under load and 8.0 s idle**, while `probeTimeout` is **5 s**
+(`internal/api/settings.go:22`). The probe returns at the deadline every time — 5.009, 5.011, 5.008,
+5.012, 5.011 s across five runs, two of them after minter's own container healthcheck had gone
+`healthy`. `Minter.Probe` funnels *every* transport error into `ErrUnreachable`, so a healthy minter
+is reported as nothing listening and the Settings screen tells the user to run a compose command for
+a container that is already running.
+
+**It is consistent, not intermittent** — this was first read as a load effect and the idle
+measurement refutes that. `/health` on this minter image is simply slower than the deadline, so the
+probe is broken for every install running it, not for unlucky ones. Because curator
+cancels before minter answers, uvicorn never logs the request, so minter's own logs agree it "never
+happened". `indexers.go:123` defends the short deadline as "affordable precisely because it is
+`/health` and not a page fetch" — that is the assumption that is wrong. **This is T49's code and it
+needs its own task.**
+
+**Jellyfin is carrying 18 ghost records.** It lists 19 movies; exactly **one** file exists on disk.
+The other 18 are pre-wipe database rows for files D43 deleted, and Jellyfin will keep showing them
+until something makes it rescan. That belongs to [T54](T54-remove-what-is-replaced.md).
 
 ## Do not
 
