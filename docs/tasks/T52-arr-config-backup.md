@@ -94,8 +94,53 @@ today; three days of a live library is exactly the window that matters.
 - The restore was done on a machine that is not the Pi, because a restore that needs the Pi to work
   is not a recovery.
 
+## What was taken — **2026-08-18**
+
+Held at `~/curator-pi-backup/2026-08-18/` on the laptop, **outside the repository**, because it
+carries `.env` and three `config.xml` files. 19 MB total.
+
+```
+sha256 (first 16)   bytes  file
+0da14c11b1ce54d3    207026  arr-zips/prowlarr_backup_v2.0.5.5160_2026.08.18_17.55.39.zip
+7c6530c89e5dc30e    867224  arr-zips/radarr_backup_v5.27.5.10198_2026.08.18_17.55.38.zip
+af43ef4ea3d57b03    802916  arr-zips/sonarr_backup_v4.0.15.2941_2026.08.18_17.55.39.zip
+4b5ab2f14c271417       686  compose/.env                     (mode 600, preserved)
+7633255f8021bc77      6319  compose/compose.yml              (all 13 services)
+742aeb78d15e0fea    372119  configs/gluetun.tar.gz
+6800128a49290239  12047942  configs/jellyfin-nometa.tar.gz
+7282eab337206d7a   4934443  configs/qbittorrent.tar.gz
+```
+
+The full manifest is `MANIFEST.txt` beside them.
+
+**The restore was done and it matches.** `radarr_backup_…2026.08.18` was unzipped into a
+`lscr.io/linuxserver/radarr:5.27.5` container on the laptop — not the Pi — which migrated the schema
+to 242 and started. Its API then answered **29 movies tracked, 16 with a file, 29 monitored**: the
+same three numbers the Pi's live radarr reports, and the same ones
+[`phase-10.md`](../phase-10.md) sets as T53's parity target. The container was removed afterwards.
+
+### Three things the doing of it settled
+
+- **The app's zip really is consistent, and this is the proof.** It contains exactly `config.xml`,
+  `INFO` and a single `radarr.db` of 4,517,888 bytes — **with no `-wal` and no `-shm` beside it.**
+  Radarr checkpoints the write-ahead log into the database before zipping, which is the thing a
+  `cp -r` cannot do and the whole reason this task does not use one.
+- **Jellyfin is worse than radarr was, and was handled differently.** `library.db-wal` is
+  **10,876,832 bytes against a 3,825,664-byte `library.db`** — a WAL nearly 3× its own database. Its
+  265 MB `metadata/` is regenerable artwork and was excluded, taking 295 MB down to 12 MB.
+  Jellyfin was **running** during the copy, so its archive is crash-consistent at best; that is
+  accepted rather than solved, because the cutover does not touch Jellyfin
+  ([D26](../decisions.md#d26--television-keeps-its-stack-the-cutover-removes-only-what-curator-replaces-for-movies))
+  and a guaranteed copy needs it stopped.
+- **qBittorrent's copy is the clean one, by accident.** Its container has been exited since
+  2026-08-18T01:38:35Z, so nothing was writing to its config while it was read. gluetun's directory
+  holds only `servers.json`; its credentials are in `.env`, which is why 372 KB is complete rather
+  than truncated.
+
 ## Open
 
+- **This is one copy, on the laptop, in the same room.** It satisfies "not the Pi" and does not
+  satisfy "somewhere else". A second destination is still wanted and is not blocking T53.
 - **Where "off the Pi" is has not been chosen.** The laptop is the obvious first copy and is not by
   itself an answer, since it is the same room and the same person's hardware.
 - **Nothing here schedules a repeat.** This is the one-shot backup the cutover needs; a habit is a
