@@ -186,8 +186,7 @@ func (c *Checker) Cheap() Verdict {
 
 	case !status.Fresh(now):
 		return c.record(Verdict{State: StateStale, At: now, Status: status,
-			Detail: fmt.Sprintf("the last handshake with %s was %s ago, longer than the %s a peer will accept a keypair for",
-				status.Endpoint, status.Age(now).Round(time.Second), HandshakeStale)})
+			Detail: staleDetail(status, now)})
 	}
 
 	// The device is healthy. Whether traffic actually leaves somewhere else is
@@ -257,12 +256,25 @@ func (c *Checker) Check(ctx context.Context, force bool) Verdict {
 		// the same tunnel: a watchdog comparing the two states would otherwise
 		// see the same failure described two ways and treat every tick as a
 		// fresh transition.
+		//
+		// The DETAIL has to follow the state, and until the live teardown ran
+		// it did not. Verdict.Detail is what Sentinel hands to Engine.Hold and
+		// what the Activity screen then renders under a stalled row, so a VPN
+		// server that had stopped answering produced "curator has stopped this
+		// download because it would not be protected: vpn: asking
+		// https://www.cloudflare.com/cdn-cgi/trace through the tunnel: context
+		// deadline exceeded" — a third party named as the culprit, and the
+		// check URL on a screen, for a failure this function had already
+		// correctly identified as a stale handshake. Measured 2026-08-20 by
+		// TestLiveTheTunnelIsTornDownUnderADownload. The cause is kept for
+		// Err() and the log chain; what a person reads names the tunnel.
 		state := StateBlocked
+		detail := err.Error()
 		if !fresh {
-			state = StateStale
+			state, detail = StateStale, staleDetail(status, now)
 		}
 		return c.record(Verdict{State: state, At: now, Status: status,
-			ExitChecked: true, ExitAddress: address, cause: err, Detail: err.Error()})
+			ExitChecked: true, ExitAddress: address, cause: err, Detail: detail})
 	}
 
 	// Not logged with the address in it: GET /api/logs is readable by anyone on
@@ -279,4 +291,14 @@ func (c *Checker) Check(ctx context.Context, force bool) Verdict {
 func (c *Checker) record(v Verdict) Verdict {
 	c.last = v
 	return v
+}
+
+// staleDetail is the one sentence a stale handshake is described by, and it is
+// shared rather than written twice because Cheap and Check must agree about the
+// same tunnel — the sentinel treats a difference between their two states as a
+// transition, and a difference between their two sentences would reach the
+// Activity screen as two explanations for one failure.
+func staleDetail(status Status, now time.Time) string {
+	return fmt.Sprintf("the last handshake with %s was %s ago, longer than the %s a peer will accept a keypair for",
+		status.Endpoint, status.Age(now).Round(time.Second), HandshakeStale)
 }

@@ -212,3 +212,54 @@ func TestTheCheapReadNeverProvesTheThingItCannotSee(t *testing.T) {
 		t.Errorf("exit checks = %d; the cheap read must never make one", tunnel.checks)
 	}
 }
+
+// TestAStaleTunnelIsReportedAsTheCauseAndNotTheSymptom pins what a person reads
+// when their VPN dies, which is not the same question as what state the checker
+// reached.
+//
+// Check already chose StateStale over StateBlocked here, deliberately, because
+// "the handshake is the CAUSE and blocked would name the symptom". The Detail
+// did not follow: it carried err.Error() from the exit check, so Verdict.Detail
+// — which Sentinel hands to Engine.Hold, and which the Activity screen renders
+// verbatim under a stalled row — told somebody whose tunnel had died that a
+// request to cloudflare.com had timed out. Found by
+// TestLiveTheTunnelIsTornDownUnderADownload, which is the only thing that reads
+// that sentence the way a user does.
+//
+// The cause is still there for errors.Is and for the log chain. What changes is
+// the sentence.
+func TestAStaleTunnelIsReportedAsTheCauseAndNotTheSymptom(t *testing.T) {
+	now := time.Now()
+	tunnel := &fakeTunnel{
+		status:   Status{Endpoint: "sg701:51820", LastHandshake: now},
+		failWith: errors.New(`asking https://www.cloudflare.com/cdn-cgi/trace through the tunnel: context deadline exceeded`),
+	}
+	c := NewChecker(tunnel, "https://www.cloudflare.com/cdn-cgi/trace", nil, time.Hour, quiet())
+	at(c, &now)
+
+	now = now.Add(HandshakeStale + time.Minute)
+	v := c.Check(context.Background(), true)
+
+	if v.State != StateStale {
+		t.Fatalf("State = %q, want stale — the handshake is why the exit check could not answer", v.State)
+	}
+	if !strings.Contains(v.Detail, tunnel.status.Endpoint) {
+		t.Errorf("Detail does not name the tunnel: %q", v.Detail)
+	}
+	if strings.Contains(v.Detail, "cloudflare.com") {
+		t.Errorf("Detail blames the exit check's third party for a dead tunnel, and puts the check URL "+
+			"on a screen anyone on the LAN can read: %q", v.Detail)
+	}
+	// The same tunnel, described the same way by both halves. The sentinel
+	// treats a difference between their states as a transition; a difference
+	// between their sentences reaches the Activity screen as two explanations
+	// for one failure.
+	if cheap := c.Cheap(); cheap.Detail != v.Detail {
+		t.Errorf("Cheap and Check describe one stale tunnel differently:\n  cheap: %q\n  check: %q",
+			cheap.Detail, v.Detail)
+	}
+	// And nothing is lost: the refusal still carries what actually failed.
+	if err := v.Err(); err == nil || !strings.Contains(err.Error(), "cloudflare.com") {
+		t.Errorf("Err() = %v, want the exit check's own error kept for the log chain", err)
+	}
+}
