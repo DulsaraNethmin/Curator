@@ -193,10 +193,18 @@ func (c *Checker) Cheap() Verdict {
 	// The device is healthy. Whether traffic actually leaves somewhere else is
 	// not a question this can answer, so the previous exit check stands — and
 	// the verdict says it was not re-proved, so nothing draws it as live.
+	//
+	// Deliberately NOT gated on goodTill. That is the dispatch cache, and
+	// consulting it here would make an expiring cache look like a state change
+	// and force an exit check every TTL for ever — on an idle box, which is
+	// exactly the traffic the sentinel's cadence exists to avoid. WHEN to
+	// re-prove is the sentinel's decision, not this one's; all this reports is
+	// what is currently known, with ExitChecked false so nobody mistakes it for
+	// a fresh proof.
 	previous := c.last
 	verdict := Verdict{State: StateBlocked, At: now, Status: status,
 		Detail: "the tunnel is up, but where its traffic leaves from has not been established yet"}
-	if previous.ExitDiffers && now.Before(c.goodTill) {
+	if previous.ExitDiffers {
 		verdict.State = StateUp
 		verdict.Detail = "the tunnel is up and its traffic leaves from somewhere other than this machine"
 		verdict.ExitDiffers = true
@@ -243,7 +251,17 @@ func (c *Checker) Check(ctx context.Context, force bool) Verdict {
 
 	address, err := c.tunnel.CheckExit(ctx, c.checkURL, c.host)
 	if err != nil {
-		return c.record(Verdict{State: StateBlocked, At: now, Status: status,
+		// A stale handshake reports as stale even though it was the exit check
+		// that failed, because the handshake is the CAUSE and "blocked" would
+		// name the symptom. It also has to agree with what Cheap() says about
+		// the same tunnel: a watchdog comparing the two states would otherwise
+		// see the same failure described two ways and treat every tick as a
+		// fresh transition.
+		state := StateBlocked
+		if !fresh {
+			state = StateStale
+		}
+		return c.record(Verdict{State: state, At: now, Status: status,
 			ExitChecked: true, ExitAddress: address, cause: err, Detail: err.Error()})
 	}
 

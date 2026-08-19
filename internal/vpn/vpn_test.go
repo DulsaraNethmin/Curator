@@ -259,6 +259,7 @@ type fakeTunnel struct {
 	checks   int
 	reads    int
 	failWith error
+	now      func() time.Time
 }
 
 func (f *fakeTunnel) Status() (Status, error) {
@@ -270,6 +271,14 @@ func (f *fakeTunnel) CheckExit(context.Context, string, *http.Client) (string, e
 	f.checks++
 	if f.failWith != nil {
 		return "", f.failWith
+	}
+	// A successful check moved real traffic through the tunnel, which forces a
+	// rekey, so the handshake is fresh afterwards. Without this the fake reports
+	// a tunnel that carries HTTP while its handshake ages for ever, which no
+	// real tunnel does — and every caller that compares the two disagrees with
+	// itself.
+	if f.now != nil {
+		f.status.LastHandshake = f.now()
 	}
 	return "203.0.113.9", nil
 }
