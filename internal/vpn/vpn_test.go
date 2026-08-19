@@ -257,15 +257,28 @@ type fakeTunnel struct {
 	status   Status
 	err      error
 	checks   int
+	reads    int
 	failWith error
+	now      func() time.Time
 }
 
-func (f *fakeTunnel) Status() (Status, error) { return f.status, f.err }
+func (f *fakeTunnel) Status() (Status, error) {
+	f.reads++
+	return f.status, f.err
+}
 
 func (f *fakeTunnel) CheckExit(context.Context, string, *http.Client) (string, error) {
 	f.checks++
 	if f.failWith != nil {
 		return "", f.failWith
+	}
+	// A successful check moved real traffic through the tunnel, which forces a
+	// rekey, so the handshake is fresh afterwards. Without this the fake reports
+	// a tunnel that carries HTTP while its handshake ages for ever, which no
+	// real tunnel does — and every caller that compares the two disagrees with
+	// itself.
+	if f.now != nil {
+		f.status.LastHandshake = f.now()
 	}
 	return "203.0.113.9", nil
 }
@@ -279,7 +292,7 @@ func (f *fakeTunnel) CheckExit(context.Context, string, *http.Client) (string, e
 func TestAStaleHandshakeInvalidatesACachedPass(t *testing.T) {
 	now := time.Now()
 	tunnel := &fakeTunnel{status: Status{Endpoint: "sg701:51820", LastHandshake: now}}
-	guard := Tunnelled(tunnel, "http://example.invalid", nil, time.Hour, quiet())
+	guard := Tunnelled(NewChecker(tunnel, "http://example.invalid", nil, time.Hour, quiet()))
 
 	if err := guard(context.Background()); err != nil {
 		t.Fatalf("first dispatch: %v", err)
@@ -324,7 +337,7 @@ func TestAnIdleTunnelWithNoKeepaliveIsStillDispatchable(t *testing.T) {
 		LastHandshake: time.Now().Add(-4 * time.Hour),
 	}}
 
-	if err := Tunnelled(tunnel, "http://example.invalid", nil, 0, quiet())(context.Background()); err != nil {
+	if err := Tunnelled(NewChecker(tunnel, "http://example.invalid", nil, 0, quiet()))(context.Background()); err != nil {
 		t.Errorf("an idle tunnel refused a dispatch: %v — the first dial rekeys, and refusing here "+
 			"breaks every install whose provider config omits PersistentKeepalive", err)
 	}
@@ -338,7 +351,7 @@ func TestAnIdleTunnelWithNoKeepaliveIsStillDispatchable(t *testing.T) {
 func TestATunnelThatHasNeverHandshakenIsRefused(t *testing.T) {
 	tunnel := &fakeTunnel{status: Status{Endpoint: "sg701:51820"}}
 
-	err := Tunnelled(tunnel, "http://example.invalid", nil, 0, quiet())(context.Background())
+	err := Tunnelled(NewChecker(tunnel, "http://example.invalid", nil, 0, quiet()))(context.Background())
 	if err == nil {
 		t.Fatal("a tunnel that has never handshaken allowed a dispatch")
 	}

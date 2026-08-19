@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
-	"time"
 )
 
 // Guard is the check curator runs before dispatching. It is deliberately the
@@ -29,82 +27,33 @@ func Required() Guard {
 	}
 }
 
-// Tunnelled checks that the tunnel is up and that it changes where traffic
-// leaves from.
+// tunnelState is the half of *Tunnel a check needs: what the device says about
+// itself, and where traffic actually comes out.
 //
-// The EXPENSIVE half is cached, because it is a property of the tunnel rather
-// than of the request: dispatching six films should not make six round trips to
-// an IP-echo service, and an exit address proved good a minute ago is still
-// good. A failure is NOT cached — that one is worth asking again, because it is
-// what somebody is actively trying to fix.
-//
-// The device read is not cached, and that is this function's own bug fixed
-// rather than a refinement. The cache used to return BEFORE reading status, so
-// for ten minutes after one good answer a dispatch verified nothing whatsoever —
-// not the exit address, and not even the free in-process read of whether the
-// far end is still there. A tunnel that died at minute one dispatched happily
-// until minute ten. The read costs one IPC to a device in this process; there
-// was never anything to save by skipping it.
-// tunnelState is the half of *Tunnel a dispatch check needs: what the device
-// says about itself, and where traffic actually comes out.
-//
-// An interface rather than the concrete type so that the CACHING can be tested
+// An interface rather than the concrete type so that the caching can be tested
 // at all. *Tunnel needs a real WireGuard device and a real endpoint, so with it
 // hard-wired the only reachable assertions were on a live tunnel — which is why
-// the ten-minute hole below survived from phase 6 to here without a test ever
-// going near it.
+// the ten-minute hole T82 closed survived from phase 6 without a test ever going
+// near it.
 type tunnelState interface {
 	Status() (Status, error)
 	CheckExit(ctx context.Context, url string, host *http.Client) (string, error)
 }
 
-func Tunnelled(t tunnelState, checkURL string, host *http.Client, ttl time.Duration, log *slog.Logger) Guard {
-	if log == nil {
-		log = slog.Default()
-	}
-	if ttl <= 0 {
-		ttl = 10 * time.Minute
-	}
-
-	var (
-		mu       sync.Mutex
-		goodTill time.Time
-	)
+// Tunnelled is the dispatch check, over a Checker.
+//
+// It is three lines because the deciding is all in one place now. There are two
+// callers of that decision — this, and the sentinel that watches while nobody is
+// looking — and two implementations of "is this tunnel good" would eventually
+// disagree, at which point the screen and the refusal say different things about
+// the same tunnel and neither is obviously wrong.
+//
+// The Checker is passed in rather than built here so that both callers share one
+// cache: the sentinel's periodic proof is the same proof a dispatch a moment
+// later would otherwise pay for again.
+func Tunnelled(c *Checker) Guard {
 	return func(ctx context.Context) error {
-		mu.Lock()
-		defer mu.Unlock()
-
-		status, err := t.Status()
-		if err != nil {
-			return err
-		}
-		if !status.Handshaken() {
-			return fmt.Errorf("the VPN tunnel has never completed a handshake with %s", status.Endpoint)
-		}
-
-		// Handshaken above, Fresh here, and they are not the same test.
-		//
-		// Handshaken is the refusal: a tunnel that has never worked cannot carry
-		// anything. Fresh only invalidates the cache — a handshake older than
-		// REJECT_AFTER_TIME is one the far end would no longer accept traffic
-		// under, so whatever the exit address was ten minutes ago is not
-		// evidence about now. It must NOT refuse on its own: an idle tunnel with
-		// no PersistentKeepalive is legitimately stale, and the first dial
-		// through it forces a rekey that succeeds.
-		if status.Fresh(time.Now()) && time.Now().Before(goodTill) {
-			return nil
-		}
-
-		if _, err := t.CheckExit(ctx, checkURL, host); err != nil {
-			return err
-		}
-
-		// Not logged with the address in it: GET /api/logs is readable by
-		// anyone on the LAN (docs/decisions.md D18), and this is the one fact
-		// the tunnel exists to keep.
-		log.Info("vpn check passed: the tunnel is up and traffic leaves from somewhere else")
-		goodTill = time.Now().Add(ttl)
-		return nil
+		return c.Check(ctx, false).Err()
 	}
 }
 

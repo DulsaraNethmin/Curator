@@ -250,6 +250,7 @@ func run() error {
 		guard    download.Guard
 		tunnel   *vpn.Tunnel
 		engine   *engine.Engine
+		checker  *vpn.Checker
 	)
 	if cfg.VPNConfigured() {
 		tunnel, err = startTunnel(cfg, log)
@@ -263,7 +264,7 @@ func run() error {
 
 	switch {
 	case cfg.Embedded():
-		if engine, guard, err = startEngine(cfg, tunnel, indexerHTTP, log); err != nil {
+		if engine, guard, checker, err = startEngine(cfg, tunnel, indexerHTTP, log); err != nil {
 			return err
 		}
 		// Nil when VPN_REQUIRED is on and no tunnel came up: startEngine builds
@@ -471,6 +472,41 @@ func run() error {
 		if err := downloads.Resume(ctx); err != nil {
 			log.Warn("could not resume downloads; the poller will still reconcile what the client has", "err", err)
 		}
+	}
+
+	// The watchdog, and what it does about a verdict.
+	//
+	// internal/vpn reports; this decides. That split is why the sentinel does
+	// not import the engine: "the tunnel is not carrying this" is a fact, and
+	// "so stop the downloads" is a policy, and only one of them belongs in a
+	// package that owns a socket.
+	//
+	// Only the embedded backend gets one. With an external qBittorrent curator
+	// does not own the socket and cannot hold anything — it compares exit
+	// addresses at dispatch and says so (docs/decisions.md D27).
+	if checker != nil && engine != nil {
+		sentinel := vpn.NewSentinel(checker, downloadsInFlight(torrents, cfg.QBitCategory), log)
+		sentinel.Subscribe(func(v vpn.Verdict) {
+			if v.OK() {
+				if err := engine.Release(); err != nil {
+					log.Error("could not release downloads after the VPN check passed", "err", err)
+					return
+				}
+				// Resume as well as release, because a boot into a broken
+				// tunnel re-added nothing at all: Service.Resume asks the guard
+				// first now, and this is the second chance it was written to
+				// expect. Safe to repeat — it skips whatever the client already
+				// holds.
+				if err := downloads.Resume(ctx); err != nil {
+					log.Warn("could not resume downloads after the VPN check passed", "err", err)
+				}
+				return
+			}
+			if err := engine.Hold(v.Detail); err != nil {
+				log.Error("could not hold downloads after the VPN check failed", "err", err)
+			}
+		})
+		go sentinel.Run(ctx)
 	}
 
 	// The poller takes the same context that shuts the server down, so it stops on
@@ -972,14 +1008,21 @@ func startTunnel(cfg *config.Config, log *slog.Logger) (*vpn.Tunnel, error) {
 // own; without one it is refused outright unless VPN_REQUIRED=false has been
 // typed. That is the whole of "mandatory": there is no configuration in which
 // the embedded engine quietly downloads unprotected (docs/decisions.md D27).
-func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client, log *slog.Logger) (*engine.Engine, download.Guard, error) {
+func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client, log *slog.Logger) (*engine.Engine, download.Guard, *vpn.Checker, error) {
 	var network engine.Network
 	var guard download.Guard
+	var checker *vpn.Checker
 
 	switch {
 	case tunnel != nil:
 		network = tunnel
-		guard = download.Guard(vpn.Tunnelled(tunnel, cfg.VPNIPCheckURL, httpClient, 0, log))
+		// One Checker, handed back so the sentinel watches through the same one.
+		// Two implementations of "is this tunnel good" would eventually
+		// disagree, and then the screen and the refusal say different things
+		// about the same tunnel with neither obviously wrong; two INSTANCES
+		// would agree and pay for the same proof twice.
+		checker = vpn.NewChecker(tunnel, cfg.VPNIPCheckURL, httpClient, 0, log)
+		guard = download.Guard(vpn.Tunnelled(checker))
 
 	case cfg.VPNRequired:
 		// No engine at all, and this is a return rather than a `guard = ...`
@@ -1004,7 +1047,7 @@ func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client
 		// reachable.
 		log.Warn("no VPN is configured and VPN_REQUIRED is true: no torrent engine has been started at all, " +
 			"and downloads are refused until VPN_CONFIG is set, or VPN_REQUIRED=false")
-		return nil, download.Guard(vpn.Required()), nil
+		return nil, download.Guard(vpn.Required()), nil, nil
 
 	default:
 		log.Warn("VPN_REQUIRED=false: the embedded engine will download over this machine's own connection")
@@ -1020,9 +1063,9 @@ func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client
 		Log:        log,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return built, guard, nil
+	return built, guard, checker, nil
 }
 
 // updateCommand is what somebody types when there is no updater to press a
