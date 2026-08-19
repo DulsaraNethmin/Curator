@@ -197,17 +197,94 @@ func (t *Tunnel) Close() error {
 	return nil
 }
 
+// HandshakeStale is how old a handshake may be before the tunnel stops counting
+// as proved.
+//
+// It is REJECT_AFTER_TIME from the WireGuard protocol rather than a round
+// number somebody liked. A sending peer starts trying to rekey at
+// REKEY_AFTER_TIME = 120 s and refuses the keypair outright at 180 s, so a
+// handshake older than this is one the far end would no longer accept traffic
+// under. PersistentKeepalive = 25 is a send, so a config that sets it holds an
+// idle tunnel comfortably inside 120 s on its own and never reaches here.
+const HandshakeStale = 3 * time.Minute
+
 // Status is what the tunnel can say about itself without asking anybody.
 type Status struct {
 	Endpoint      string
 	LastHandshake time.Time
 	Received      int64
 	Sent          int64
+
+	// Since is when this tunnel was built, which is this process's uptime for
+	// it rather than the far end's. The field has been set since phase 6 and
+	// read by nothing; a screen that says "up 4 hours" wants it.
+	Since time.Time
+
+	// Keepalive is the peer's PersistentKeepalive, in seconds, or 0 for none.
+	// It is the difference between "this tunnel is idle" and "this tunnel is
+	// dead", because with a keepalive set an idle tunnel still handshakes.
+	Keepalive int
 }
 
 // Handshaken reports whether the far end has ever answered. A device can be up,
 // configured and completely alone.
+//
+// It is deliberately NOT Fresh, and the dispatch refusal deliberately still uses
+// this one. An idle tunnel with no keepalive is legitimately not fresh — nothing
+// has needed to send for an hour — and the first dial through it forces a rekey
+// that succeeds. Refusing there would break working installs to no purpose. See
+// Fresh for what the age is actually for.
 func (s Status) Handshaken() bool { return !s.LastHandshake.IsZero() }
+
+// Age is how long ago the far end last answered. It is meaningless, and reported
+// as zero, for a tunnel that has never handshaken at all.
+func (s Status) Age(now time.Time) time.Duration {
+	if s.LastHandshake.IsZero() {
+		return 0
+	}
+	return now.Sub(s.LastHandshake)
+}
+
+// Fresh reports whether the handshake is recent enough to still prove something.
+//
+// This is what invalidates a cached pass and what colours a badge. It is not a
+// refusal on its own: see Handshaken. The distinction is the whole of why there
+// are two methods — "this tunnel has never worked" and "this tunnel has not been
+// used lately" are different facts and only the first one is a reason to refuse
+// a download.
+func (s Status) Fresh(now time.Time) bool {
+	return s.Handshaken() && s.Age(now) < HandshakeStale
+}
+
+// Owns reports whether addr is one of the addresses this tunnel answers to.
+//
+// It is how a caller checks that the engine's socket is INSIDE the tunnel rather
+// than being told so by the code that wired them together. The engine reports
+// the address its one socket actually holds; this says whether that address is
+// the tunnel's. Neither of them is a claim, which is the point.
+func (t *Tunnel) Owns(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		host = addr.String()
+	}
+	parsed, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	// Unmap before comparing: netstack hands back a 4-in-6 form for a v4
+	// address often enough that a straight == silently answers false for a
+	// socket that is unmistakably inside the tunnel.
+	parsed = parsed.Unmap()
+	for _, own := range t.addrs {
+		if own.Unmap() == parsed {
+			return true
+		}
+	}
+	return false
+}
 
 // Status reads the device's own counters through the same IPC a `wg show`
 // would use.
@@ -217,7 +294,7 @@ func (t *Tunnel) Status() (Status, error) {
 		return Status{}, fmt.Errorf("vpn: reading device status: %w", err)
 	}
 
-	status := Status{Endpoint: t.peer}
+	status := Status{Endpoint: t.peer, Since: t.built}
 	for _, line := range strings.Split(b.String(), "\n") {
 		key, value, found := strings.Cut(strings.TrimSpace(line), "=")
 		if !found {
@@ -234,6 +311,8 @@ func (t *Tunnel) Status() (Status, error) {
 			status.Received, _ = strconv.ParseInt(value, 10, 64)
 		case "tx_bytes":
 			status.Sent, _ = strconv.ParseInt(value, 10, 64)
+		case "persistent_keepalive_interval":
+			status.Keepalive, _ = strconv.Atoi(value)
 		}
 	}
 	return status, nil

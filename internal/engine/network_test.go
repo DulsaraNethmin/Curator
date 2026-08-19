@@ -260,6 +260,50 @@ func TestTheDhtBootstrapNeverFallsBackToTheHost(t *testing.T) {
 	}
 }
 
+// bound is a network that listens on one named address and remembers which
+// socket it gave out, so a test can compare the engine's answer against the
+// thing itself rather than against a shape.
+type bound struct {
+	host string
+
+	mu       sync.Mutex
+	handedTo []string
+}
+
+func (b *bound) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return (&net.Dialer{}).DialContext(ctx, network, address)
+}
+
+func (b *bound) ListenPacket(_ context.Context, network, address string) (net.PacketConn, error) {
+	if network == "udp6" {
+		// v4-only, like every NordLynx config, so families tells the client the
+		// truth rather than this fake quietly answering both.
+		return nil, errors.New("bound has no udp6 address")
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		port = "0"
+	}
+	pc, err := net.ListenPacket("udp4", net.JoinHostPort(b.host, port))
+	if err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	b.handedTo = append(b.handedTo, pc.LocalAddr().String())
+	b.mu.Unlock()
+	return pc, nil
+}
+
+func (b *bound) LookupHost(context.Context, string) ([]string, error) {
+	return nil, errors.New("bound resolves nothing")
+}
+
+func (b *bound) handedOut() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.handedTo)
+}
+
 // refuses is a network that will not open anything — a tunnel that has been
 // closed under a running client, which is the case families cannot pre-empt.
 type refuses struct{}
@@ -346,4 +390,44 @@ func TestTheTrackerHookNeverReturnsAnError(t *testing.T) {
 	if pc.LocalAddr() == nil {
 		t.Error("LocalAddr is nil; anacrolix logs it before the first read")
 	}
+}
+
+// TestTheBindingIsReadOffTheEngineRatherThanClaimed is the fact the VPN page's
+// "inside the tunnel" badge is drawn from.
+//
+// The engine does not keep the Network it was handed, so there is nothing here
+// that could report what it was CONFIGURED with instead of what it got. Paired
+// with vpn.Tunnel.Owns, two independent reads have to agree before anything on
+// screen says the socket is inside the tunnel — neither of them a sentence
+// somebody wrote next to the wiring.
+func TestTheBindingIsReadOffTheEngineRatherThanClaimed(t *testing.T) {
+	t.Run("with a network, the address is the one the network handed out", func(t *testing.T) {
+		// Bound to an explicit address rather than the wildcard, which is what a
+		// real tunnel does: vpn.Tunnel.ListenPacket always fills the local IP in,
+		// because a nil one makes gvisor panic. That is also what makes the
+		// answer comparable against Tunnel.Owns.
+		network := &bound{host: "127.0.0.1"}
+		e := start(t, Config{DataDir: t.TempDir(), Category: "curator", Network: network})
+
+		addr := e.Binding()
+		if addr == nil {
+			t.Fatal("no binding for an engine that was given a network")
+		}
+		// Membership, not equality: bindConfig's family probe opens and closes a
+		// socket of its own, so the network hands out more than one. The
+		// property that matters is that the engine's is among them — it holds
+		// nothing the network did not give it.
+		if handed := network.handedOut(); !slices.Contains(handed, addr.String()) {
+			t.Errorf("Binding = %s, which the network never handed out (it gave %v) — "+
+				"the engine is reporting a socket from somewhere other than its Network", addr, handed)
+		}
+	})
+
+	t.Run("with no network, there is no socket of our own to report", func(t *testing.T) {
+		e := start(t, Config{DataDir: t.TempDir(), Category: "curator"})
+
+		if addr := e.Binding(); addr != nil {
+			t.Errorf("Binding = %s for an engine with no Network; it holds no socket this package opened", addr)
+		}
+	})
 }

@@ -613,6 +613,22 @@ func (e *Engine) DeleteTorrent(ctx context.Context, hash, requireCategory string
 	return nil
 }
 
+// Binding reports the address the engine's one socket actually holds, or nil
+// when it has none of its own because there was no Network to bind to.
+//
+// It is READ off the socket rather than remembered from the wiring, and that is
+// the entire value of it. The engine does not keep the Network it was given, so
+// there is nothing here that could report what it was configured with instead of
+// what it got: a caller pairs this with vpn.Tunnel.Owns and gets a fact neither
+// package asserted. "curator is bound to the tunnel" stops being a sentence in a
+// document and becomes two independent reads that agree.
+func (e *Engine) Binding() net.Addr {
+	if e.socket == nil {
+		return nil
+	}
+	return e.socket.Addr()
+}
+
 // Close stops the client and waits for the goroutines it started. Seeding ends
 // with the process, which is the whole seeding policy this phase has.
 //
