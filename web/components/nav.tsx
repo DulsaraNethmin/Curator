@@ -12,6 +12,7 @@ const screens = [
   { href: '/search/', label: 'Search' },
   { href: '/library/', label: 'Library' },
   { href: '/activity/', label: 'Activity' },
+  { href: '/vpn/', label: 'VPN' },
   { href: '/logs/', label: 'Logs' },
   { href: '/settings/', label: 'Settings' },
 ];

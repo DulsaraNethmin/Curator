@@ -52,6 +52,13 @@ type VPNSetup struct {
 	// Enforcing reports whether VPN_REQUIRED is on right now.
 	Enforcing func() bool
 
+	// Editable is false when the environment owns VPN_REQUIRED, which wins over
+	// the settings table. Nil counts as editable. Without it the screen draws a
+	// switch that answers 409 — the settings screen has rendered shadowed
+	// fields read-only since phase 7, and a control anywhere else has to know
+	// the same fact.
+	Editable func() bool
+
 	// Backend is "embedded" or "qbittorrent", and Tunnelled says whether this
 	// process's engine was built bound to a tunnel. Together they are the scope
 	// of the guarantee, which the page has to state rather than let a reader
@@ -115,6 +122,10 @@ type vpnBody struct {
 type vpnEnforcementBody struct {
 	// Required is VPN_REQUIRED as it applies right now.
 	Required bool `json:"required"`
+
+	// Editable is false when the environment owns it. A write would answer 409,
+	// so the screen draws the switch read-only and says which variable to unset.
+	Editable bool `json:"editable"`
 
 	// EngineStarted is false when this process refused to build an engine at
 	// all — no tunnel, enforcement on. Turning enforcement off then needs a
@@ -209,6 +220,7 @@ func (s *Server) vpnBody(v vpn.Verdict) vpnBody {
 		Keepalive: v.Status.Keepalive,
 		Enforcement: vpnEnforcementBody{
 			Required:      setup.Enforcing != nil && setup.Enforcing(),
+			Editable:      setup.Editable == nil || setup.Editable(),
 			EngineStarted: setup.Binding != nil,
 		},
 		Engine: vpnEngineBody{Backend: setup.Backend, Tunnelled: setup.Tunnelled},

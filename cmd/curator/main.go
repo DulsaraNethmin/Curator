@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -496,6 +497,7 @@ func run() error {
 			Binding:   engineBinding(engine),
 			Held:      engineHold(engine),
 			Enforcing: enforcement.Enforcing,
+			Editable:  enforcement.Editable,
 			Backend:   cfg.TorrentBackend,
 			Tunnelled: engine != nil && tunnel != nil,
 			Auth:      auth,
@@ -874,11 +876,19 @@ type vpnEnforcement struct {
 	codec *secret.Codec
 	log   *slog.Logger
 	on    atomic.Bool
+
+	// fromEnv is whether VPN_REQUIRED is set in the environment, which wins over
+	// the settings table (internal/settings.Resolve). It is reported so the VPN
+	// screen can draw the switch read-only instead of offering a control that
+	// answers 409 — the settings screen has rendered shadowed fields that way
+	// since phase 7, and a toggle somewhere else has to know the same thing.
+	fromEnv atomic.Bool
 }
 
 func newVPNEnforcement(cfg *config.Config, db *store.Store, codec *secret.Codec, log *slog.Logger) *vpnEnforcement {
 	e := &vpnEnforcement{db: db, codec: codec, log: log}
 	e.on.Store(cfg.VPNRequired)
+	e.fromEnv.Store(strings.TrimSpace(os.Getenv("VPN_REQUIRED")) != "")
 	return e
 }
 
@@ -899,6 +909,8 @@ func (e *vpnEnforcement) Reload(ctx context.Context) error {
 		return err
 	}
 
+	e.fromEnv.Store(resolution.Sources[settings.Key("VPN_REQUIRED")] == settings.SourceEnv)
+
 	if was := e.on.Swap(loaded.VPNRequired); was != loaded.VPNRequired {
 		e.log.Warn("the VPN kill switch changed", "required", loaded.VPNRequired,
 			"applies", "from the next dispatch, without a restart")
@@ -908,6 +920,9 @@ func (e *vpnEnforcement) Reload(ctx context.Context) error {
 
 // Enforcing is what the guard and the VPN screen both read.
 func (e *vpnEnforcement) Enforcing() bool { return e.on.Load() }
+
+// Editable reports whether the VPN screen may write this setting.
+func (e *vpnEnforcement) Editable() bool { return !e.fromEnv.Load() }
 
 // noConfigField names the settings with no field on *config.Config.
 //

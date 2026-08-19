@@ -3,6 +3,7 @@ package vpn
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -266,3 +267,67 @@ func TestADeadPeerIsNoticedInProcess(t *testing.T) {
 		t.Error("a stale handshake with a failing exit check still produced a good verdict")
 	}
 }
+
+// TestTheFirstVerdictIsNotAWarning.
+//
+// Run proves the tunnel the moment the process starts, routinely before the
+// first handshake completes, so a healthy boot warned that downloads were not
+// protected and then cleared it fifteen seconds later — every time. A warning
+// that cries wolf on every start is how the one that matters gets filtered out.
+//
+// What is asserted is that the HOLD still happens: the log line changed, the
+// behaviour did not.
+func TestTheFirstVerdictIsNotAWarning(t *testing.T) {
+	now := time.Now()
+	tunnel := &fakeTunnel{status: Status{Endpoint: "sg701:51820"}} // never handshaken
+	tunnel.now = func() time.Time { return now }
+
+	buffer := &countingLog{}
+	c := NewChecker(tunnel, "http://example.invalid", nil, time.Hour, slog.New(buffer))
+	c.now = func() time.Time { return now }
+	s := NewSentinel(c, nil, slog.New(buffer))
+	s.now = func() time.Time { return now }
+
+	var verdicts []Verdict
+	s.Subscribe(func(v Verdict) { verdicts = append(verdicts, v) })
+
+	if v := s.Check(context.Background()); v.OK() {
+		t.Fatal("a tunnel that has never handshaken produced a good verdict")
+	}
+	if len(verdicts) != 1 || verdicts[0].OK() {
+		t.Fatalf("subscribers = %v; the hold must still fire on the first verdict", verdicts)
+	}
+	if buffer.warns != 0 {
+		t.Errorf("the first verdict logged %d warnings; a boot before the first handshake is "+
+			"expected, and warning about it every time is how a real warning gets ignored", buffer.warns)
+	}
+
+	// A LATER failure is still a warning, which is the half this must not break.
+	tunnel.status.LastHandshake = now
+	if !s.Check(context.Background()).OK() {
+		t.Fatal("the tunnel did not come up")
+	}
+	tunnel.failWith = errors.New("the tunnel is not carrying traffic")
+	tunnel.status.LastHandshake = now.Add(-HandshakeStale - time.Minute)
+	if s.Check(context.Background()).OK() {
+		t.Fatal("the broken tunnel still passed")
+	}
+	if buffer.warns == 0 {
+		t.Error("a tunnel that broke after working did not warn")
+	}
+}
+
+// countingLog counts records by level and discards them.
+type countingLog struct{ warns int }
+
+func (c *countingLog) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *countingLog) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelWarn {
+		c.warns++
+	}
+	return nil
+}
+
+func (c *countingLog) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *countingLog) WithGroup(string) slog.Handler      { return c }

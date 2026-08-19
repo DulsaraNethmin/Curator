@@ -554,6 +554,89 @@ export function jellyfinFailure(error: unknown): JellyfinFailure {
 }
 
 /**
+ * The six worlds the VPN check distinguishes, and the page branches on all of
+ * them because the instruction differs each time.
+ *
+ * `off` no tunnel configured · `waiting` never handshaken, so a credential or an
+ * endpoint · `stale` handshaken too long ago, which on a config without
+ * PersistentKeepalive usually means nothing at all · `blocked` up and NOT
+ * changing where traffic leaves from, the one state where bytes would go out of
+ * the real address while everything else looks healthy · `up` the only good one
+ * · `unknown` the device could not be read.
+ */
+export type VPNState = 'off' | 'waiting' | 'stale' | 'blocked' | 'up' | 'unknown';
+
+export type VPNStatus = {
+  state: VPNState | string;
+  detail?: string;
+
+  /**
+   * The headline, and it is NOT `state === 'up'`. The server ANDs four
+   * independently-read facts — a fresh handshake, the engine's socket inside
+   * the tunnel, traffic leaving from somewhere else, and nothing held — so this
+   * screen cannot draw a green banner off one of them.
+   */
+  protected: boolean;
+
+  /** The PEER's address: which VPN server, not where this machine appears from.
+   * The one that matters is check.address, and it is gated. */
+  endpoint?: string;
+
+  handshake_age_seconds?: number;
+  uptime_seconds?: number;
+
+  /** Movement keys on `received`, never `sent`: a tunnel whose peer is gone
+   * keeps sending keepalives for ever. */
+  received: number;
+  sent: number;
+  keepalive: number;
+
+  enforcement: {
+    required: boolean;
+    /**
+     * False when VPN_REQUIRED is set in the environment, which wins over the
+     * settings table. A write would answer 409, so the switch is drawn
+     * read-only rather than offering a control that cannot work.
+     */
+    editable: boolean;
+    /**
+     * False when this process refused to build an engine at all — no tunnel,
+     * enforcement on. The toggle applies to the check and cannot conjure an
+     * engine, so turning enforcement off there needs a restart, and the screen
+     * has to say so rather than leave somebody clicking.
+     */
+    engine_started: boolean;
+  };
+
+  engine: {
+    backend: string;
+    /** What the wiring intended, beside what the socket actually is. Both,
+     * because a disagreement is the only interesting case. */
+    tunnelled: boolean;
+    socket?: string;
+    inside_tunnel: boolean;
+  };
+
+  hold: { held: boolean; reason?: string };
+
+  check: {
+    checked: boolean;
+    /** Whether the verdict on screen came from a check just now, as opposed to
+     * standing on an earlier one. Without it a 3 s poll draws a ten-minute-old
+     * proof as though it had just happened. */
+    fresh: boolean;
+    different: boolean;
+    /** Always present once anything has been proved. */
+    masked?: string;
+    /** Only behind a password (D18). Where traffic leaves from is the one fact
+     * the tunnel exists to keep, and this endpoint has no authentication in
+     * front of it by default. */
+    address?: string;
+    at_seconds?: number;
+  };
+};
+
+/**
  * AuthStatus is what GET /api/auth answers, and it is two booleans because the
  * question is which screen to draw: `required` says whether there is a password
  * at all, `authenticated` whether this browser would get past it.
@@ -798,10 +881,14 @@ export const api = {
       body: JSON.stringify({ tmdb_id: tmdbID }),
     }),
 
-  logs: (since = 0, level?: string, limit?: number) => {
+  logs: (since = 0, level?: string, limit?: number, subsystem?: string) => {
     const query = new URLSearchParams({ since: String(since) });
     if (level) query.set('level', level);
     if (limit) query.set('limit', String(limit));
+    // The VPN screen shows its own tail through the endpoint that already
+    // exists rather than a second one. Filtered server-side and AFTER the
+    // cursor, so an idle poll still transfers nothing.
+    if (subsystem) query.set('subsystem', subsystem);
     return request<LogsResult>(`/api/logs?${query}`);
   },
 
@@ -915,6 +1002,19 @@ export const api = {
   // Open, and it always answers: it is how the UI knows which screen to draw
   // before it has a cookie.
   authStatus: () => request<AuthStatus>('/api/auth'),
+
+  /**
+   * The VPN's live state. Cheap and safe to poll: the sentinel's last verdict
+   * plus one read of a device in curator's own process, never a round trip.
+   */
+  vpn: () => request<VPNStatus>('/api/vpn'),
+
+  /**
+   * Force a re-prove. This one DOES make two round trips, one of them through
+   * the tunnel, so the server rate-limits it to once per 30 s and answers 429
+   * with the wait when it refuses.
+   */
+  vpnCheck: () => request<VPNStatus>('/api/vpn/check', { method: 'POST' }),
 
   // The cookie comes back in a Set-Cookie the JS never sees — it is HttpOnly —
   // so the only thing to do with the response is stop drawing the login form.
