@@ -107,6 +107,15 @@ type Engine struct {
 	// when the client is using the host's stack and owns its own sockets.
 	socket *utp.Socket
 
+	// network is kept for ONE thing: resolving udp:// tracker names before
+	// anacrolix sees them (see resolveTrackers). Everything else the engine
+	// needs from it was installed on the ClientConfig at build time, which is
+	// why this field did not exist until a packet capture found the one path
+	// that could not be closed that way. Binding deliberately does NOT read it
+	// — that answer has to come off the socket, or it is a claim rather than a
+	// reading.
+	network Network
+
 	// ctx bounds the per-torrent goroutines. They wait on metadata that may
 	// never arrive, so they need an owner that dies with the engine rather than
 	// a lifetime of their own.
@@ -343,6 +352,7 @@ func New(cfg Config) (*Engine, error) {
 		unchecked:  map[string]bool{},
 		progress:   map[string]mark{},
 		heldConns:  map[string]int{},
+		network:    cfg.Network,
 	}
 
 	// The socket has to exist before the client, and the client before the
@@ -420,7 +430,12 @@ func (e *Engine) AddMagnet(_ context.Context, magnet, category string) error {
 	// and forever when there are not. With the file, a restart resumes with the
 	// network down, which is the entire reason it is written.
 	if mi, err := metainfo.LoadFromFile(e.metainfoPath(parsed.InfoHash)); err == nil {
-		t, err := e.client.AddTorrent(mi)
+		// Through AddTorrentSpec rather than AddTorrent, so a saved .torrent's
+		// announce-list gets the same treatment the magnet's does. It is the
+		// other way tracker names reach the client.
+		spec := anacrolix.TorrentSpecFromMetaInfo(mi)
+		spec.Trackers = resolveTrackers(e.ctx, e.network, spec.Trackers, e.log)
+		t, _, err := e.client.AddTorrentSpec(spec)
 		if err == nil {
 			e.log.Info("resumed from the saved metainfo, without asking the swarm",
 				"hash", hashOf(t), "name", t.Name())
@@ -433,7 +448,17 @@ func (e *Engine) AddMagnet(_ context.Context, magnet, category string) error {
 			"hash", torrent.NormalizeHash(parsed.InfoHash.HexString()), "err", err)
 	}
 
-	t, err := e.client.AddMagnet(magnet)
+	// Not client.AddMagnet: that hands the magnet's tracker URLs straight to
+	// anacrolix, whose UDP tracker client resolves each name on the HOST before
+	// writing to curator's tunnel socket. See resolveTrackers — it is the one
+	// egress path no ClientConfig field can close.
+	spec, err := anacrolix.TorrentSpecFromMagnetUri(magnet)
+	if err != nil {
+		return fmt.Errorf("engine: adding magnet: %w", err)
+	}
+	spec.Trackers = resolveTrackers(e.ctx, e.network, spec.Trackers, e.log)
+
+	t, _, err := e.client.AddTorrentSpec(spec)
 	if err != nil {
 		return fmt.Errorf("engine: adding magnet: %w", err)
 	}

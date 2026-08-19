@@ -431,3 +431,106 @@ func TestTheBindingIsReadOffTheEngineRatherThanClaimed(t *testing.T) {
 		}
 	})
 }
+
+// TestATrackerNameIsResolvedThroughTheTunnel is the fifth leak, and the only
+// one a packet capture found rather than a reading of a config field.
+//
+// bindConfig hands anacrolix a tracker socket that belongs to the tunnel, and
+// that was always true. What it cannot reach is
+// `tracker/udp/conn-client.go:82` — `net.ResolveUDPAddr` on the stdlib
+// resolver, called to produce the destination that socket then writes to. The
+// packet is encrypted; the question that produced its address is not.
+func TestATrackerNameIsResolvedThroughTheTunnel(t *testing.T) {
+	network := &resolver{answer: []string{"198.51.100.4"}}
+
+	tiers := resolveTrackers(context.Background(), network, [][]string{
+		{"udp://tracker.opentrackr.org:1337/announce"},
+		{"udp://open.stealth.si:80/announce", "udp://tracker.dler.org:6969/announce"},
+	}, quiet())
+
+	want := [][]string{
+		{"udp://198.51.100.4:1337/announce"},
+		{"udp://198.51.100.4:80/announce", "udp://198.51.100.4:6969/announce"},
+	}
+	if fmt.Sprint(tiers) != fmt.Sprint(want) {
+		t.Errorf("trackers = %v, want %v", tiers, want)
+	}
+
+	asked := network.lookups()
+	if len(asked) != 3 {
+		t.Errorf("resolved %d names through the network, want 3: %v", len(asked), asked)
+	}
+	for _, host := range []string{"tracker.opentrackr.org", "open.stealth.si", "tracker.dler.org"} {
+		if !slices.Contains(asked, host) {
+			t.Errorf("%s was not resolved through the network, so anacrolix will ask the host", host)
+		}
+	}
+}
+
+// TestOnlyUdpTrackersAreRewritten. HTTP trackers are dialled through
+// cc.TrackerDialContext, which is the tunnel, and an http.Transport resolves
+// inside its own DialContext — so they are already bound. Rewriting one would
+// also break TLS, which matches on the name.
+func TestOnlyUdpTrackersAreRewritten(t *testing.T) {
+	network := &resolver{answer: []string{"198.51.100.4"}}
+
+	tiers := resolveTrackers(context.Background(), network, [][]string{{
+		"https://tracker.example.org:443/announce",
+		"http://tracker.example.org/announce",
+		"udp://tracker.example.org:1337/announce",
+		"udp://198.51.100.9:1337/announce",
+	}}, quiet())
+
+	got := tiers[0]
+	if got[0] != "https://tracker.example.org:443/announce" || got[1] != "http://tracker.example.org/announce" {
+		t.Errorf("an HTTP tracker was rewritten: %v — that breaks TLS and was already tunnel-bound", got[:2])
+	}
+	if got[2] != "udp://198.51.100.4:1337/announce" {
+		t.Errorf("the udp tracker was not rewritten: %s", got[2])
+	}
+	if got[3] != "udp://198.51.100.9:1337/announce" {
+		t.Errorf("a tracker that was already an address was changed: %s", got[3])
+	}
+	if asked := network.lookups(); len(asked) != 1 {
+		t.Errorf("resolved %v; only the udp hostname needs a lookup", asked)
+	}
+}
+
+// TestAnUnresolvableTrackerIsKeptAndSaidOutLoud.
+//
+// Dropping it would leave a torrent with fewer announce targets and no
+// explanation. Keeping it means anacrolix resolves it on the host, which is the
+// leak — so the trade is made explicit rather than silent.
+func TestAnUnresolvableTrackerIsKeptAndSaidOutLoud(t *testing.T) {
+	network := &resolver{fail: true}
+
+	tiers := resolveTrackers(context.Background(), network, [][]string{
+		{"udp://tracker.opentrackr.org:1337/announce"},
+	}, quiet())
+
+	if tiers[0][0] != "udp://tracker.opentrackr.org:1337/announce" {
+		t.Errorf("an unresolvable tracker was dropped or mangled: %s", tiers[0][0])
+	}
+
+	// And it is asked for ONCE per add, not once per URL: each lookup is a
+	// round trip through the tunnel.
+	network.mu.Lock()
+	network.asked = nil
+	network.mu.Unlock()
+	resolveTrackers(context.Background(), network, [][]string{
+		{"udp://a.example:1", "udp://a.example:2"},
+		{"udp://a.example:3"},
+	}, quiet())
+	if got := network.lookups(); len(got) != 1 {
+		t.Errorf("resolved the same name %d times in one add: %v", len(got), got)
+	}
+}
+
+// TestNoNetworkLeavesTrackersAlone. An untunnelled engine (VPN_REQUIRED=false)
+// has nothing to resolve through and must not lose its trackers to that.
+func TestNoNetworkLeavesTrackersAlone(t *testing.T) {
+	in := [][]string{{"udp://tracker.opentrackr.org:1337/announce"}}
+	if got := resolveTrackers(context.Background(), nil, in, quiet()); fmt.Sprint(got) != fmt.Sprint(in) {
+		t.Errorf("trackers = %v, want them untouched", got)
+	}
+}
