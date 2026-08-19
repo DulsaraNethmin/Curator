@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -251,9 +252,18 @@ func run() error {
 		tunnel   *vpn.Tunnel
 		engine   *engine.Engine
 		checker  *vpn.Checker
+		sentinel *vpn.Sentinel
 	)
+	// One tag, applied where the tunnel is built, and every line internal/vpn
+	// writes carries it from here on. teeHandler already copies .With() attrs
+	// into the buffered Entry, so this costs nothing inside internal/vpn or
+	// internal/logs and gives GET /api/logs?subsystem=vpn something to filter
+	// on — which is what lets the VPN screen show its own log tail without a
+	// second buffer or a second endpoint.
+	vpnLog := log.With("subsystem", "vpn")
+
 	if cfg.VPNConfigured() {
-		tunnel, err = startTunnel(cfg, log)
+		tunnel, err = startTunnel(cfg, vpnLog)
 		if err != nil {
 			// Fatal, and deliberately so: a tunnel that was configured and did
 			// not come up must not silently become no tunnel at all.
@@ -264,7 +274,7 @@ func run() error {
 
 	switch {
 	case cfg.Embedded():
-		if engine, guard, checker, err = startEngine(cfg, tunnel, indexerHTTP, log); err != nil {
+		if engine, guard, checker, err = startEngine(cfg, tunnel, indexerHTTP, log, vpnLog); err != nil {
 			return err
 		}
 		// Nil when VPN_REQUIRED is on and no tunnel came up: startEngine builds
@@ -291,9 +301,9 @@ func run() error {
 		// (docs/decisions.md D27). VPN_REQUIRED=false means the same thing here
 		// as it does for the embedded engine — proceed, and keep saying what
 		// could not be verified.
-		check := vpn.External(client.ExternalAddress, cfg.VPNIPCheckURL, indexerHTTP, log)
+		check := vpn.External(client.ExternalAddress, cfg.VPNIPCheckURL, indexerHTTP, vpnLog)
 		if !cfg.VPNRequired {
-			check = vpn.Advisory(check, log)
+			check = vpn.Advisory(check, vpnLog)
 		}
 		guard = download.Guard(check)
 		log.Info("using an external qBittorrent; curator cannot route its traffic, only check it",
@@ -348,6 +358,40 @@ func run() error {
 	downloads := download.NewService(torrents, db, aggregator, cfg.QBitCategory, log).
 		WithImporter(imports).
 		WithGuard(guard)
+
+	// The watchdog, and what it does about a verdict.
+	//
+	// internal/vpn reports; this decides. That split is why the sentinel does
+	// not import the engine: "the tunnel is not carrying this" is a fact, and
+	// "so stop the downloads" is a policy, and only one of them belongs in a
+	// package that owns a socket.
+	//
+	// Only the embedded backend gets one. With an external qBittorrent curator
+	// does not own the socket and cannot hold anything — it compares exit
+	// addresses at dispatch and says so (docs/decisions.md D27).
+	if checker != nil && engine != nil {
+		sentinel = vpn.NewSentinel(checker, downloadsInFlight(torrents, cfg.QBitCategory), vpnLog)
+		sentinel.Subscribe(func(v vpn.Verdict) {
+			if v.OK() {
+				if err := engine.Release(); err != nil {
+					log.Error("could not release downloads after the VPN check passed", "err", err)
+					return
+				}
+				// Resume as well as release, because a boot into a broken
+				// tunnel re-added nothing at all: Service.Resume asks the guard
+				// first now, and this is the second chance it was written to
+				// expect. Safe to repeat — it skips whatever the client already
+				// holds.
+				if err := downloads.Resume(ctx); err != nil {
+					log.Warn("could not resume downloads after the VPN check passed", "err", err)
+				}
+				return
+			}
+			if err := engine.Hold(v.Detail); err != nil {
+				log.Error("could not hold downloads after the VPN check failed", "err", err)
+			}
+		})
+	}
 
 	// The password, read per request through one atomic holder. It is the one
 	// exception to "a written setting applies at the next start": a password
@@ -433,6 +477,16 @@ func run() error {
 		// reads a version number and asks something that holds the Docker
 		// socket to install it; it never holds the socket itself
 		// (docs/decisions.md D44, docs/tasks/T80-update-from-the-app.md).
+		WithVPN(api.VPNSetup{
+			Sentinel:  sentinel,
+			Tunnel:    tunnel,
+			Binding:   engineBinding(engine),
+			Held:      engineHold(engine),
+			Enforcing: func() bool { return cfg.VPNRequired },
+			Backend:   cfg.TorrentBackend,
+			Tunnelled: engine != nil && tunnel != nil,
+			Auth:      auth,
+		}).
 		WithUpdates(api.UpdateSetup{
 			Checker: updateChecker,
 			Updater: updater,
@@ -451,6 +505,7 @@ func run() error {
 	apiSrv.RegisterJellyfin(mux)
 	apiSrv.RegisterIndexers(mux)
 	apiSrv.RegisterUpdates(mux)
+	apiSrv.RegisterVPN(mux)
 	auth.Register(mux)
 
 	// The UI is mounted last and at "/", so it can never shadow an API pattern.
@@ -474,38 +529,11 @@ func run() error {
 		}
 	}
 
-	// The watchdog, and what it does about a verdict.
-	//
-	// internal/vpn reports; this decides. That split is why the sentinel does
-	// not import the engine: "the tunnel is not carrying this" is a fact, and
-	// "so stop the downloads" is a policy, and only one of them belongs in a
-	// package that owns a socket.
-	//
-	// Only the embedded backend gets one. With an external qBittorrent curator
-	// does not own the socket and cannot hold anything — it compares exit
-	// addresses at dispatch and says so (docs/decisions.md D27).
-	if checker != nil && engine != nil {
-		sentinel := vpn.NewSentinel(checker, downloadsInFlight(torrents, cfg.QBitCategory), log)
-		sentinel.Subscribe(func(v vpn.Verdict) {
-			if v.OK() {
-				if err := engine.Release(); err != nil {
-					log.Error("could not release downloads after the VPN check passed", "err", err)
-					return
-				}
-				// Resume as well as release, because a boot into a broken
-				// tunnel re-added nothing at all: Service.Resume asks the guard
-				// first now, and this is the second chance it was written to
-				// expect. Safe to repeat — it skips whatever the client already
-				// holds.
-				if err := downloads.Resume(ctx); err != nil {
-					log.Warn("could not resume downloads after the VPN check passed", "err", err)
-				}
-				return
-			}
-			if err := engine.Hold(v.Detail); err != nil {
-				log.Error("could not hold downloads after the VPN check failed", "err", err)
-			}
-		})
+	// Started here, built earlier: the API needs the sentinel to serve GET
+	// /api/vpn, and the sentinel must not start proving things before the
+	// initial Resume above has had its turn — otherwise a good first verdict
+	// races the boot resume and both re-add the same magnets.
+	if sentinel != nil {
 		go sentinel.Run(ctx)
 	}
 
@@ -1008,7 +1036,7 @@ func startTunnel(cfg *config.Config, log *slog.Logger) (*vpn.Tunnel, error) {
 // own; without one it is refused outright unless VPN_REQUIRED=false has been
 // typed. That is the whole of "mandatory": there is no configuration in which
 // the embedded engine quietly downloads unprotected (docs/decisions.md D27).
-func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client, log *slog.Logger) (*engine.Engine, download.Guard, *vpn.Checker, error) {
+func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client, log, vpnLog *slog.Logger) (*engine.Engine, download.Guard, *vpn.Checker, error) {
 	var network engine.Network
 	var guard download.Guard
 	var checker *vpn.Checker
@@ -1021,7 +1049,7 @@ func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client
 		// disagree, and then the screen and the refusal say different things
 		// about the same tunnel with neither obviously wrong; two INSTANCES
 		// would agree and pay for the same proof twice.
-		checker = vpn.NewChecker(tunnel, cfg.VPNIPCheckURL, httpClient, 0, log)
+		checker = vpn.NewChecker(tunnel, cfg.VPNIPCheckURL, httpClient, 0, vpnLog)
 		guard = download.Guard(vpn.Tunnelled(checker))
 
 	case cfg.VPNRequired:
@@ -1074,6 +1102,27 @@ func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client
 // and would put this box's media volume back on the wrong disk.
 func updateCommand(_ *config.Config) string {
 	return "docker compose pull && docker compose up -d"
+}
+
+// engineBinding and engineHold adapt an engine the VPN screen may not have.
+//
+// They return nil rather than a closure over a nil engine, because the screen
+// distinguishes "this process has no engine" from "this engine holds no socket",
+// and a closure that answered nil for both would collapse the two. The first is
+// the state a curator with no tunnel and VPN_REQUIRED on boots into, and it is
+// the one that needs a restart rather than a toggle.
+func engineBinding(e *engine.Engine) func() net.Addr {
+	if e == nil {
+		return nil
+	}
+	return e.Binding
+}
+
+func engineHold(e *engine.Engine) func() (bool, string) {
+	if e == nil {
+		return nil
+	}
+	return e.Held
 }
 
 // downloadsInFlight reports whether anything is still being fetched.

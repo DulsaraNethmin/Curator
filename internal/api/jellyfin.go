@@ -444,7 +444,7 @@ func (s *Server) provision(
 	if key == "" {
 		return "", stepError{
 			step: "the API key",
-			err: fmt.Errorf("jellyfin returned an empty api key: %w", jellyfin.ErrUnexpectedResponse),
+			err:  fmt.Errorf("jellyfin returned an empty api key: %w", jellyfin.ErrUnexpectedResponse),
 		}
 	}
 	return key, nil

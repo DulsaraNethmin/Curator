@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/DulsaraNethmin/curator/internal/logs"
@@ -198,5 +199,83 @@ func TestLogsWithoutABufferIs503(t *testing.T) {
 	_, rec := getLogs(t, logServer(t, nil), "/api/logs")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", rec.Code)
+	}
+}
+
+// TestTheLogTailCanBeFilteredToOneSubsystem.
+//
+// The VPN screen shows its own log tail beside its badges, and it does it
+// through the buffer and endpoint that already exist rather than a second of
+// each. log.With("subsystem", "vpn") is the whole producing side, because
+// teeHandler already carries .With() attrs into the buffered Entry.
+func TestTheLogTailCanBeFilteredToOneSubsystem(t *testing.T) {
+	buffer := logs.NewBuffer(100)
+	log := slog.New(buffer.Handler(slog.NewTextHandler(io.Discard, nil)))
+
+	// The last line is deliberately NOT a vpn one. Without that the filtered
+	// page ends on the same entry the unfiltered one does, and the cursor
+	// assertion below passes whether or not the filter runs after the cursor is
+	// computed — which is the trap it exists to catch.
+	log.Info("scanning the library")
+	log.With("subsystem", "vpn").Info("vpn tunnel up")
+	log.With("subsystem", "vpn").Warn("vpn is no longer protecting downloads")
+	log.Info("dispatched a release")
+
+	srv := New(nil, nil, nil, t.TempDir(), quiet()).WithLogs(buffer)
+	mux := http.NewServeMux()
+	srv.RegisterLogs(mux)
+
+	read := func(query string) logsBody {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/logs"+query, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/logs%s: status %d", query, rec.Code)
+		}
+		var body logsBody
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return body
+	}
+
+	all := read("")
+	if len(all.Entries) != 4 {
+		t.Fatalf("unfiltered = %d entries, want 4", len(all.Entries))
+	}
+	if all.Entries[len(all.Entries)-1].Msg == "vpn is no longer protecting downloads" {
+		t.Fatal("the last line is a vpn one, which makes the cursor assertion below vacuous")
+	}
+
+	only := read("?subsystem=vpn")
+	if len(only.Entries) != 2 {
+		t.Fatalf("subsystem=vpn = %d entries, want 2", len(only.Entries))
+	}
+	for _, entry := range only.Entries {
+		if !strings.HasPrefix(entry.Msg, "vpn") {
+			t.Errorf("kept %q, which is not a vpn line", entry.Msg)
+		}
+	}
+
+	// The cursor is the whole tail's, not the filtered page's. Advancing it only
+	// past what survived the filter would re-deliver the same lines every poll —
+	// the trap the comment in handleLogs names for `level`, which this shares.
+	if only.Cursor != all.Cursor {
+		t.Errorf("cursor = %d with a filter, want %d — the filter runs after the cursor is computed",
+			only.Cursor, all.Cursor)
+	}
+
+	// It composes with level, because a page wanting warnings from one subsystem
+	// asks for both.
+	warnings := read("?subsystem=vpn&level=warn")
+	if len(warnings.Entries) != 1 {
+		t.Errorf("subsystem=vpn&level=warn = %d entries, want 1", len(warnings.Entries))
+	}
+
+	// An unknown subsystem is not an error, unlike an unknown level: a level is
+	// a closed set this package owns, and a subsystem is whatever a caller
+	// passed to log.With.
+	if got := read("?subsystem=nothing"); len(got.Entries) != 0 {
+		t.Errorf("an unmatched subsystem returned %d entries, want none", len(got.Entries))
 	}
 }

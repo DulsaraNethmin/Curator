@@ -84,6 +84,21 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// After the cursor for the same reason level is, and after level because the
+	// two compose: a VPN page wanting warnings from one subsystem asks for both.
+	//
+	// It filters on an ATTRIBUTE rather than a field, because that is where
+	// log.With("subsystem", "vpn") lands (internal/logs teeHandler.Handle), and
+	// therefore costs nothing in internal/vpn or internal/logs to produce.
+	//
+	// The trade-off it shares with level, stated once: limit is applied inside
+	// Since, so a filter shrinks a page that was already capped. Twenty vpn
+	// lines among a thousand come back as twenty, not as a thousand searched for
+	// twenty.
+	if subsystem := strings.TrimSpace(query.Get("subsystem")); subsystem != "" {
+		entries = filterBySubsystem(entries, subsystem)
+	}
+
 	if entries == nil {
 		entries = []logs.Entry{} // [] and never null; the UI iterates it
 	}
@@ -135,4 +150,22 @@ func filterByLevel(entries []logs.Entry, minimum string) ([]logs.Entry, error) {
 		}
 	}
 	return kept, nil
+}
+
+// filterBySubsystem keeps the entries tagged with a given subsystem.
+//
+// Unknown values are NOT an error, unlike an unknown level. A level is a closed
+// set this package owns, so a typo there is a filter that silently matches
+// everything and is worth refusing; a subsystem is whatever a caller passed to
+// log.With, so this package has no list to check against and inventing one would
+// mean a new subsystem needing a change here before its own lines could be read.
+// An unmatched value answers with nothing, which is the truthful result.
+func filterBySubsystem(entries []logs.Entry, want string) []logs.Entry {
+	kept := make([]logs.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Attrs["subsystem"], want) {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
 }

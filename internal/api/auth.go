@@ -450,6 +450,20 @@ func (a *Auth) Ticket(path string, ttl time.Duration) (string, time.Time, bool) 
 	return live.ticket(path, expires.Unix()), expires.UTC(), true
 }
 
+// Enforcing reports whether a password is actually being demanded right now.
+//
+// It is the LIVE answer and not the setting, and the difference is the whole
+// reason this is a method rather than a caller reading auth_enabled. install
+// refuses to enforce a switch that is on with nothing to satisfy it — a row
+// edited by hand, or AUTH_ENABLED=true with the password forgotten — precisely
+// so the screen that fixes it stays reachable. A caller gating a secret on the
+// stored setting would withhold it in a state where anybody on the LAN can
+// still read everything else.
+//
+// Its one caller is the VPN endpoint, which withholds the exit address unless
+// something is in front of it (docs/decisions.md D18).
+func (a *Auth) Enforcing() bool { return a.live.Load().Enabled }
+
 // authBody is what GET /api/auth answers, and what a successful login answers.
 //
 // Two booleans, because the UI's question is which screen to draw: `required`
