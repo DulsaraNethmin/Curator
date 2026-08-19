@@ -111,10 +111,19 @@ type Writer interface {
 // Nil is a supported state, not a broken one: with no authentication in the
 // process there is nothing for a write to apply.
 type Access interface {
-	// Reload re-reads the stored authentication settings and installs them for
-	// the next request.
+	// Reload re-reads the stored settings that apply at once and installs them
+	// for the next request.
 	Reload(ctx context.Context) error
 }
+
+// AccessFunc adapts a function to Access, so cmd/curator can compose more than
+// one immediate subsystem behind the single hook this handler calls.
+//
+// There are two now — the password and the VPN kill switch — and one write may
+// touch both. Same idiom as ScannerFunc.
+type AccessFunc func(ctx context.Context) error
+
+func (f AccessFunc) Reload(ctx context.Context) error { return f(ctx) }
 
 // Settings is everything GET /api/settings reports. It is built by cmd/curator
 // out of the config, rather than this package importing config, so that

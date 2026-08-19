@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -262,6 +263,10 @@ func run() error {
 	// second buffer or a second endpoint.
 	vpnLog := log.With("subsystem", "vpn")
 
+	// VPN_REQUIRED, read live rather than frozen at start-up. Built before the
+	// backend because both branches below close over it.
+	enforcement := newVPNEnforcement(cfg, db, codec, vpnLog)
+
 	if cfg.VPNConfigured() {
 		tunnel, err = startTunnel(cfg, vpnLog)
 		if err != nil {
@@ -274,7 +279,7 @@ func run() error {
 
 	switch {
 	case cfg.Embedded():
-		if engine, guard, checker, err = startEngine(cfg, tunnel, indexerHTTP, log, vpnLog); err != nil {
+		if engine, guard, checker, err = startEngine(cfg, tunnel, indexerHTTP, log, vpnLog, enforcement.Enforcing); err != nil {
 			return err
 		}
 		// Nil when VPN_REQUIRED is on and no tunnel came up: startEngine builds
@@ -301,11 +306,9 @@ func run() error {
 		// (docs/decisions.md D27). VPN_REQUIRED=false means the same thing here
 		// as it does for the embedded engine — proceed, and keep saying what
 		// could not be verified.
-		check := vpn.External(client.ExternalAddress, cfg.VPNIPCheckURL, indexerHTTP, vpnLog)
-		if !cfg.VPNRequired {
-			check = vpn.Advisory(check, vpnLog)
-		}
-		guard = download.Guard(check)
+		guard = download.Guard(vpn.Enforced(
+			vpn.External(client.ExternalAddress, cfg.VPNIPCheckURL, indexerHTTP, vpnLog),
+			enforcement.Enforcing, vpnLog))
 		log.Info("using an external qBittorrent; curator cannot route its traffic, only check it",
 			"url", cfg.QBitURL)
 
@@ -422,7 +425,17 @@ func run() error {
 	view := settingsView(cfg, matcher, torrents, tunnel, minterClient, ffmpegPath)
 	view.States = settingsStates(cfg, db, codec, log)
 	view.Writer = settingsWriter{db: db, codec: codec}
-	view.Access = auth
+	// Two immediate subsystems behind the one hook the settings handler calls.
+	// It fires Reload once per write that touched any immediate key, so both
+	// have to be reached from a single call — and a failure in either has to
+	// surface, because "saved but not applied" is the state D29 refuses to
+	// answer 200 to.
+	view.Access = api.AccessFunc(func(ctx context.Context) error {
+		if err := auth.Reload(ctx); err != nil {
+			return err
+		}
+		return enforcement.Reload(ctx)
+	})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
@@ -482,7 +495,7 @@ func run() error {
 			Tunnel:    tunnel,
 			Binding:   engineBinding(engine),
 			Held:      engineHold(engine),
-			Enforcing: func() bool { return cfg.VPNRequired },
+			Enforcing: enforcement.Enforcing,
 			Backend:   cfg.TorrentBackend,
 			Tunnelled: engine != nil && tunnel != nil,
 			Auth:      auth,
@@ -843,6 +856,75 @@ func number(value int) string {
 	return strconv.Itoa(value)
 }
 
+// vpnEnforcement is VPN_REQUIRED, read live.
+//
+// Shaped like authCredential and for the same reason: the setting is Immediate,
+// so it is re-read whenever a write touches it rather than at the next start.
+// The holder is atomic because it is read on every dispatch and written only by
+// a settings save.
+//
+// **It resolves through config.Load and NOT through the stored string**, and
+// that is the load-bearing line. VPN_REQUIRED defaults to true (D27) and
+// config.Load skips an empty value so the default survives; ParseBool("") is
+// false. A settings screen that read the stored text would report a fresh
+// install — which has no row at all — as having the kill switch OFF, and would
+// then act on that. The failure mode is silently unprotected downloads.
+type vpnEnforcement struct {
+	db    *store.Store
+	codec *secret.Codec
+	log   *slog.Logger
+	on    atomic.Bool
+}
+
+func newVPNEnforcement(cfg *config.Config, db *store.Store, codec *secret.Codec, log *slog.Logger) *vpnEnforcement {
+	e := &vpnEnforcement{db: db, codec: codec, log: log}
+	e.on.Store(cfg.VPNRequired)
+	return e
+}
+
+// Reload re-reads the setting. It satisfies the same shape api.Access wants, and
+// cmd/curator composes it with the password's holder behind one hook.
+func (e *vpnEnforcement) Reload(ctx context.Context) error {
+	raw, err := e.db.Settings(ctx)
+	if err != nil {
+		return err
+	}
+	values, _ := secret.Reveal(e.codec, raw)
+	resolution, err := settings.Resolve(values)
+	if err != nil {
+		return err
+	}
+	loaded, err := config.Load(resolution.Values)
+	if err != nil {
+		return err
+	}
+
+	if was := e.on.Swap(loaded.VPNRequired); was != loaded.VPNRequired {
+		e.log.Warn("the VPN kill switch changed", "required", loaded.VPNRequired,
+			"applies", "from the next dispatch, without a restart")
+	}
+	return nil
+}
+
+// Enforcing is what the guard and the VPN screen both read.
+func (e *vpnEnforcement) Enforcing() bool { return e.on.Load() }
+
+// noConfigField names the settings with no field on *config.Config.
+//
+// They are the two authentication settings, and they are read per request
+// through internal/api's own credential holder rather than off the running
+// configuration — so effective() has nothing to say about them and
+// TestEverySettingHasAnEffectiveValue must not ask it to.
+//
+// This used to be spelled `item.Immediate`, and the two were the same set until
+// vpn_required became the third immediate setting. They were never the same
+// thing: immediate is about WHEN a write applies, and this is about whether
+// there is a config field to read it back from.
+var noConfigField = map[string]bool{
+	settings.Key("AUTH_ENABLED"):  true,
+	settings.Key("AUTH_PASSWORD"): true,
+}
+
 // settingsStates reads what every setting currently is, per request.
 //
 // Per request, not once: a PUT changes the answer, and the GET a moment later
@@ -898,7 +980,23 @@ func settingsStates(cfg *config.Config, db *store.Store, codec *secret.Codec, lo
 			if item.Immediate {
 				// Applied on the next request, so what is stored is already
 				// live and there is never anything pending about it.
-				value, pending = resolution.Values[item.Key], resolution.Values[item.Key]
+				//
+				// `next` and not `resolution.Values`, and that distinction is a
+				// lying checkbox rather than a nicety. The resolution is the
+				// STORED text: absent means "", and a bool setting whose
+				// documented default is true would then be drawn OFF while it
+				// is being enforced. next comes from config.Load over the same
+				// resolution, so it carries the resolved default — which is
+				// what "live" means for anything with a *config.Config field.
+				value, pending = next[item.Key], next[item.Key]
+				if noConfigField[item.Key] {
+					// The two Access settings are the real exception, and it is
+					// not that they are immediate — it is that they have no
+					// field on *config.Config, so effective() has no line for
+					// them and next is empty. For those the stored text IS the
+					// live value.
+					value, pending = resolution.Values[item.Key], resolution.Values[item.Key]
+				}
 			}
 			state.Value = value
 			if value != pending {
@@ -1036,7 +1134,7 @@ func startTunnel(cfg *config.Config, log *slog.Logger) (*vpn.Tunnel, error) {
 // own; without one it is refused outright unless VPN_REQUIRED=false has been
 // typed. That is the whole of "mandatory": there is no configuration in which
 // the embedded engine quietly downloads unprotected (docs/decisions.md D27).
-func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client, log, vpnLog *slog.Logger) (*engine.Engine, download.Guard, *vpn.Checker, error) {
+func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client, log, vpnLog *slog.Logger, enforcing func() bool) (*engine.Engine, download.Guard, *vpn.Checker, error) {
 	var network engine.Network
 	var guard download.Guard
 	var checker *vpn.Checker
@@ -1050,7 +1148,11 @@ func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client
 		// about the same tunnel with neither obviously wrong; two INSTANCES
 		// would agree and pay for the same proof twice.
 		checker = vpn.NewChecker(tunnel, cfg.VPNIPCheckURL, httpClient, 0, vpnLog)
-		guard = download.Guard(vpn.Tunnelled(checker))
+		// Enforced, not bare: VPN_REQUIRED=false with a tunnel configured used
+		// to refuse a dispatch anyway, because only the qBittorrent branch was
+		// ever wrapped. One rule, both backends, and read per dispatch so the
+		// toggle applies without a restart.
+		guard = download.Guard(vpn.Enforced(vpn.Tunnelled(checker), enforcing, vpnLog))
 
 	case cfg.VPNRequired:
 		// No engine at all, and this is a return rather than a `guard = ...`
@@ -1075,7 +1177,7 @@ func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client
 		// reachable.
 		log.Warn("no VPN is configured and VPN_REQUIRED is true: no torrent engine has been started at all, " +
 			"and downloads are refused until VPN_CONFIG is set, or VPN_REQUIRED=false")
-		return nil, download.Guard(vpn.Required()), nil, nil
+		return nil, download.Guard(vpn.Enforced(vpn.Required(), enforcing, vpnLog)), nil, nil
 
 	default:
 		log.Warn("VPN_REQUIRED=false: the embedded engine will download over this machine's own connection")
