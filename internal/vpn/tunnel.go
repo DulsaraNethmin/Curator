@@ -97,6 +97,20 @@ func (t *Tunnel) DialContext(ctx context.Context, network, address string) (net.
 	return t.net.DialContext(ctx, network, address)
 }
 
+// LookupHost resolves a name inside the tunnel. It satisfies the engine's
+// Network, and it is the resolver DialContext has been using implicitly since
+// phase 6 — exposed now because the DHT bootstrap has names to resolve and no
+// dial to hang them on.
+//
+// It answers nothing when the config named no DNS server: netstack has no
+// resolver to ask, and there is deliberately no fallback to the host's. A
+// hostname tracker already fails the same way through DialContext, so this adds
+// no new failure mode — it declines to add the one failure mode that would
+// matter, which is answering correctly by leaking the question.
+func (t *Tunnel) LookupHost(ctx context.Context, host string) ([]string, error) {
+	return t.net.LookupContextHost(ctx, host)
+}
+
 // ListenPacket opens a UDP socket inside the tunnel. uTP, DHT and UDP trackers
 // all run over one of these.
 //

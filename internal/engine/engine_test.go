@@ -436,6 +436,13 @@ func (loopback) ListenPacket(_ context.Context, network, address string) (net.Pa
 	return net.ListenPacket(network, address)
 }
 
+// The host's resolver, which is the honest answer for a Network that is not a
+// tunnel. Nothing in this package reaches it: every engine built here is
+// hermetic, and hermetic empties DhtStartingNodes after bindConfig has set it.
+func (loopback) LookupHost(ctx context.Context, host string) ([]string, error) {
+	return net.DefaultResolver.LookupHost(ctx, host)
+}
+
 // TestAddMagnetRejectsTheUnusable — both of these would otherwise become a
 // torrent that can never finish, reported as `queued` for ever.
 func TestAddMagnetRejectsTheUnusable(t *testing.T) {
