@@ -518,9 +518,30 @@ func (s *Service) DeleteMovie(ctx context.Context, id int64) (Deletion, error) {
 //
 // One failure does not stop the rest. A magnet that will not add is one film,
 // and the loop is the only chance every other row gets.
+//
+// **It asks the guard first, and that is not symmetry with Dispatch.** Dispatch
+// is somebody choosing to start one download; this is the whole library
+// restarting itself, unattended, on a box that has just rebooted — which is
+// exactly the moment a tunnel is most likely to be down and least likely to have
+// anybody watching. Re-adding every unfinished magnet without asking made the
+// reboot the one path through this process that could start unprotected traffic
+// with no human in front of it.
+//
+// A refusal here is not permanent and is not an error: nothing is re-added, one
+// line says why, and the caller runs this again when the tunnel proves out. That
+// is safe to repeat because the loop below already skips anything the client is
+// holding.
 func (s *Service) Resume(ctx context.Context) error {
 	if s.client == nil {
 		return nil
+	}
+
+	if s.guard != nil {
+		if err := s.guard(ctx); err != nil {
+			s.log.Warn("not resuming downloads: they would not be protected",
+				"reason", err, "next", "they resume by themselves when the VPN check passes")
+			return nil
+		}
 	}
 
 	rows, err := s.store.ListDownloads(ctx)

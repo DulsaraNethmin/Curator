@@ -130,6 +130,15 @@ type Engine struct {
 	// progress remembers when each torrent last gained a byte, which is the
 	// whole of stall detection.
 	progress map[string]mark
+
+	// heldReason is why downloads are stopped, or "" when they are not. See
+	// Hold: it is a string rather than a bool because the reason is the whole
+	// point — a held row has to say why on the Activity screen instead of
+	// blaming the swarm.
+	heldReason string
+	// heldConns is each torrent's own connection limit from before the hold, so
+	// Release restores what was there rather than the global default.
+	heldConns map[string]int
 }
 
 // mark is one torrent's last observed progress, and whether the stall it is in
@@ -333,6 +342,7 @@ func New(cfg Config) (*Engine, error) {
 		now:        time.Now,
 		unchecked:  map[string]bool{},
 		progress:   map[string]mark{},
+		heldConns:  map[string]int{},
 	}
 
 	// The socket has to exist before the client, and the client before the
@@ -699,6 +709,14 @@ func (e *Engine) describe(t *anacrolix.Torrent) torrent.Torrent {
 			out.State = torrent.StateStalled
 			out.Reason = reason
 		}
+	}
+
+	// The hold wins over any stall diagnosis, and it has to be last. A held
+	// torrent gains no bytes, so e.stalled is perfectly correct that it is
+	// stalled and perfectly wrong about why — it would report "nobody appears to
+	// be seeding this release" about a download curator switched off itself.
+	if reason := e.holdReason(); reason != "" {
+		out = heldState(out, reason)
 	}
 	return out
 }

@@ -286,9 +286,12 @@ func TestNoTunnelAndVpnRequiredBuildsNoEngineAtAll(t *testing.T) {
 		t.Fatal("VPN_REQUIRED did not default to true, which is the whole premise (docs/decisions.md D27)")
 	}
 
-	engine, guard, err := startEngine(cfg, nil, http.DefaultClient, quietLogger())
+	engine, guard, checker, err := startEngine(cfg, nil, http.DefaultClient, quietLogger())
 	if err != nil {
 		t.Fatalf("startEngine: %v", err)
+	}
+	if checker != nil {
+		t.Error("a VPN checker was built with no tunnel; there is no device for it to read")
 	}
 	if engine != nil {
 		t.Error("an engine was built with no tunnel and VPN_REQUIRED on: with a nil Network it has " +
@@ -330,7 +333,7 @@ func TestAnEngineIsStillBuiltWithoutATunnelWhenEnforcementIsOff(t *testing.T) {
 	cfg.DownloadsDir = t.TempDir()
 	cfg.VPNRequired = false
 
-	engine, guard, err := startEngine(cfg, nil, http.DefaultClient, quietLogger())
+	engine, guard, _, err := startEngine(cfg, nil, http.DefaultClient, quietLogger())
 	if err != nil {
 		t.Fatalf("startEngine: %v", err)
 	}

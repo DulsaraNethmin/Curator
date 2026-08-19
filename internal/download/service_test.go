@@ -575,3 +575,75 @@ func TestUnprotectedIsStillTheSentinel(t *testing.T) {
 		t.Error("a zero-cause Unprotected lost the sentinel")
 	}
 }
+
+// TestResumeAtBootAsksTheGuard is the one path in this process that could start
+// unprotected traffic with nobody in front of it.
+//
+// Dispatch is somebody choosing to start a download. This is the whole library
+// restarting itself on a box that has just rebooted — which is exactly when a
+// tunnel is most likely to be down and least likely to be watched. It re-added
+// every unfinished magnet without asking.
+func TestResumeAtBootAsksTheGuard(t *testing.T) {
+	st := resumeStore(
+		row("AAAA000000000000000000000000000000000000", store.DownloadDownloading, "magnet:?xt=urn:btih:aaaa"),
+		row("BBBB000000000000000000000000000000000000", store.DownloadStalled, "magnet:?xt=urn:btih:bbbb"),
+	)
+	client := &resumeClient{held: map[string]bool{}}
+
+	refused := errors.New("the tunnel's exit address is the host's own")
+	svc := newService(client, st, newResolver("")).
+		WithGuard(func(context.Context) error { return refused })
+
+	// Not an error: the tunnel coming back is an expected event, not a startup
+	// failure, and the library, search and the UI have nothing to do with it.
+	if err := svc.Resume(context.Background()); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if len(client.added) != 0 {
+		t.Errorf("re-added %v with the guard refusing; a reboot into a broken tunnel would have "+
+			"restarted the whole library unprotected", client.added)
+	}
+}
+
+// And the second chance the refusal is written to expect. cmd/curator calls
+// Resume again when the sentinel's verdict turns good, which only works because
+// nothing was lost and the loop skips what the client already holds.
+func TestResumeRunsAgainOnceTheGuardPasses(t *testing.T) {
+	st := resumeStore(
+		row("AAAA000000000000000000000000000000000000", store.DownloadDownloading, "magnet:?xt=urn:btih:aaaa"),
+	)
+	client := &resumeClient{held: map[string]bool{}}
+
+	var protected bool
+	svc := newService(client, st, newResolver("")).
+		WithGuard(func(context.Context) error {
+			if protected {
+				return nil
+			}
+			return errors.New("not yet")
+		})
+
+	if err := svc.Resume(context.Background()); err != nil {
+		t.Fatalf("first Resume: %v", err)
+	}
+	if len(client.added) != 0 {
+		t.Fatalf("re-added %v before the tunnel proved out", client.added)
+	}
+
+	protected = true
+	if err := svc.Resume(context.Background()); err != nil {
+		t.Fatalf("second Resume: %v", err)
+	}
+	if len(client.added) != 1 {
+		t.Errorf("re-added %v once the guard passed, want the one unfinished row", client.added)
+	}
+
+	// Idempotent, because the sentinel may pass more than once.
+	client.held["AAAA000000000000000000000000000000000000"] = true
+	if err := svc.Resume(context.Background()); err != nil {
+		t.Fatalf("third Resume: %v", err)
+	}
+	if len(client.added) != 1 {
+		t.Errorf("re-added %v after a second good verdict; the client already holds it", client.added)
+	}
+}
