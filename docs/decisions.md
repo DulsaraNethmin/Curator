@@ -2173,3 +2173,139 @@ D44's `${UPDATER_TOKEN:?…}` was moved into watchtower by
 [D45](#d45--a-mandatory-value-belongs-to-the-service-that-needs-it-not-to-the-file-that-describes-it)
 the day after it shipped; D44's paragraph still shows the compose form it was written with, which is
 what a record does.
+
+---
+
+## D47 — Every torrent network operation is tunnel-bound or disabled
+
+**Status:** decided and built ·
+**Amends** [D27](#d27--the-vpn-is-mandatory-and-curator-owns-the-socket), whose claim was true of the
+paths it measured and silent about three others, and
+[D29](#d29--a-written-setting-applies-at-the-next-start-the-password-applies-at-once), which gains a
+second immediate setting · **Found by** T82 auditing the byte paths against
+`anacrolix/torrent@v1.61.0` rather than against D27's own comment
+
+The invariant, written once and quoted onto the VPN screen:
+
+> **Every network operation of the torrent subsystem — payload, peers, uTP, DHT, trackers, webseeds,
+> WebRTC, DNS and local discovery — is tunnel-bound or disabled. There is no third option.**
+
+Two scope limits are part of the claim rather than footnotes to it. It covers the **embedded**
+backend only: with `TORRENT_BACKEND=qbittorrent` curator does not own the socket and compares exit
+addresses instead, which D27 already says and which the page now repeats where somebody might
+generalise from a green badge. And it covers the **torrent subsystem** only: searches, TMDB,
+artwork, minter, Jellyfin and the update check are on the host stack by design.
+
+### What was actually leaking
+
+D27 said the kill switch is structural, and T33 measured it: with `DisableTCP`, `DisableUTP` and
+`NoDHT` the client opened zero OS sockets. **That measurement was true and is still true.** It was
+about peer, tracker and DHT sockets. It was never a statement about the four paths below, every one
+of which leaves the process without asking any dialer curator installed.
+
+| Path | Carries | Why it was open |
+|---|---|---|
+| **WebTorrent / WebRTC** | **payload** | `DisableWebtorrent` appeared **nowhere** in the repository. `torrent.go:2203` gates it; past that gate `startWebsocketAnnouncer` builds a `websocket.Dialer` of its own (`webtorrent/tracker-client.go:35`) and WebRTC data channels move pieces. A `ws://` or `wss://` tracker in a magnet is the whole trigger. 1337x, YTS and TPB hand out `udp://`, so it has probably never fired — and "probably never" is not the promise D27 makes. |
+| **DHT bootstrap DNS** | metadata | `bindConfig` never set `DhtStartingNodes`, so production kept anacrolix's default (`config.go:261`) → `dht.GlobalBootstrapAddrs` → `ResolveHostPorts` → a package-global `dnscache.Resolver` on the **host** (`dht/v2@v2.23.0/dns.go:26-30`). Eight lookups saying this machine runs a BitTorrent client, on the resolver the tunnel exists to bypass, refreshed every five minutes for the life of the process. |
+| **UPnP** | nothing, but it announces | `NoDefaultPortForwarding` was set **only under `cfg.hermetic`**. Production ran `go cl.forwardPort()` (`client.go:414`) → `upnp.Discover` → SSDP multicast out of every real interface, for a mapping that would forward a router port to a listener inside a netstack no LAN packet can reach. |
+| **A host-capable engine with the kill switch "on"** | **payload** | `startEngine` left `network` nil when `VPN_REQUIRED` was true with no tunnel and called `engine.New` anyway. `bindConfig` runs only when there IS a Network, so `DisableTCP`, `DisableUTP` and `NoDHT` were all **false**: host sockets and a **DHT node on the household connection**, announcing itself, on every boot, with no magnet dispatched and the settings screen reporting the switch as on. |
+
+**One cause under all four, and it is the sentence worth keeping: `cfg.hermetic` hardened the TEST
+configuration in ways the production one never got.** `internal/engine/engine.go` even documents the
+DHT behaviour and fixes it for tests only. No existing test could have caught any of this, because
+every test was already behind the fix. That is the shape of the bug, not a detail of it.
+
+### The guard that outlives this decision
+
+`TestEveryEgressFieldOfTheClientConfigIsClassified` reflects over `anacrolix.ClientConfig` and
+requires every field to be classified `bound`, `disabled`, `nil` or `inert`. Bump the dependency and
+any new way out of the process fails the build until a person has read what it does. It earned its
+keep immediately: `LookupTrackerIp` is declared and called nowhere in v1.61.0, and its own comment is
+a TODO to wire it back in.
+
+`nil` is the third category and the one that is not obvious. `WebTransport` and
+`MetainfoSourcesClient` must stay at their zero values, because `client.go:284-296` uses them
+**instead of** the transport carrying `HTTPDialContext` — setting either voids the webseed and
+metainfo binding without touching `HTTPDialContext` at all.
+
+### Bound, not disabled, where that costs nothing
+
+The DHT bootstrap resolves **through the tunnel** rather than being switched off, because returning
+nothing would cost cold-start peer discovery for every download. `engine.Network` gains `LookupHost`
+for it. The alternative — resolving the eight names in `cmd/curator` and handing the addresses in —
+keeps that interface at "dial and listen" but loses laziness, and laziness is the requirement: a
+tunnel has not handshaken at start-up, and the DHT asks at bootstrap, which is later. Resolving is a
+network operation, and the interface says so.
+
+A config with **no `DNS =` line** resolves nothing and the bootstrap returns nothing. There is no
+fallback to the host resolver, ever. A hostname tracker already fails that way, so this adds no new
+failure mode; it declines to add the one that would matter, which is answering correctly by leaking
+the question.
+
+### Proving it rather than asserting it
+
+`Engine.Binding()` reports the address the engine's one socket actually holds — read off the socket,
+because the engine does not keep the Network it was given, so there is nothing here that could report
+what it was configured with instead of what it got. `Tunnel.Owns(addr)` answers whether that address
+is the tunnel's. **Two independent reads that have to agree**, and neither is a sentence written next
+to the wiring. The page's headline is an AND of that, a fresh handshake, a differing exit address and
+nothing being held, so it cannot go green on one of them.
+
+### The watchdog, which reverses an earlier call
+
+**This supersedes the earlier decision not to have one.** That was taken when the goal was a monitor,
+and a monitor that runs only while somebody has the page open is a reasonable monitor. The goal is an
+enforced kill switch on a box in a cupboard, and the same design cannot deliver it.
+
+A `Sentinel` re-proves the tunnel on two cadences. The cheap one is a device read in this process
+every 15 s — no third party, no network, so it still works when the tunnel is what is broken. The
+expensive one is `CheckExit`, and it is **deliberately not unconditional**: running it forever is 288
+requests a day to somebody else's service from a box doing nothing. It runs while something is
+downloading, which is when the failure it catches can cost anything, and while the last verdict is
+bad, which is not symmetry — a held download does not report itself as downloading, so without that
+clause a bad verdict would switch off the only thing that could ever clear it.
+
+`Hold` stops every torrent and drops its peers rather than dropping the torrents. A kill switch that
+costs a half-finished download every time a tunnel blips is more expensive than what it protects
+against, and a safety feature that expensive gets turned off. It is belt-and-braces over the
+structural guarantee and honest about being redundant most of the time: with the tunnel down the
+dials already fail. It exists for the state the structure does not cover — a tunnel up and
+handshaking and no longer changing where traffic leaves from, where the dials succeed and the bytes
+are the problem.
+
+`Resume` asks the guard, and that is not symmetry with `Dispatch`. Dispatch is somebody choosing to
+start one download; Resume is the whole library restarting itself on a box that has just rebooted,
+which is exactly when a tunnel is most likely to be down and least likely to be watched.
+
+### `VPN_REQUIRED` applies at once, and what that cannot do
+
+It becomes the third `Immediate` setting, for D29's own argument about the password: a switch that
+takes effect at the next restart leaves you unprotected until then, which inverts the point of
+turning it on.
+
+**It applies to the check and cannot conjure an engine.** A process that booted with no tunnel and
+enforcement on has no torrent client at all, so turning enforcement off there still needs a restart.
+`GET /api/vpn` reports that as `engine_started` and the screen says so.
+
+**The trap it arrived with, recorded because the fix is not where it looks.** `settingsStates`
+reported an Immediate setting's live value as the *stored* text. That is right for the two
+authentication settings and wrong for this one, and the difference was never "immediate" — it is
+whether there is a `*config.Config` field to read the value back from. With nothing stored the
+resolution is `""`, and `VPN_REQUIRED` defaults to **true**, so a fresh install would have drawn the
+kill switch **off** while curator was enforcing it. The same defect one layer down is resolving
+enforcement through the stored string instead of `config.Load`: `ParseBool("")` is false, and
+clearing the setting is how somebody returns to the default.
+
+### Alternatives
+
+**Disabling the DHT outright** rather than binding its bootstrap. Simpler, and it costs peer
+discovery on every magnet that carries no working tracker, which is what the DHT is for.
+
+**Refusing to start with no tunnel** rather than starting with no engine. It makes the failure
+loud, and it locks somebody out of the settings screen that configures the tunnel — the argument
+D27 makes for the UI staying off the tunnel applies here unchanged.
+
+**Leaving the watchdog out and relying on the structure.** It is genuinely nearly enough: bytes stop
+on their own when a tunnel dies. What it cannot do is notice, so the rows keep saying nobody is
+seeding a release while the real answer is that curator's tunnel went away — and it cannot see the
+one state where the dials succeed and the bytes still leave from the wrong address.
