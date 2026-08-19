@@ -2178,9 +2178,9 @@ what a record does.
 
 ## D47 — Every torrent network operation is tunnel-bound or disabled
 
-**Status:** decided and built ·
+**Status:** decided, built and **measured on the Pi** ([T85](tasks/T85-the-capture-that-settles-it.md)) ·
 **Amends** [D27](#d27--the-vpn-is-mandatory-and-curator-owns-the-socket), whose claim was true of the
-paths it measured and silent about three others, and
+paths it measured and silent about four others, and
 [D29](#d29--a-written-setting-applies-at-the-next-start-the-password-applies-at-once), which gains a
 second immediate setting · **Found by** T82 auditing the byte paths against
 `anacrolix/torrent@v1.61.0` rather than against D27's own comment
@@ -2210,10 +2210,30 @@ of which leaves the process without asking any dialer curator installed.
 | **UPnP** | nothing, but it announces | `NoDefaultPortForwarding` was set **only under `cfg.hermetic`**. Production ran `go cl.forwardPort()` (`client.go:414`) → `upnp.Discover` → SSDP multicast out of every real interface, for a mapping that would forward a router port to a listener inside a netstack no LAN packet can reach. |
 | **A host-capable engine with the kill switch "on"** | **payload** | `startEngine` left `network` nil when `VPN_REQUIRED` was true with no tunnel and called `engine.New` anyway. `bindConfig` runs only when there IS a Network, so `DisableTCP`, `DisableUTP` and `NoDHT` were all **false**: host sockets and a **DHT node on the household connection**, announcing itself, on every boot, with no magnet dispatched and the settings screen reporting the switch as on. |
 
-**One cause under all four, and it is the sentence worth keeping: `cfg.hermetic` hardened the TEST
-configuration in ways the production one never got.** `internal/engine/engine.go` even documents the
+| **A `udp://` tracker's NAME** | metadata | Found by the capture, and by nothing else — see below. `tracker/udp/conn-client.go:82` calls `net.ResolveUDPAddr` on the stdlib resolver to produce the destination it then writes to curator's tunnel socket. The announce is encrypted; the question that produced its address is not. |
+
+**One cause under the first four, and it is the sentence worth keeping: `cfg.hermetic` hardened the
+TEST configuration in ways the production one never got.** `internal/engine/engine.go` even documents the
 DHT behaviour and fixes it for tests only. No existing test could have caught any of this, because
 every test was already behind the fix. That is the shape of the bug, not a detail of it.
+
+### The fifth one, and why a capture was not optional
+
+The first four came from reading `anacrolix.ClientConfig` against what each field does. The fifth
+could not, because it is not a field: it is a stdlib call inside a dependency, on a path whose
+*socket* was correctly bound the whole time. `LookupTrackerIp` is the hook anacrolix provides for it
+and in v1.61.0 it is declared and called nowhere — so the classification test saw it, T82 marked it
+`inert`, and that was true of the field while the capability it was meant to replace kept running.
+
+**That is the limit of the guard below, stated where somebody will read it: it proves every field is
+accounted for. It does not prove every egress path has a field.** The only thing that catches the
+rest is looking at the wire, which is why [T85](tasks/T85-the-capture-that-settles-it.md) is a task
+and not a paragraph. It found this within an hour of being run, on a path four separate readings of
+the source had walked past.
+
+[T86](tasks/T86-a-tracker-name-is-a-leak.md) closes it by resolving `udp://` tracker names through
+the tunnel before anacrolix sees the URL — the second caller of the `LookupHost` this decision added
+for the DHT.
 
 ### The guard that outlives this decision
 

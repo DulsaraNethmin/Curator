@@ -1001,11 +1001,36 @@ tests only. No existing test could have failed, because every test was already b
 | `PUT vpn_required=false` | applied **without a restart**; `/api/settings` reports `restart_required: false` and nothing pending |
 | `VPN_REQUIRED` set in the environment | the switch draws **read-only** and names the variable, rather than answering 409 |
 
+### T85 — the capture, run, and what it found
+
+Run on the Pi on 2026-08-19 against a real 2.4 GB download over a real tunnel, beside the pinned
+0.2.0 on its own port. Jellyfin untouched.
+
+| Reading | Result |
+|---|---|
+| sockets held by the process, before vs during a download | **identical** — the WireGuard socket, the listener, and the exit check. 70 MB arrived between the two and **no new socket appeared** |
+| 45 s on the wire during a fast stretch | **101,043 packets, 99,563 of them (98.5%) WireGuard to the endpoint** |
+| DNS on the host resolver | **eight tracker hostnames**, which is [T86](tasks/T86-a-tracker-name-is-a-leak.md) |
+| after T86, three minutes of downloading | **not one tracker or DHT name** — only the exit check |
+
+**A fifth leak, and only the capture could have found it.** The first four were read out of
+`anacrolix.ClientConfig`. This one is `net.ResolveUDPAddr` inside a dependency, on a path whose socket
+was correctly bound the whole time — so the config was right, the socket was right, and the name went
+out in clear. `LookupTrackerIp` is anacrolix's hook for it and is declared and called nowhere in
+v1.61.0.
+
+**Two facts about the Pi the handoffs did not carry.** There is a **`nordlynx` interface at
+`100.108.251.229/10`** left over from the retired gluetun stack — not the default route, `nordvpn
+status` says *Disconnected*, and the host is **not** tunnelled, which is the only reason a capture on
+`wlan0` means anything. And **every NordVPN Singapore server publishes the same WireGuard public
+key**, so a second config beside the Pi's needs only a different `Endpoint` line.
+
 ### Still live going out
 
-- **[T85](tasks/T85-the-capture-that-settles-it.md) is the whole of what is left**, and it is the only
-  evidence that does not come from curator: `tcpdump` on the Pi's real interface during a download,
-  plus killing the peer mid-download and watching the bytes stop in bytes rather than log lines.
+- **The tunnel has still never been torn down under a live download.** The sentinel was seen holding
+  and releasing on a *real, unstaged* transient failure (an `EOF` on the exit check), which is the
+  same code path — but killing the peer mid-download and watching the bytes stop **in bytes** is not
+  the same test, and it is not done.
 - **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot` is flaky on this laptop**, and it
   is not this work's doing: measured at roughly one failure in three on `56ec0f3`, before any of it.
   It waits ten seconds for a cancelled ffmpeg to return. `make check` is therefore not reliably green
