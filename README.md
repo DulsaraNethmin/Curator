@@ -60,6 +60,16 @@ the machine's own connection, so a tunnel that drops cannot lock you out of the 
 downloads, which is what it is for
 ([D27](docs/decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)).
 
+**For the engine, "through the tunnel" means all of it.** Every network operation of the torrent
+subsystem — payload, peers, uTP, DHT, trackers, webseeds, WebRTC, DNS and local discovery — is
+tunnel-bound or disabled, with no third option
+([D47](docs/decisions.md#d47--every-torrent-network-operation-is-tunnel-bound-or-disabled)). That is
+a claim about the **embedded** engine, which is the default: with `TORRENT_BACKEND=qbittorrent`
+curator does not own the socket, so it compares exit addresses and refuses when they match rather
+than promising anything. The **VPN screen** shows the whole thing being checked — the handshake, the
+socket the engine actually holds, where traffic comes out, and whether downloads are held — and
+curator re-proves it on a timer rather than only when you are looking.
+
 **The torrent client is not a container.** It is a pure-Go engine in curator's own process
 ([D22](docs/decisions.md#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)),
 which is what makes one tunnel and one process possible. qBittorrent is still supported as a second

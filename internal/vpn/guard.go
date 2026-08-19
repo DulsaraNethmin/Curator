@@ -102,21 +102,35 @@ func External(clientAddress func(context.Context) (string, error), checkURL stri
 	}
 }
 
-// Advisory turns a refusal into a warning, once per dispatch.
+// Enforced makes a check's refusal conditional on enforcement being ON, asked
+// per dispatch rather than at start-up.
 //
-// It is what VPN_REQUIRED=false means for a check curator cannot enforce: the
-// operator has been told what cannot be verified and has said to proceed. It
-// keeps saying it rather than falling silent, because the whole difference
-// between an accepted risk and a forgotten one is whether anything still
-// mentions it.
-func Advisory(g Guard, log *slog.Logger) Guard {
+// It replaces Advisory, which this deletes. That did the same downgrade but was
+// chosen at start-up and applied to the qBittorrent branch only — so
+// VPN_REQUIRED=false still refused a dispatch through a broken tunnel on the
+// embedded engine, which is the default. One rule, both backends, read live.
+//
+// enforcing is a function and not a bool for the whole point of this: the
+// setting is Immediate now, so it is re-read on the next request after a write
+// rather than at the next start.
+func Enforced(g Guard, enforcing func() bool, log *slog.Logger) Guard {
 	if log == nil {
 		log = slog.Default()
 	}
+	if enforcing == nil {
+		// A missing holder enforces. Failing open here would mean a wiring
+		// mistake silently switching the kill switch off.
+		enforcing = func() bool { return true }
+	}
 	return func(ctx context.Context) error {
-		if err := g(ctx); err != nil {
-			log.Warn("dispatching anyway because VPN_REQUIRED=false", "unverified", err)
+		err := g(ctx)
+		if err == nil || enforcing() {
+			return err
 		}
+		// Kept saying, every time, rather than falling silent — the whole
+		// difference between an accepted risk and a forgotten one is whether
+		// anything still mentions it.
+		log.Warn("dispatching anyway because VPN_REQUIRED is off", "unverified", err)
 		return nil
 	}
 }

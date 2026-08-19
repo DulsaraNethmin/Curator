@@ -108,13 +108,14 @@ func (s *Sentinel) Check(ctx context.Context) Verdict {
 // It is the one place that decides whether anything is announced.
 func (s *Sentinel) apply(v Verdict) Verdict {
 	s.mu.Lock()
+	first := s.announced == ""
 	changed := v.State != s.announced
 	s.announced = v.State
 	subs := s.subs
 	s.mu.Unlock()
 
 	if changed {
-		s.announce(v, subs)
+		s.announce(v, first, subs)
 	}
 	return v
 }
@@ -192,10 +193,24 @@ func (s *Sentinel) downloading(ctx context.Context) bool {
 // The address is never in it: GET /api/logs is readable by anyone on the LAN
 // (docs/decisions.md D18), and where traffic leaves from is the one fact the
 // tunnel exists to keep.
-func (s *Sentinel) announce(v Verdict, subs []func(Verdict)) {
-	if v.OK() {
-		s.log.Info("vpn is protecting downloads again", "state", string(v.State), "detail", v.Detail)
-	} else {
+//
+// The FIRST verdict is not a transition and is not warned about, even when it is
+// bad. Run proves the tunnel the moment the process starts, which is routinely
+// before the first handshake has completed — a WireGuard device is configured in
+// microseconds and answered in tens of milliseconds — so a healthy boot produced
+// "vpn is no longer protecting downloads", followed fifteen seconds later by the
+// all-clear, every single time. A warning that cries wolf on every start is how
+// the one that mattered gets filtered out, which is the failure the whole
+// transitions-not-ticks design exists to avoid. The HOLD still happens: this
+// changes what is said about the state, never what is done about it.
+func (s *Sentinel) announce(v Verdict, first bool, subs []func(Verdict)) {
+	switch {
+	case v.OK():
+		s.log.Info("vpn is protecting downloads", "state", string(v.State), "detail", v.Detail)
+	case first:
+		s.log.Info("vpn is not protecting downloads yet; they are held until it does",
+			"state", string(v.State), "detail", v.Detail)
+	default:
 		s.log.Warn("vpn is no longer protecting downloads", "state", string(v.State), "detail", v.Detail)
 	}
 	for _, fn := range subs {

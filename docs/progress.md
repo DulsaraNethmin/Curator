@@ -637,11 +637,15 @@ phase 4 built. It fired against the new backend exactly as designed. The check w
 
 ### Still live going out
 
-- **"Kill the tunnel mid-download and confirm traffic stops" is still unrun.** The tunnel now
-  demonstrably carries a torrent, but nobody has torn one down underneath a live download and
-  watched the bytes stop. The claim rests on construction — `DisableTCP`, `DisableUTP` and `NoDHT`
-  leave the client no socket of its own, measured as zero in T33 — and that is not the same as
-  seeing it.
+- **"Kill the tunnel mid-download and confirm traffic stops" is still unrun**, and T82-T84 have
+  changed what it would be evidence for rather than answering it. The claim used to rest on
+  construction alone — `DisableTCP`, `DisableUTP` and `NoDHT` leave the client no socket of its own,
+  measured as zero in T33. It now also rests on three paths that measurement never covered
+  (WebTorrent, the DHT's bootstrap DNS and UPnP), on a fourth that opened host sockets whenever
+  `VPN_REQUIRED` was on with no tunnel, and on a watchdog that holds downloads when the tunnel stops
+  proving out. All of that is verified by tests and by reading anacrolix's source; none of it is a
+  packet capture, and D27's promise is about packets. It is now
+  [T85](tasks/T85-the-capture-that-settles-it.md) rather than a line in this list.
 - **Only one provider, one server, one run.** NordLynx against a Singapore endpoint, once. Nothing
   says how this behaves on a provider with a different MTU, an IPv6-only address, or a config
   carrying `Table`/`PostUp` directives the parser ignores.
@@ -946,3 +950,63 @@ Recorded so the reasoning is not lost.
 | `.gitignore`'s unanchored `curator` also matched the `cmd/curator/` **directory**, silently excluding the command from git | `.gitignore` |
 | T45 was still listed as `specified` in the phase 8 table after it had been built and merged | `progress.md` |
 | T46's verify fixture — `Movie.en.srt` beside `Subs/2_English.srt` — produces one sidecar and not two, because both name English | `tasks/T46-subtitles.md` |
+
+---
+
+## T82–T85 — a kill switch that can be seen, and proved
+
+The requirement D27 wrote down was never only that downloads are protected. It is that **not one
+byte** of download traffic leaves without the VPN, that downloads stop when the tunnel fails, and
+that somebody can **see** which of those is true. Audited against `anacrolix/torrent@v1.61.0` rather
+than against D27's own comment, none of the three fully held.
+
+**T33's "zero OS sockets" was true and is still true.** It measured the peer, tracker and DHT
+sockets, and those have never leaked. It was never a statement about the paths anacrolix opens
+without asking a dialer, and nobody had gone looking for those.
+
+| What | Where it went instead | Carried |
+|---|---|---|
+| WebTorrent / WebRTC | its own `websocket.Dialer`, then WebRTC data channels | **payload** |
+| DHT bootstrap DNS | the host resolver, eight names, refreshed every 5 min for the life of the process | metadata |
+| UPnP | SSDP multicast out of every real interface | an announcement |
+| The engine itself, with no tunnel and `VPN_REQUIRED` on | host sockets and a **DHT node on the household connection**, every boot | **payload** |
+
+**One cause, and it is the useful sentence: `cfg.hermetic` hardened the TEST configuration in ways
+the production one never got.** `internal/engine` even documents the DHT behaviour and fixes it for
+tests only. No existing test could have failed, because every test was already behind the fix. See
+[D47](decisions.md#d47--every-torrent-network-operation-is-tunnel-bound-or-disabled).
+
+### What is now true
+
+- Every torrent network operation is tunnel-bound or disabled, and the DHT bootstrap **resolves
+  through the tunnel** rather than being switched off, so cold-start peer discovery survives.
+- `VPN_REQUIRED` with no tunnel builds **no engine at all**, rather than one bound to the host.
+- A `Sentinel` re-proves the tunnel on a timer — 15 s locally, and an exit check every 5 minutes only
+  while something is downloading or the last verdict was bad, so an idle box makes none.
+- A failing verdict **holds** every torrent, without dropping it, and the Activity screen names the
+  tunnel instead of blaming the swarm. `Resume` at boot asks the guard first.
+- The **VPN screen** shows the verdict as an AND of four independently-read facts, and the exit
+  address is withheld unless a password is in front of it.
+- `VPN_REQUIRED` applies at once. Its one limit is stated on the screen: it applies to the check and
+  cannot conjure an engine that was never started.
+
+### Measured on this laptop, against a real NordVPN tunnel
+
+| Check | Result |
+|---|---|
+| boot with the handshake not yet complete | downloads **held**, stated rather than warned about |
+| the handshake landing | the next 15 s tick **released** them |
+| `inside_tunnel` | **true**, from two independent reads — the engine's socket `10.5.0.2` and the tunnel's own address |
+| the exit address with no password | **absent from the body**; the page draws `203.0.113.x` |
+| `PUT vpn_required=false` | applied **without a restart**; `/api/settings` reports `restart_required: false` and nothing pending |
+| `VPN_REQUIRED` set in the environment | the switch draws **read-only** and names the variable, rather than answering 409 |
+
+### Still live going out
+
+- **[T85](tasks/T85-the-capture-that-settles-it.md) is the whole of what is left**, and it is the only
+  evidence that does not come from curator: `tcpdump` on the Pi's real interface during a download,
+  plus killing the peer mid-download and watching the bytes stop in bytes rather than log lines.
+- **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot` is flaky on this laptop**, and it
+  is not this work's doing: measured at roughly one failure in three on `56ec0f3`, before any of it.
+  It waits ten seconds for a cancelled ffmpeg to return. `make check` is therefore not reliably green
+  here on the first run, which is worth knowing before anybody reads a red gate as a regression.

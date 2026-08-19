@@ -207,10 +207,11 @@ func TestExternalGuard(t *testing.T) {
 	// embedded engine, and for the same person: somebody whose whole machine is
 	// behind a tunnel has made the one arrangement this check cannot tell apart
 	// from having none.
-	t.Run("advisory downgrades a refusal to a warning", func(t *testing.T) {
+	t.Run("enforcement off downgrades a refusal to a warning", func(t *testing.T) {
 		refused := External(says("203.0.113.9"), srv.URL, srv.Client(), quiet())
-		if err := Advisory(refused, quiet())(context.Background()); err != nil {
-			t.Errorf("Advisory still refused: %v", err)
+		off := func() bool { return false }
+		if err := Enforced(refused, off, quiet())(context.Background()); err != nil {
+			t.Errorf("the check still refused with enforcement off: %v", err)
 		}
 	})
 
@@ -436,5 +437,52 @@ func TestTheTunnelKnowsWhichAddressesAreItsOwn(t *testing.T) {
 	// answers false for a socket that is unmistakably inside the tunnel.
 	if !tunnel.Owns(&net.UDPAddr{IP: net.ParseIP("::ffff:10.5.0.2"), Port: 51820}) {
 		t.Error("a 4-in-6 form of the tunnel's own address was not recognised")
+	}
+}
+
+// TestEnforcementIsReadPerDispatchRatherThanAtStartUp. The whole point of making
+// VPN_REQUIRED immediate: somebody who turns the kill switch on must be
+// protected from the next dispatch, not from the next restart, and somebody who
+// turns it off must not have to restart to download.
+func TestEnforcementIsReadPerDispatchRatherThanAtStartUp(t *testing.T) {
+	refusing := func(context.Context) error { return errors.New("no VPN is configured") }
+
+	on := true
+	guard := Enforced(refusing, func() bool { return on }, quiet())
+
+	if err := guard(context.Background()); err == nil {
+		t.Fatal("the dispatch was allowed with enforcement on")
+	}
+
+	on = false
+	if err := guard(context.Background()); err != nil {
+		t.Errorf("the dispatch was still refused after enforcement was turned off: %v", err)
+	}
+
+	on = true
+	if err := guard(context.Background()); err == nil {
+		t.Error("the dispatch was allowed after enforcement was turned back on; " +
+			"the answer is being cached rather than read")
+	}
+}
+
+// TestAMissingEnforcementHolderEnforces. Fail-closed on a wiring mistake: a nil
+// holder that meant "off" would switch the kill switch off silently, which is
+// the one direction a bug here must not go.
+func TestAMissingEnforcementHolderEnforces(t *testing.T) {
+	refusing := func(context.Context) error { return errors.New("no VPN is configured") }
+	if err := Enforced(refusing, nil, quiet())(context.Background()); err == nil {
+		t.Error("a nil enforcement holder allowed a dispatch")
+	}
+}
+
+// TestEnforcementNeverInventsAFailure. With enforcement off a passing check
+// still passes, and with it on a passing check is not re-examined.
+func TestEnforcementNeverInventsAFailure(t *testing.T) {
+	passing := func(context.Context) error { return nil }
+	for _, on := range []bool{true, false} {
+		if err := Enforced(passing, func() bool { return on }, quiet())(context.Background()); err != nil {
+			t.Errorf("enforcing=%v turned a passing check into %v", on, err)
+		}
 	}
 }

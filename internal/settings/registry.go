@@ -122,7 +122,19 @@ var registry = []Setting{
 	{Env: "VPN_CONFIG", FileEnv: "VPN_CONFIG_FILE", Group: "vpn", Kind: KindMultiline, Secret: true,
 		validate: func(v string) error { _, err := vpn.ParseConfig(v); return err },
 		expand:   tunnelKeys},
-	{Env: "VPN_REQUIRED", Group: "vpn", Kind: KindBool},
+	// Immediate, and the third setting in this table that is.
+	//
+	// A kill switch that takes effect at the next restart leaves downloads
+	// unprotected until then, which inverts the point of switching it on —
+	// exactly the argument D29 makes for the password, and the reason there is
+	// an exception mechanism at all. cmd/curator re-reads it through the same
+	// Access.Reload the password uses.
+	//
+	// It applies to the CHECK and cannot conjure an engine: a process that
+	// booted with no tunnel and this on has no torrent client at all, so
+	// turning it off there still needs a restart. GET /api/vpn reports that as
+	// engine_started.
+	{Env: "VPN_REQUIRED", Group: "vpn", Kind: KindBool, Immediate: true},
 	{Env: "VPN_IP_CHECK_URL", Group: "vpn", Kind: KindURL},
 
 	// Updating. curator reads a version number and asks somebody else to

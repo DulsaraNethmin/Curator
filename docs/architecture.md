@@ -83,7 +83,10 @@ sequenceDiagram
 ```
 
 **The engine and the tunnel are inside curator's process**, not two more containers — the participant
-boxes are packages, not services. And the tunnel carries the torrent traffic **and nothing else**:
+boxes are packages, not services. And the tunnel carries the torrent traffic **and nothing else**,
+which since [D47](decisions.md#d47--every-torrent-network-operation-is-tunnel-bound-or-disabled) is
+true in both directions: every network operation the torrent subsystem makes is tunnel-bound or
+disabled, DHT bootstrap DNS, WebTorrent and UPnP included. Meanwhile
 TMDB, the indexers, Jellyfin and the UI all go out over the host's own connection, so a tunnel that
 drops stops downloads instead of locking somebody out of their library.
 

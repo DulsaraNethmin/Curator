@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/library"
 	"github.com/DulsaraNethmin/curator/internal/remux"
@@ -139,6 +140,17 @@ type Server struct {
 	// Nil in any process that was built without them, which is every test that
 	// does not care.
 	updates *UpdateSetup
+
+	// vpn is T84's VPN screen, attached with WithVPN. Nil in every process
+	// built without it, which is every test that does not care.
+	vpn *VPNSetup
+
+	// vpnLastCheck is when POST /api/vpn/check last ran, and its lock. Here
+	// rather than in VPNSetup because a Setup is passed to With* by value, so a
+	// mutex in one would be copied and a limiter that resets per copy is not a
+	// limiter. Same reason streamWarned is here.
+	vpnCheckMu   sync.Mutex
+	vpnLastCheck time.Time
 
 	// tickets mints phase 8's playback credential, attached with WithTickets.
 	// Nil is the state every install without a password is in, and it is what

@@ -51,10 +51,16 @@ func TestEverySettingHasAnEffectiveValue(t *testing.T) {
 	live := effective(cfg)
 
 	for _, item := range settings.All() {
-		if item.Immediate {
-			// The two Access settings apply on the next request rather than at
-			// the next start, so they have no *config.Config field to read and
-			// settingsStates takes them off the resolution (docs/decisions.md D29).
+		if noConfigField[item.Key] {
+			// The two Access settings are read per request through internal/api's
+			// credential holder, so they have no *config.Config field and
+			// settingsStates takes them off the resolution instead
+			// (docs/decisions.md D29).
+			//
+			// This used to skip on item.Immediate, which was the same set until
+			// vpn_required became immediate too — and skipping on that would
+			// have quietly dropped a setting WITH a config field out of this
+			// test, which is the one thing it exists to prevent.
 			continue
 		}
 		if _, ok := live[item.Key]; !ok {
@@ -286,7 +292,7 @@ func TestNoTunnelAndVpnRequiredBuildsNoEngineAtAll(t *testing.T) {
 		t.Fatal("VPN_REQUIRED did not default to true, which is the whole premise (docs/decisions.md D27)")
 	}
 
-	engine, guard, checker, err := startEngine(cfg, nil, http.DefaultClient, quietLogger())
+	engine, guard, checker, err := startEngine(cfg, nil, http.DefaultClient, quietLogger(), quietLogger(), func() bool { return cfg.VPNRequired })
 	if err != nil {
 		t.Fatalf("startEngine: %v", err)
 	}
@@ -333,7 +339,7 @@ func TestAnEngineIsStillBuiltWithoutATunnelWhenEnforcementIsOff(t *testing.T) {
 	cfg.DownloadsDir = t.TempDir()
 	cfg.VPNRequired = false
 
-	engine, guard, _, err := startEngine(cfg, nil, http.DefaultClient, quietLogger())
+	engine, guard, _, err := startEngine(cfg, nil, http.DefaultClient, quietLogger(), quietLogger(), func() bool { return cfg.VPNRequired })
 	if err != nil {
 		t.Fatalf("startEngine: %v", err)
 	}
@@ -350,4 +356,111 @@ func TestAnEngineIsStillBuiltWithoutATunnelWhenEnforcementIsOff(t *testing.T) {
 // take the branches that log a warning.
 func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestAnImmediateSettingWithAConfigFieldReportsItsResolvedDefault is the lying
+// checkbox, and it is the trap this whole commit is built around.
+//
+// settingsStates reported an Immediate setting's live value as the STORED text.
+// That was right for the two Access settings, which have no *config.Config field
+// and are read per request through the credential holder. It is wrong for
+// vpn_required, which has one, and whose documented default is TRUE with no row
+// stored — so a fresh install would have drawn the kill switch OFF while
+// enforcement was ON, and the person looking at it would have had no reason to
+// doubt it.
+func TestAnImmediateSettingWithAConfigFieldReportsItsResolvedDefault(t *testing.T) {
+	clearSettingsEnv(t)
+
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "curator.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	states, err := settingsStates(cfg, db, nil, quietLogger())(ctx)
+	if err != nil {
+		t.Fatalf("settingsStates: %v", err)
+	}
+
+	const key = "vpn_required"
+	state := states[key]
+	if state.Value != "true" {
+		t.Errorf("%s = %q with nothing stored, want \"true\" — VPN_REQUIRED defaults to on (D27), "+
+			"so an empty value draws the kill switch OFF while it is being enforced", key, state.Value)
+	}
+	if state.PendingChange {
+		t.Errorf("%s reports a pending change; an immediate setting has nothing pending", key)
+	}
+
+	// And it stays honest once something IS stored.
+	if err := db.SetSettings(ctx, map[string]string{key: "false"}, nil); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	states, err = settingsStates(cfg, db, nil, quietLogger())(ctx)
+	if err != nil {
+		t.Fatalf("settingsStates: %v", err)
+	}
+	if got := states[key].Value; got != "false" {
+		t.Errorf("%s = %q after storing false, want \"false\"", key, got)
+	}
+	if states[key].PendingChange {
+		t.Error("an immediate setting reported a pending change after a write; it is already live")
+	}
+}
+
+// TestTheKillSwitchIsReadLiveRatherThanAtStartUp. The holder is what makes
+// vpn_required immediate mean anything: a write has to change what the next
+// dispatch does, without a restart.
+func TestTheKillSwitchIsReadLiveRatherThanAtStartUp(t *testing.T) {
+	clearSettingsEnv(t)
+
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "curator.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	enforcement := newVPNEnforcement(cfg, db, nil, quietLogger())
+
+	if !enforcement.Enforcing() {
+		t.Fatal("enforcement is off at start-up with nothing stored; VPN_REQUIRED defaults to true")
+	}
+
+	if err := db.SetSettings(ctx, map[string]string{"vpn_required": "false"}, nil); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if !enforcement.Enforcing() {
+		t.Error("the write took effect before Reload; the holder is reading the table per call")
+	}
+	if err := enforcement.Reload(ctx); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if enforcement.Enforcing() {
+		t.Error("enforcement is still on after the setting was cleared and reloaded")
+	}
+
+	// Back on, and — the part that matters — an EMPTY row must resolve to the
+	// default rather than to ParseBool("") == false. Clearing the setting is how
+	// somebody returns to the default, and it must not silently unprotect them.
+	if err := db.SetSettings(ctx, nil, []string{"vpn_required"}); err != nil {
+		t.Fatalf("clear settings: %v", err)
+	}
+	if err := enforcement.Reload(ctx); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if !enforcement.Enforcing() {
+		t.Error("clearing vpn_required left enforcement OFF; it must resolve through config.Load, " +
+			"where an absent value keeps the documented default of true, not through the stored string")
+	}
 }
