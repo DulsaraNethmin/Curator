@@ -266,8 +266,20 @@ func run() error {
 		if engine, guard, err = startEngine(cfg, tunnel, indexerHTTP, log); err != nil {
 			return err
 		}
-		defer engine.Close()
-		torrents = engine
+		// Nil when VPN_REQUIRED is on and no tunnel came up: startEngine builds
+		// no engine AT ALL rather than one bound to the host, so there is
+		// nothing to close and nothing to poll.
+		//
+		// The guard around the assignment is the load-bearing half, and it is
+		// the trap the var block above already names: a nil *engine.Engine
+		// assigned into download.TorrentClient is a non-nil interface holding a
+		// nil pointer, so every `torrents != nil` in this file — the poller, the
+		// resume, the busy check, the settings probe — would pass and then
+		// dereference it.
+		if engine != nil {
+			defer engine.Close()
+			torrents = engine
+		}
 
 	case cfg.DownloadsConfigured():
 		client := qbit.New(cfg.QBitURL, cfg.QBitUser, cfg.QBitPass, indexerHTTP).
@@ -968,14 +980,32 @@ func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client
 	case tunnel != nil:
 		network = tunnel
 		guard = download.Guard(vpn.Tunnelled(tunnel, cfg.VPNIPCheckURL, httpClient, 0, log))
+
 	case cfg.VPNRequired:
-		// Not a startup failure: the library, search and the whole UI have
-		// nothing to do with the tunnel, and the screen that will configure one
-		// in phase 7 has to be reachable. Only dispatch is refused, and it says
-		// which variable would fix it.
-		guard = download.Guard(vpn.Required())
-		log.Warn("no VPN is configured and VPN_REQUIRED is true: downloads are refused until VPN_CONFIG is set, " +
-			"or VPN_REQUIRED=false")
+		// No engine at all, and this is a return rather than a `guard = ...`
+		// falling through to engine.New below.
+		//
+		// engine.New runs bindConfig only when it is given a Network
+		// (engine.go, the `if cfg.Network != nil` branch), so building an engine
+		// here left DisableTCP, DisableUTP and NoDHT all FALSE. That is not a
+		// degraded engine, it is the opposite of the one this branch exists to
+		// refuse: anacrolix opens its own host sockets and runs a DHT NODE on
+		// the household connection, announcing itself, on every boot, with the
+		// kill switch reading "on" and no magnet dispatched. The guard refuses
+		// dispatches; it never stopped that.
+		//
+		// A nil torrent client is already a supported state (see the var block
+		// in run): dispatch reports itself unconfigured and names VPN_CONFIG,
+		// which is the same posture an unset QBIT_USER has had since phase 3.
+		//
+		// Not a startup failure either, for the reason this comment used to
+		// give: the library, search and the whole UI have nothing to do with the
+		// tunnel, and the settings screen that configures one has to be
+		// reachable.
+		log.Warn("no VPN is configured and VPN_REQUIRED is true: no torrent engine has been started at all, " +
+			"and downloads are refused until VPN_CONFIG is set, or VPN_REQUIRED=false")
+		return nil, download.Guard(vpn.Required()), nil
+
 	default:
 		log.Warn("VPN_REQUIRED=false: the embedded engine will download over this machine's own connection")
 	}

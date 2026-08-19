@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -245,5 +248,180 @@ func TestRequiredNamesTheVariable(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %q, want it to mention %s", err, want)
 		}
+	}
+}
+
+// fakeTunnel drives Tunnelled without a WireGuard device. It counts exit checks,
+// because the whole question about the cache is how many of them happen.
+type fakeTunnel struct {
+	status   Status
+	err      error
+	checks   int
+	failWith error
+}
+
+func (f *fakeTunnel) Status() (Status, error) { return f.status, f.err }
+
+func (f *fakeTunnel) CheckExit(context.Context, string, *http.Client) (string, error) {
+	f.checks++
+	if f.failWith != nil {
+		return "", f.failWith
+	}
+	return "203.0.113.9", nil
+}
+
+// TestAStaleHandshakeInvalidatesACachedPass is the ten-minute hole.
+//
+// The cache returned before reading the device, so one good answer bought ten
+// minutes in which a dispatch verified NOTHING — not the exit address, and not
+// the free in-process read of whether the far end was still there. A tunnel that
+// died a minute after the first download dispatched the next nine unprotected.
+func TestAStaleHandshakeInvalidatesACachedPass(t *testing.T) {
+	now := time.Now()
+	tunnel := &fakeTunnel{status: Status{Endpoint: "sg701:51820", LastHandshake: now}}
+	guard := Tunnelled(tunnel, "http://example.invalid", nil, time.Hour, quiet())
+
+	if err := guard(context.Background()); err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	if tunnel.checks != 1 {
+		t.Fatalf("exit checks = %d after the first dispatch, want 1", tunnel.checks)
+	}
+
+	// Second dispatch, tunnel still healthy, well inside the TTL. This one
+	// SHOULD be cached — the whole point of the cache is that dispatching six
+	// films is not six round trips.
+	if err := guard(context.Background()); err != nil {
+		t.Fatalf("second dispatch: %v", err)
+	}
+	if tunnel.checks != 1 {
+		t.Errorf("exit checks = %d, want the cache to have answered the second dispatch", tunnel.checks)
+	}
+
+	// Now the far end goes away. Still inside the one-hour TTL, and the
+	// handshake is now older than REJECT_AFTER_TIME.
+	tunnel.status.LastHandshake = now.Add(-HandshakeStale - time.Minute)
+	tunnel.failWith = errors.New("the tunnel is not carrying traffic")
+
+	if err := guard(context.Background()); err == nil {
+		t.Error("a dispatch passed on a cached answer with a handshake older than REJECT_AFTER_TIME; " +
+			"the cache is being consulted before the device is read")
+	}
+	if tunnel.checks != 2 {
+		t.Errorf("exit checks = %d, want the stale handshake to have forced a re-prove", tunnel.checks)
+	}
+}
+
+// TestAnIdleTunnelWithNoKeepaliveIsStillDispatchable is the other side, and it
+// is the one that would break working installs if Fresh were made a refusal.
+//
+// A provider config without PersistentKeepalive leaves an unused tunnel with a
+// handshake hours old. It is not dead: the first dial forces a rekey and it
+// succeeds. Handshaken stays the refusal; Fresh only invalidates the cache.
+func TestAnIdleTunnelWithNoKeepaliveIsStillDispatchable(t *testing.T) {
+	tunnel := &fakeTunnel{status: Status{
+		Endpoint:      "sg701:51820",
+		LastHandshake: time.Now().Add(-4 * time.Hour),
+	}}
+
+	if err := Tunnelled(tunnel, "http://example.invalid", nil, 0, quiet())(context.Background()); err != nil {
+		t.Errorf("an idle tunnel refused a dispatch: %v — the first dial rekeys, and refusing here "+
+			"breaks every install whose provider config omits PersistentKeepalive", err)
+	}
+	if tunnel.checks != 1 {
+		t.Errorf("exit checks = %d, want the stale handshake to have been re-proved rather than refused", tunnel.checks)
+	}
+}
+
+// TestATunnelThatHasNeverHandshakenIsRefused pins that the two tests above did
+// not soften the actual refusal.
+func TestATunnelThatHasNeverHandshakenIsRefused(t *testing.T) {
+	tunnel := &fakeTunnel{status: Status{Endpoint: "sg701:51820"}}
+
+	err := Tunnelled(tunnel, "http://example.invalid", nil, 0, quiet())(context.Background())
+	if err == nil {
+		t.Fatal("a tunnel that has never handshaken allowed a dispatch")
+	}
+	if !strings.Contains(err.Error(), "sg701:51820") {
+		t.Errorf("err = %q, want it to name the endpoint that never answered", err)
+	}
+	if tunnel.checks != 0 {
+		t.Error("the exit address was checked through a tunnel that has never handshaken")
+	}
+}
+
+// TestAHandshakeHasAnAge covers the three pure readings, including the one that
+// is only meaningful in the negative: a tunnel that has never handshaken has no
+// age, and reporting one would draw "up 55 years ago" from a zero time.
+func TestAHandshakeHasAnAge(t *testing.T) {
+	now := time.Now()
+
+	never := Status{}
+	if never.Handshaken() || never.Fresh(now) || never.Age(now) != 0 {
+		t.Errorf("a tunnel that has never handshaken reports handshaken=%v fresh=%v age=%v",
+			never.Handshaken(), never.Fresh(now), never.Age(now))
+	}
+
+	for name, tc := range map[string]struct {
+		ago       time.Duration
+		wantFresh bool
+	}{
+		"just now":                  {ago: time.Second, wantFresh: true},
+		"inside REJECT_AFTER_TIME":  {ago: HandshakeStale - time.Second, wantFresh: true},
+		"outside REJECT_AFTER_TIME": {ago: HandshakeStale + time.Second, wantFresh: false},
+		"an hour ago":               {ago: time.Hour, wantFresh: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := Status{LastHandshake: now.Add(-tc.ago)}
+			if !s.Handshaken() {
+				t.Error("Handshaken = false; it must not acquire a time window, that is Fresh's job")
+			}
+			if got := s.Fresh(now); got != tc.wantFresh {
+				t.Errorf("Fresh = %v, want %v at age %v", got, tc.wantFresh, tc.ago)
+			}
+			if got := s.Age(now); got != tc.ago {
+				t.Errorf("Age = %v, want %v", got, tc.ago)
+			}
+		})
+	}
+
+	// 180 s and not a round number: REJECT_AFTER_TIME is when the far end stops
+	// accepting the keypair, which is what makes an older handshake no longer
+	// evidence about now.
+	if HandshakeStale != 3*time.Minute {
+		t.Errorf("HandshakeStale = %v, want REJECT_AFTER_TIME (180s) from the WireGuard protocol", HandshakeStale)
+	}
+}
+
+// TestTheTunnelKnowsWhichAddressesAreItsOwn is half of what lets the VPN page
+// say the engine's socket is inside the tunnel without either side asserting it.
+func TestTheTunnelKnowsWhichAddressesAreItsOwn(t *testing.T) {
+	tunnel := &Tunnel{addrs: []netip.Addr{
+		netip.MustParseAddr("10.5.0.2"),
+		netip.MustParseAddr("fc00:bbbb::1"),
+	}}
+
+	for name, tc := range map[string]struct {
+		addr net.Addr
+		want bool
+	}{
+		"the tunnel's v4 address": {addr: &net.UDPAddr{IP: net.ParseIP("10.5.0.2"), Port: 51820}, want: true},
+		"the tunnel's v6 address": {addr: &net.UDPAddr{IP: net.ParseIP("fc00:bbbb::1"), Port: 51820}, want: true},
+		"the host's LAN address":  {addr: &net.UDPAddr{IP: net.ParseIP("192.168.1.26"), Port: 51820}, want: false},
+		"loopback":                {addr: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 51820}, want: false},
+		"the wildcard":            {addr: &net.UDPAddr{Port: 51820}, want: false},
+		"no socket at all":        {addr: nil, want: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := tunnel.Owns(tc.addr); got != tc.want {
+				t.Errorf("Owns(%v) = %v, want %v", tc.addr, got, tc.want)
+			}
+		})
+	}
+
+	// netstack hands back a 4-in-6 form often enough that a straight comparison
+	// answers false for a socket that is unmistakably inside the tunnel.
+	if !tunnel.Owns(&net.UDPAddr{IP: net.ParseIP("::ffff:10.5.0.2"), Port: 51820}) {
+		t.Error("a 4-in-6 form of the tunnel's own address was not recognised")
 	}
 }

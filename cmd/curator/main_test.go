@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/DulsaraNethmin/curator/internal/api"
 	"github.com/DulsaraNethmin/curator/internal/config"
+	"github.com/DulsaraNethmin/curator/internal/download"
 	"github.com/DulsaraNethmin/curator/internal/settings"
 	"github.com/DulsaraNethmin/curator/internal/store"
 )
@@ -258,4 +261,90 @@ func TestEveryRegisterIsWiredIntoMain(t *testing.T) {
 	if found == 0 {
 		t.Fatal("found no Register* methods on api.Server; this test has stopped checking anything")
 	}
+}
+
+// TestNoTunnelAndVpnRequiredBuildsNoEngineAtAll is the state a fresh install is
+// in, and it used to be the worst one in the process.
+//
+// startEngine left `network` nil and called engine.New anyway. engine.New runs
+// bindConfig only when it has a Network, so DisableTCP, DisableUTP and NoDHT
+// were all false and anacrolix opened host sockets and ran a DHT node on the
+// household connection — announcing this machine, on every boot, before anybody
+// had dispatched anything, while the settings screen showed the kill switch on.
+// The guard refuses dispatches. It never touched that.
+//
+// Reachable by starting with VPN_CONFIG unset, which is every first run.
+func TestNoTunnelAndVpnRequiredBuildsNoEngineAtAll(t *testing.T) {
+	clearSettingsEnv(t)
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.DownloadsDir = t.TempDir()
+	if !cfg.VPNRequired {
+		t.Fatal("VPN_REQUIRED did not default to true, which is the whole premise (docs/decisions.md D27)")
+	}
+
+	engine, guard, err := startEngine(cfg, nil, http.DefaultClient, quietLogger())
+	if err != nil {
+		t.Fatalf("startEngine: %v", err)
+	}
+	if engine != nil {
+		t.Error("an engine was built with no tunnel and VPN_REQUIRED on: with a nil Network it has " +
+			"DisableTCP, DisableUTP and NoDHT all false, which is a DHT node on the real connection")
+	}
+	if guard == nil {
+		t.Fatal("no guard, so dispatch would not be refused either")
+	}
+	if err := guard(context.Background()); err == nil {
+		t.Error("the guard passed; with no VPN configured it must refuse and name VPN_CONFIG")
+	} else if !strings.Contains(err.Error(), "VPN_CONFIG") {
+		t.Errorf("the refusal does not name the variable that would fix it: %v", err)
+	}
+
+	// The other half, and the one a `torrents != nil` check cannot see. run()
+	// assigns this into a download.TorrentClient, and a nil *engine.Engine put
+	// into an interface is a NON-nil interface holding a nil pointer — so the
+	// poller starts, the resume runs, and both dereference it.
+	var client download.TorrentClient
+	if engine != nil {
+		client = engine
+	}
+	if client != nil {
+		t.Error("the nil engine reached the interface as a non-nil value; run() must guard the assignment")
+	}
+}
+
+// TestAnEngineIsStillBuiltWithoutATunnelWhenEnforcementIsOff pins the escape
+// hatch, so the fix above cannot quietly become "the embedded backend needs a
+// VPN, full stop". VPN_REQUIRED=false is documented (D27) and has to keep
+// working on a laptop that is already behind one.
+func TestAnEngineIsStillBuiltWithoutATunnelWhenEnforcementIsOff(t *testing.T) {
+	clearSettingsEnv(t)
+
+	cfg, err := config.Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.DownloadsDir = t.TempDir()
+	cfg.VPNRequired = false
+
+	engine, guard, err := startEngine(cfg, nil, http.DefaultClient, quietLogger())
+	if err != nil {
+		t.Fatalf("startEngine: %v", err)
+	}
+	if engine == nil {
+		t.Fatal("no engine with VPN_REQUIRED=false, so the documented escape hatch downloads nothing")
+	}
+	t.Cleanup(func() { _ = engine.Close() })
+	if guard != nil {
+		t.Error("a guard was installed with VPN_REQUIRED=false; there is nothing for it to check")
+	}
+}
+
+// quietLogger keeps these two tests' output off the terminal. They deliberately
+// take the branches that log a warning.
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

@@ -32,12 +32,33 @@ func Required() Guard {
 // Tunnelled checks that the tunnel is up and that it changes where traffic
 // leaves from.
 //
-// The answer is cached, because it is a property of the tunnel rather than of
-// the request: dispatching six films should not make six round trips to an
-// IP-echo service, and a tunnel that was proved good a minute ago is still
+// The EXPENSIVE half is cached, because it is a property of the tunnel rather
+// than of the request: dispatching six films should not make six round trips to
+// an IP-echo service, and an exit address proved good a minute ago is still
 // good. A failure is NOT cached — that one is worth asking again, because it is
 // what somebody is actively trying to fix.
-func Tunnelled(t *Tunnel, checkURL string, host *http.Client, ttl time.Duration, log *slog.Logger) Guard {
+//
+// The device read is not cached, and that is this function's own bug fixed
+// rather than a refinement. The cache used to return BEFORE reading status, so
+// for ten minutes after one good answer a dispatch verified nothing whatsoever —
+// not the exit address, and not even the free in-process read of whether the
+// far end is still there. A tunnel that died at minute one dispatched happily
+// until minute ten. The read costs one IPC to a device in this process; there
+// was never anything to save by skipping it.
+// tunnelState is the half of *Tunnel a dispatch check needs: what the device
+// says about itself, and where traffic actually comes out.
+//
+// An interface rather than the concrete type so that the CACHING can be tested
+// at all. *Tunnel needs a real WireGuard device and a real endpoint, so with it
+// hard-wired the only reachable assertions were on a live tunnel — which is why
+// the ten-minute hole below survived from phase 6 to here without a test ever
+// going near it.
+type tunnelState interface {
+	Status() (Status, error)
+	CheckExit(ctx context.Context, url string, host *http.Client) (string, error)
+}
+
+func Tunnelled(t tunnelState, checkURL string, host *http.Client, ttl time.Duration, log *slog.Logger) Guard {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -52,9 +73,6 @@ func Tunnelled(t *Tunnel, checkURL string, host *http.Client, ttl time.Duration,
 	return func(ctx context.Context) error {
 		mu.Lock()
 		defer mu.Unlock()
-		if time.Now().Before(goodTill) {
-			return nil
-		}
 
 		status, err := t.Status()
 		if err != nil {
@@ -62,6 +80,19 @@ func Tunnelled(t *Tunnel, checkURL string, host *http.Client, ttl time.Duration,
 		}
 		if !status.Handshaken() {
 			return fmt.Errorf("the VPN tunnel has never completed a handshake with %s", status.Endpoint)
+		}
+
+		// Handshaken above, Fresh here, and they are not the same test.
+		//
+		// Handshaken is the refusal: a tunnel that has never worked cannot carry
+		// anything. Fresh only invalidates the cache — a handshake older than
+		// REJECT_AFTER_TIME is one the far end would no longer accept traffic
+		// under, so whatever the exit address was ten minutes ago is not
+		// evidence about now. It must NOT refuse on its own: an idle tunnel with
+		// no PersistentKeepalive is legitimately stale, and the first dial
+		// through it forces a rekey that succeeds.
+		if status.Fresh(time.Now()) && time.Now().Before(goodTill) {
+			return nil
 		}
 
 		if _, err := t.CheckExit(ctx, checkURL, host); err != nil {

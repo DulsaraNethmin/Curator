@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	dht "github.com/anacrolix/dht/v2"
 	anacrolix "github.com/anacrolix/torrent"
 )
 
@@ -27,6 +28,10 @@ const udpTracker = "&tr=udp%3A%2F%2Fnot-a-real-host.invalid%3A6969%2Fannounce"
 type v4only struct {
 	mu    sync.Mutex
 	asked []string
+}
+
+func (n *v4only) LookupHost(context.Context, string) ([]string, error) {
+	return nil, errors.New("v4only resolves nothing")
 }
 
 func (n *v4only) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -122,6 +127,183 @@ func TestTheClientIsToldWhichFamiliesTheNetworkCarries(t *testing.T) {
 	}
 }
 
+// TestTheEngineOpensNoSocketOutsideTheTunnel is the config-level half of the
+// kill switch, and it is three separate leaks in one assertion.
+//
+// Each of the three was set only under cfg.hermetic, or not at all, so the TEST
+// configuration was hardened in ways the production one never was and no
+// existing test could have failed. That is the shape of the bug, not a detail
+// of it: reintroduce any one line and this goes red.
+func TestTheEngineOpensNoSocketOutsideTheTunnel(t *testing.T) {
+	network := &resolver{answer: []string{"192.0.2.1"}}
+	cc := clientConfig(context.Background(), Config{
+		DataDir: t.TempDir(), Category: "curator", Network: network, Log: quiet(),
+	}, t.TempDir())
+
+	if !cc.DisableWebtorrent {
+		t.Error("DisableWebtorrent is false: a ws:// tracker in a magnet starts a websocket announcer " +
+			"with a dialer of its own, and WebRTC data channels then move PAYLOAD outside the tunnel")
+	}
+	if !cc.NoDefaultPortForwarding {
+		t.Error("NoDefaultPortForwarding is false: the client runs upnp.Discover, which is SSDP multicast " +
+			"out of the host's real interfaces")
+	}
+	if !cc.DisableTCP || !cc.DisableUTP || !cc.NoDHT {
+		t.Errorf("the client can open a socket of its own: DisableTCP=%v DisableUTP=%v NoDHT=%v",
+			cc.DisableTCP, cc.DisableUTP, cc.NoDHT)
+	}
+
+	// Not "is it non-nil" — the default is non-nil. anacrolix's own default
+	// resolves eight hostnames on the HOST, so the assertion has to be that this
+	// is not that one, and the only way to tell is to call it and see who was
+	// asked.
+	if cc.DhtStartingNodes == nil {
+		t.Fatal("DhtStartingNodes is nil")
+	}
+	if _, err := cc.DhtStartingNodes("udp")(); err != nil {
+		t.Fatalf("DhtStartingNodes: %v", err)
+	}
+	if len(network.lookups()) == 0 {
+		t.Error("the DHT bootstrap resolved nothing through the network, so it is still anacrolix's " +
+			"default and still asking the host's resolver")
+	}
+}
+
+// TestAHermeticEngineWithANetworkStillBootstrapsNowhere pins an ORDERING, which
+// is the only thing holding it up and is invisible at both call sites.
+//
+// cfg.hermetic empties DhtStartingNodes and bindConfig points it at the
+// network's resolver, and they are now two writes to one field. Run in the wrong
+// order a hermetic test that has a Network — TestDownloadThroughANetwork, over
+// plain loopback — bootstraps to router.bittorrent.com through the HOST and
+// announces the fixed test info hash to the real DHT, which is exactly what the
+// hermetic block has existed to prevent since T74. Nothing else fails when the
+// two lines are swapped: the download still completes, and the leak is silent.
+func TestAHermeticEngineWithANetworkStillBootstrapsNowhere(t *testing.T) {
+	network := &resolver{answer: []string{"192.0.2.1"}}
+	cc := clientConfig(context.Background(), Config{
+		DataDir: t.TempDir(), Category: "curator", Network: network, Log: quiet(), hermetic: true,
+	}, t.TempDir())
+
+	addrs, err := cc.DhtStartingNodes("udp")()
+	if err != nil || len(addrs) != 0 {
+		t.Errorf("a hermetic engine offered %d bootstrap nodes (err %v), want none", len(addrs), err)
+	}
+	if got := network.lookups(); len(got) != 0 {
+		t.Errorf("a hermetic engine resolved %v; hermetic must win over bindConfig, so it has to run after it", got)
+	}
+}
+
+// TestTheDhtBootstrapResolvesThroughTheTunnel is the positive half: every one of
+// dht's well-known entry points is asked of the network, and what comes back is
+// what the network said rather than what the host thinks.
+func TestTheDhtBootstrapResolvesThroughTheTunnel(t *testing.T) {
+	network := &resolver{answer: []string{"192.0.2.7"}}
+
+	addrs, err := dhtBootstrap(context.Background(), network, quiet())
+	if err != nil {
+		t.Fatalf("dhtBootstrap: %v", err)
+	}
+
+	asked := network.lookups()
+	if len(asked) != len(dht.DefaultGlobalBootstrapHostPorts) {
+		t.Errorf("asked the network for %d names, want %d: %v",
+			len(asked), len(dht.DefaultGlobalBootstrapHostPorts), asked)
+	}
+	for _, hostPort := range dht.DefaultGlobalBootstrapHostPorts {
+		host, _, err := net.SplitHostPort(hostPort)
+		if err != nil {
+			t.Fatalf("SplitHostPort %q: %v", hostPort, err)
+		}
+		if !slices.Contains(asked, host) {
+			t.Errorf("%s was never resolved through the network", host)
+		}
+	}
+
+	if len(addrs) != len(dht.DefaultGlobalBootstrapHostPorts) {
+		t.Fatalf("got %d bootstrap addresses, want %d", len(addrs), len(dht.DefaultGlobalBootstrapHostPorts))
+	}
+	// The port survives the round trip through the resolver, which is the part a
+	// naive rewrite loses: dht.libtorrent.org is on 25401 and two of them on
+	// 42069, not the 6881 the other five use.
+	ports := map[int]bool{}
+	for _, addr := range addrs {
+		if got := addr.IP().String(); got != "192.0.2.7" {
+			t.Errorf("bootstrap address %s, want the one the network answered", got)
+		}
+		ports[int(addr.Port())] = true
+	}
+	for _, want := range []int{6881, 25401, 42069} {
+		if !ports[want] {
+			t.Errorf("no bootstrap node on port %d; the port was lost resolving the host", want)
+		}
+	}
+}
+
+// TestTheDhtBootstrapNeverFallsBackToTheHost is the negative half, and it is the
+// one that matters: a tunnel whose config names no DNS server resolves nothing,
+// and the correct behaviour is to return nothing rather than to answer correctly
+// by asking the host.
+func TestTheDhtBootstrapNeverFallsBackToTheHost(t *testing.T) {
+	network := &resolver{fail: true}
+
+	addrs, err := dhtBootstrap(context.Background(), network, quiet())
+	if err == nil {
+		t.Error("a network that resolves nothing produced no error, so something answered")
+	}
+	if len(addrs) != 0 {
+		t.Errorf("got %d bootstrap addresses from a network that resolves nothing: %v", len(addrs), addrs)
+	}
+	if len(network.lookups()) != len(dht.DefaultGlobalBootstrapHostPorts) {
+		t.Errorf("asked for %d names, want all %d tried before giving up",
+			len(network.lookups()), len(dht.DefaultGlobalBootstrapHostPorts))
+	}
+}
+
+// bound is a network that listens on one named address and remembers which
+// socket it gave out, so a test can compare the engine's answer against the
+// thing itself rather than against a shape.
+type bound struct {
+	host string
+
+	mu       sync.Mutex
+	handedTo []string
+}
+
+func (b *bound) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return (&net.Dialer{}).DialContext(ctx, network, address)
+}
+
+func (b *bound) ListenPacket(_ context.Context, network, address string) (net.PacketConn, error) {
+	if network == "udp6" {
+		// v4-only, like every NordLynx config, so families tells the client the
+		// truth rather than this fake quietly answering both.
+		return nil, errors.New("bound has no udp6 address")
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		port = "0"
+	}
+	pc, err := net.ListenPacket("udp4", net.JoinHostPort(b.host, port))
+	if err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	b.handedTo = append(b.handedTo, pc.LocalAddr().String())
+	b.mu.Unlock()
+	return pc, nil
+}
+
+func (b *bound) LookupHost(context.Context, string) ([]string, error) {
+	return nil, errors.New("bound resolves nothing")
+}
+
+func (b *bound) handedOut() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.handedTo)
+}
+
 // refuses is a network that will not open anything — a tunnel that has been
 // closed under a running client, which is the case families cannot pre-empt.
 type refuses struct{}
@@ -134,6 +316,44 @@ func (refuses) DialContext(context.Context, string, string) (net.Conn, error) {
 
 func (refuses) ListenPacket(context.Context, string, string) (net.PacketConn, error) {
 	return nil, errRefused
+}
+
+func (refuses) LookupHost(context.Context, string) ([]string, error) {
+	return nil, errRefused
+}
+
+// resolver is a Network that answers lookups and records them, which is the
+// whole seam TestTheDhtBootstrapResolvesThroughTheTunnel needs. It refuses to
+// dial or listen: a bootstrap must be resolvable without either.
+type resolver struct {
+	mu     sync.Mutex
+	asked  []string
+	answer []string
+	fail   bool
+}
+
+func (r *resolver) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errRefused
+}
+
+func (r *resolver) ListenPacket(context.Context, string, string) (net.PacketConn, error) {
+	return nil, errRefused
+}
+
+func (r *resolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.asked = append(r.asked, host)
+	if r.fail {
+		return nil, errors.New("the tunnel's resolver answered nothing")
+	}
+	return r.answer, nil
+}
+
+func (r *resolver) lookups() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.asked)
 }
 
 // TestTheTrackerHookNeverReturnsAnError is the guard, and it is the test that
@@ -170,4 +390,44 @@ func TestTheTrackerHookNeverReturnsAnError(t *testing.T) {
 	if pc.LocalAddr() == nil {
 		t.Error("LocalAddr is nil; anacrolix logs it before the first read")
 	}
+}
+
+// TestTheBindingIsReadOffTheEngineRatherThanClaimed is the fact the VPN page's
+// "inside the tunnel" badge is drawn from.
+//
+// The engine does not keep the Network it was handed, so there is nothing here
+// that could report what it was CONFIGURED with instead of what it got. Paired
+// with vpn.Tunnel.Owns, two independent reads have to agree before anything on
+// screen says the socket is inside the tunnel — neither of them a sentence
+// somebody wrote next to the wiring.
+func TestTheBindingIsReadOffTheEngineRatherThanClaimed(t *testing.T) {
+	t.Run("with a network, the address is the one the network handed out", func(t *testing.T) {
+		// Bound to an explicit address rather than the wildcard, which is what a
+		// real tunnel does: vpn.Tunnel.ListenPacket always fills the local IP in,
+		// because a nil one makes gvisor panic. That is also what makes the
+		// answer comparable against Tunnel.Owns.
+		network := &bound{host: "127.0.0.1"}
+		e := start(t, Config{DataDir: t.TempDir(), Category: "curator", Network: network})
+
+		addr := e.Binding()
+		if addr == nil {
+			t.Fatal("no binding for an engine that was given a network")
+		}
+		// Membership, not equality: bindConfig's family probe opens and closes a
+		// socket of its own, so the network hands out more than one. The
+		// property that matters is that the engine's is among them — it holds
+		// nothing the network did not give it.
+		if handed := network.handedOut(); !slices.Contains(handed, addr.String()) {
+			t.Errorf("Binding = %s, which the network never handed out (it gave %v) — "+
+				"the engine is reporting a socket from somewhere other than its Network", addr, handed)
+		}
+	})
+
+	t.Run("with no network, there is no socket of our own to report", func(t *testing.T) {
+		e := start(t, Config{DataDir: t.TempDir(), Category: "curator"})
+
+		if addr := e.Binding(); addr != nil {
+			t.Errorf("Binding = %s for an engine with no Network; it holds no socket this package opened", addr)
+		}
+	})
 }

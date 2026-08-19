@@ -2,11 +2,13 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"time"
 
+	dht "github.com/anacrolix/dht/v2"
 	analog "github.com/anacrolix/log"
 	anacrolix "github.com/anacrolix/torrent"
 	"github.com/anacrolix/utp"
@@ -52,6 +54,9 @@ func listenTunnel(ctx context.Context, n Network) (*utp.Socket, error) {
 // that the tunnel's resolver answers them — a name looked up on the host is a
 // leak that says what is being downloaded before a single encrypted byte moves.
 //
+// The DHT bootstrap is the fourth, and it is not a dial hook because it is not a
+// dial: see dhtBootstrap.
+//
 // The address families are settled here too, and that is T56's fix rather than
 // a tidy-up: see families and trackerListenPacket.
 func bindConfig(ctx context.Context, cc *anacrolix.ClientConfig, n Network, log *slog.Logger) {
@@ -62,6 +67,9 @@ func bindConfig(ctx context.Context, cc *anacrolix.ClientConfig, n Network, log 
 	cc.HTTPDialContext = n.DialContext
 	cc.TrackerDialContext = n.DialContext
 	cc.TrackerListenPacket = trackerListenPacket(ctx, n, log)
+	cc.DhtStartingNodes = func(string) dht.StartingNodesGetter {
+		return func() ([]dht.Addr, error) { return dhtBootstrap(ctx, n, log) }
+	}
 
 	has4, has6 := families(ctx, n)
 	cc.DisableIPv4 = !has4
@@ -74,6 +82,62 @@ func bindConfig(ctx context.Context, cc *anacrolix.ClientConfig, n Network, log 
 		log.Info("the network has no IPv4 address, so IPv4 peers and udp4 tracker announces are off",
 			"why", "a udp4 announce would ask it for a socket it has no address to open")
 	}
+}
+
+// dhtBootstrap resolves the DHT's well-known entry points through the network
+// instead of through the host, and it is the leak with the longest reach.
+//
+// NoDHT above turns off the client's OWN dht server; attachNetwork then builds
+// one on the shared socket anyway, unconditionally, and that server reads
+// cc.DhtStartingNodes. Left at anacrolix's default (config.go:261) it calls
+// dht.GlobalBootstrapAddrs, which is ResolveHostPorts over a package-global
+// dnscache.Resolver on the HOST (dht/v2 dns.go:26-30) — eight lookups saying
+// this machine is running a BitTorrent client, on the resolver the tunnel exists
+// to bypass, refreshed by a goroutine every five minutes for as long as the
+// process lives. It is the same leak internal/vpn/tunnel.go already argues
+// against for trackers; the DHT was simply never given the same treatment.
+//
+// Replacing the func is what stops it completely rather than mostly: dht's
+// initDnsResolver is called only from ResolveHostPorts, so nothing here ever
+// constructs that resolver or starts its refresher.
+//
+// Returning nil rather than disabling it: a real magnet carries no peer list, so
+// with no bootstrap nodes a torrent has only its trackers. That is a slower cold
+// start, not a broken one, which is why a failure here is logged and survived
+// rather than fatal — and it is the honest behaviour for a tunnel whose config
+// names no DNS server, where DialContext cannot resolve a tracker hostname
+// either.
+func dhtBootstrap(ctx context.Context, n Network, log *slog.Logger) ([]dht.Addr, error) {
+	var addrs []dht.Addr
+	for _, hostPort := range dht.DefaultGlobalBootstrapHostPorts {
+		host, port, err := net.SplitHostPort(hostPort)
+		if err != nil {
+			// dht's own ResolveHostPorts panics here. These eight strings are a
+			// compile-time constant of a dependency, so this is unreachable
+			// today and is a skip rather than a panic if that ever changes.
+			continue
+		}
+		found, err := n.LookupHost(ctx, host)
+		if err != nil {
+			continue
+		}
+		for _, ip := range found {
+			udp, err := net.ResolveUDPAddr("udp", net.JoinHostPort(ip, port))
+			if err != nil {
+				continue
+			}
+			addrs = append(addrs, dht.NewAddr(udp))
+		}
+	}
+	if len(addrs) == 0 {
+		// One line, at the moment the DHT asks, naming the consequence rather
+		// than the failure: somebody whose downloads are slow to find peers can
+		// then see why without knowing what a bootstrap node is.
+		log.Warn("no DHT bootstrap node resolved through the tunnel, so this torrent will find peers only through its trackers",
+			"why", "the tunnel's resolver answered nothing; a wg config with no DNS line cannot resolve anything at all")
+		return nil, errors.New("engine: no DHT bootstrap node resolved through the network")
+	}
+	return addrs, nil
 }
 
 // families asks the network which address families it can actually listen on.

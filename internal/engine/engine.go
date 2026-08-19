@@ -55,6 +55,22 @@ import (
 type Network interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 	ListenPacket(ctx context.Context, network, address string) (net.PacketConn, error)
+
+	// LookupHost resolves a name on this network's own resolver.
+	//
+	// Dialing never needed it — a hostname handed to DialContext is resolved
+	// inside the tunnel already, which is what bindConfig's comment below means
+	// by "passed through rather than resolved here". The DHT bootstrap is the
+	// one caller that has only names and no dial to hang them on: it has to turn
+	// eight host:port strings into addresses BEFORE anything is dialled, and
+	// anacrolix's default does that on the host's resolver.
+	//
+	// It is a third method on this interface rather than a resolved list handed
+	// in by cmd/curator because the answer has to be LAZY. A tunnel that has not
+	// handshaken yet cannot resolve anything, and start-up is exactly when it
+	// has not; the DHT asks at bootstrap, which is later and is when the tunnel
+	// is up. It also makes a fake Network the whole seam a test needs.
+	LookupHost(ctx context.Context, host string) ([]string, error)
 }
 
 // Defaults. MaxConns and unverifiedBytes are the two memory levers: the spike
@@ -167,35 +183,19 @@ type Config struct {
 	hermetic bool
 }
 
-// New starts a torrent client.
+// clientConfig is everything the torrent client is told before it is built.
 //
-// With a Network, the client is built so that it CANNOT open a socket of its
-// own: DisableTCP, DisableUTP and NoDHT leave it with only the dialers and
-// listeners it is given, which is what makes the kill switch structural rather
-// than a setting somebody could turn off. The spike measured exactly that — zero
-// OS sockets opened by the client — and it is destroyed by one code path
-// falling back to net.Dial "just for trackers".
-func New(cfg Config) (*Engine, error) {
-	if strings.TrimSpace(cfg.DataDir) == "" {
-		return nil, errors.New("engine: DataDir is required")
-	}
-	dataDir, err := filepath.Abs(cfg.DataDir)
-	if err != nil {
-		return nil, fmt.Errorf("engine: data directory %q: %w", cfg.DataDir, err)
-	}
-	if err := os.MkdirAll(filepath.Join(dataDir, metainfoDir), dirMode); err != nil {
-		return nil, fmt.Errorf("engine: data directory %q: %w", dataDir, err)
-	}
-	if cfg.Log == nil {
-		cfg.Log = slog.Default()
-	}
-	if cfg.MaxConns <= 0 {
-		cfg.MaxConns = DefaultMaxConns
-	}
-	if cfg.StallAfter <= 0 {
-		cfg.StallAfter = DefaultStallAfter
-	}
-
+// It is a function of its own rather than forty lines inside New for one
+// reason: anacrolix keeps the ClientConfig on an unexported field and offers no
+// accessor, so there is no way to ask a running Client what it was configured
+// with. The only way to hold the PRODUCTION configuration to the kill switch is
+// for the test to build it the same way New does — and that means one function
+// with two callers, not a second copy in a test that agrees today and drifts
+// later. See TestTheEngineOpensNoSocketOutsideTheTunnel.
+//
+// cfg arrives already normalised by New: MaxConns, StallAfter and Log have their
+// defaults applied.
+func clientConfig(ctx context.Context, cfg Config, dataDir string) *anacrolix.ClientConfig {
 	cc := anacrolix.NewDefaultClientConfig()
 	cc.DataDir = dataDir
 	cc.Seed = true
@@ -225,12 +225,55 @@ func New(cfg Config) (*Engine, error) {
 	// that argues it, not in a flake fix. See docs/tasks/T74.
 	cc.Logger = cc.Logger.FilterLevel(anacrolixQuiet)
 
-	// Outside the Network branch below on purpose: bindConfig is the kill
-	// switch for a tunnelled engine and never runs for a nil Network, which is
-	// what every hermetic test builds.
+	// The two egress paths that are not a socket the client opens for peers, and
+	// are therefore not covered by bindConfig's DisableTCP/DisableUTP/NoDHT.
+	//
+	// They are set for EVERY engine — hermetic, tunnelled and untunnelled alike
+	// — because they were the shape of the leak: NoDefaultPortForwarding was set
+	// only under cfg.hermetic below, so the test configuration was hardened in a
+	// way production never was, and the tests could not have caught it.
+	//
+	// WebTorrent is the one that carries PAYLOAD outside the tunnel.
+	// startWebsocketAnnouncer builds a websocket.Dialer of its own
+	// (webtorrent/tracker-client.go:35) and consults none of the dialers
+	// bindConfig installs, and WebRTC data channels move pieces. A ws:// or
+	// wss:// tracker in a magnet is the whole trigger (torrent.go:2203); 1337x,
+	// YTS and TPB hand out udp://, so this has probably never fired. "Probably
+	// never" is not "cannot".
+	cc.DisableWebtorrent = true
+
+	// UPnP opens sockets on the host and can leave a mapping on the LAN router:
+	// client.go:414 runs `go cl.forwardPort()`, which is upnp.Discover, which is
+	// SSDP multicast out of every real interface. It is also pointless here —
+	// the listen port lives inside the netstack, so a mapping would forward the
+	// router's port to something no packet can reach.
+	cc.NoDefaultPortForwarding = true
+
+	// DisableWebseeds is deliberately NOT set beside them. Webseeds are plain
+	// HTTP through cc.HTTPDialContext (network.go), which is the tunnel, so they
+	// are bound rather than unbound and turning them off would cost a real
+	// source of bytes for nothing.
+
+	// The kill switch, when there is a network to bind to. It is inside this
+	// function rather than beside listenTunnel so that everything the client is
+	// told is told in one place and can be read in one place.
+	if cfg.Network != nil {
+		bindConfig(ctx, cc, cfg.Network, cfg.Log)
+	}
+
+	// Outside the Network branch on purpose — bindConfig is the kill switch for
+	// a tunnelled engine and never runs for a nil Network, which is what most
+	// hermetic tests build — and AFTER it on purpose, which is newer and is the
+	// half that bites.
+	//
+	// hermetic is a confinement, so it has to win over anything bindConfig
+	// installs. bindConfig now points DhtStartingNodes at the network's own
+	// resolver, and run in the other order a hermetic test that DOES have a
+	// Network — TestDownloadThroughANetwork, over loopback — would have had that
+	// overwrite the empty list below and bootstrap to router.bittorrent.com
+	// through the host after all. The two lines look independent and are not.
 	if cfg.hermetic {
 		cc.NoDHT = true
-		cc.NoDefaultPortForwarding = true
 		cc.ListenHost = anacrolix.LoopbackListenHost
 
 		// NoDHT alone is not enough, and this is the trap in it. With a Network,
@@ -245,6 +288,38 @@ func New(cfg Config) (*Engine, error) {
 		cc.DhtStartingNodes = func(string) dht.StartingNodesGetter {
 			return func() ([]dht.Addr, error) { return nil, nil }
 		}
+	}
+
+	return cc
+}
+
+// New starts a torrent client.
+//
+// With a Network, the client is built so that it CANNOT open a socket of its
+// own: DisableTCP, DisableUTP and NoDHT leave it with only the dialers and
+// listeners it is given, which is what makes the kill switch structural rather
+// than a setting somebody could turn off. The spike measured exactly that — zero
+// OS sockets opened by the client — and it is destroyed by one code path
+// falling back to net.Dial "just for trackers".
+func New(cfg Config) (*Engine, error) {
+	if strings.TrimSpace(cfg.DataDir) == "" {
+		return nil, errors.New("engine: DataDir is required")
+	}
+	dataDir, err := filepath.Abs(cfg.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("engine: data directory %q: %w", cfg.DataDir, err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataDir, metainfoDir), dirMode); err != nil {
+		return nil, fmt.Errorf("engine: data directory %q: %w", dataDir, err)
+	}
+	if cfg.Log == nil {
+		cfg.Log = slog.Default()
+	}
+	if cfg.MaxConns <= 0 {
+		cfg.MaxConns = DefaultMaxConns
+	}
+	if cfg.StallAfter <= 0 {
+		cfg.StallAfter = DefaultStallAfter
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -269,10 +344,9 @@ func New(cfg Config) (*Engine, error) {
 			return nil, err
 		}
 		e.socket = socket
-		bindConfig(ctx, cc, cfg.Network, cfg.Log)
 	}
 
-	client, err := anacrolix.NewClient(cc)
+	client, err := anacrolix.NewClient(clientConfig(ctx, cfg, dataDir))
 	if err != nil {
 		if e.socket != nil {
 			e.socket.Close()
@@ -537,6 +611,22 @@ func (e *Engine) DeleteTorrent(ctx context.Context, hash, requireCategory string
 		return fmt.Errorf("engine: removing the metainfo for %s: %w", ih.HexString(), err)
 	}
 	return nil
+}
+
+// Binding reports the address the engine's one socket actually holds, or nil
+// when it has none of its own because there was no Network to bind to.
+//
+// It is READ off the socket rather than remembered from the wiring, and that is
+// the entire value of it. The engine does not keep the Network it was given, so
+// there is nothing here that could report what it was configured with instead of
+// what it got: a caller pairs this with vpn.Tunnel.Owns and gets a fact neither
+// package asserted. "curator is bound to the tunnel" stops being a sentence in a
+// document and becomes two independent reads that agree.
+func (e *Engine) Binding() net.Addr {
+	if e.socket == nil {
+		return nil
+	}
+	return e.socket.Addr()
 }
 
 // Close stops the client and waits for the goroutines it started. Seeding ends
