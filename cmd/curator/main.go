@@ -979,7 +979,12 @@ func startEngine(cfg *config.Config, tunnel *vpn.Tunnel, httpClient *http.Client
 	switch {
 	case tunnel != nil:
 		network = tunnel
-		guard = download.Guard(vpn.Tunnelled(tunnel, cfg.VPNIPCheckURL, httpClient, 0, log))
+		// One Checker, so that whatever proves the tunnel for a dispatch is the
+		// same thing that will prove it on a timer: two implementations of "is
+		// this tunnel good" would eventually disagree, and then the screen and
+		// the refusal say different things about the same tunnel.
+		guard = download.Guard(vpn.Tunnelled(
+			vpn.NewChecker(tunnel, cfg.VPNIPCheckURL, httpClient, 0, log)))
 
 	case cfg.VPNRequired:
 		// No engine at all, and this is a return rather than a `guard = ...`
