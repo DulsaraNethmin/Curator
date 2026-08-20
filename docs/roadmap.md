@@ -21,7 +21,7 @@ install a stranger can run (9). The cutover moved to the end, where it belongs, 
 | **6** | Own the download — the torrent engine and a WireGuard tunnel move inside the binary | **done** |
 | **7** | Settings that write — writable config, secrets at rest, one optional password | **done** |
 | **8** | Watch it here — direct play, remux, Open in Jellyfin | **done** |
-| **9** | One command, and a way to watch on the TV — the image, the release, the bundle | **done** except [T51](tasks/T51-documents.md) |
+| **9** | One command, and a way to watch on the TV — the image, the release, the bundle | **done** |
 | **10** | Cutover: run alongside, prove parity, remove | **done** — executed 2026-08-18 |
 
 `make status` derives this table from the repository rather than from a list somebody has to remember
@@ -192,8 +192,11 @@ Jellyfin and minter are **opt-in profiles**, because a media server nobody asked
 `up -d` is the shape this bundle was built to refuse
 ([D34](decisions.md#d34--curator-provisions-a-jellyfin-it-brought-up-and-never-rewrites-one-somebody-is-already-watching)).
 
-**Built, and this document's own honesty check.** [T51](tasks/T51-documents.md) — the documents,
-including this line — is the last task in the project.
+**Done.** [T51](tasks/T51-documents.md) — the documents, including this line — was this document's
+own honesty check, and it shipped on 2026-08-18: the repository and its ghcr package are public,
+`0.2.0` is published, and the quickstart was run from an empty directory against an anonymous pull
+**before** it was written down. It was called "the last task in the project" here for two days after
+it landed, which is the failure mode a document about honesty is most exposed to.
 
 ## Phase 10 — Cutover: run alongside, prove parity, remove
 
