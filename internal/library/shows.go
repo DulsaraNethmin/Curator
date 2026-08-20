@@ -1,7 +1,10 @@
 package library
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -87,4 +90,137 @@ func EpisodeName(title string, year, season, episode int, ext string) (string, e
 		return "", BadTitle{Title: title, Reason: fmt.Sprintf("%q is not a video extension", ext)}
 	}
 	return fmt.Sprintf("%s - S%02dE%02d%s", folder, season, episode, ext), nil
+}
+
+// Show is one library folder that holds episodes. It is Movie's counterpart and
+// the field names mirror it deliberately, because since T88 both become a row
+// in the same table with its media type stated.
+//
+// SizeBytes carries Movie's invariant unchanged: it is the size of files that
+// CLEARED the picker's floor, so `size_bytes > 0` means *something here plays*
+// rather than *a folder exists* (docs/decisions.md D33).
+//
+// Episodes counts DISTINCT (season, episode) pairs while SizeBytes sums every
+// file, and the asymmetry is what a repack does to a library: a season holding
+// both "S01E01.mkv" and the repack beside it really does occupy both files'
+// bytes, but it is still one episode, and a count that said two would tell a
+// person a season is more complete than it is.
+type Show struct {
+	LibraryPath string `json:"library_path"`
+	Title       string `json:"title"`
+	Year        int    `json:"year"`
+	SizeBytes   int64  `json:"size_bytes"`
+	Episodes    int    `json:"episodes"`
+	Status      string `json:"status"`
+}
+
+// ScanShows walks a television library root and returns one Show per folder
+// that holds at least one episode, plus every folder it did not record and why,
+// both ordered by folder name.
+//
+// It is ScanWith for the other media type, and every rule is the same rule for
+// the same reason:
+//
+//   - A folder with no episode in it is NOT a show (docs/decisions.md D33). The
+//     row goes; the folder is left exactly where it is.
+//   - Hidden entries and non-directories are ignored silently — macOS scatters
+//     .DS_Store everywhere and it is noise, not a folder needing attention.
+//     Symlinked show folders are followed, a dangling one is reported.
+//   - A failing ReadDir of ROOT is FATAL, unlike a failing read of one folder
+//     inside it. That asymmetry is load-bearing: an unmounted library reads as
+//     zero folders and the caller prunes a row per folder it did not see, so
+//     this error is what stops a loose cable emptying the television half of
+//     the database.
+//
+// opts is taken rather than defaulted for FeatureOpts' own reason — a test
+// lowers the floor instead of writing 50 MiB — and PRODUCTION PASSES THE ZERO
+// VALUE. The 50 MiB floor is inherited unchanged from the film picker, which is
+// what keeps a release's 3-8 MB sample out of a season, and is worth knowing
+// about at the bottom end: an episode genuinely smaller than 50 MiB is not
+// recorded, and would be reported as a folder with nothing in it.
+func ScanShows(root string, opts FeatureOpts) ([]Show, []Skipped, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, nil, fmt.Errorf("scan %s: %w", root, err)
+	}
+
+	shows := make([]Show, 0, len(entries))
+	var skipped []Skipped
+
+	// os.ReadDir sorts by filename, so two scans of an unchanged library
+	// produce identical slices.
+	for _, entry := range entries {
+		name := entry.Name()
+		if isHidden(name) {
+			continue
+		}
+
+		path := filepath.Join(root, name)
+		isDir, err := isDirectory(root, entry)
+		if err != nil {
+			// A dangling symlink is a fact about the disk, not a reason to
+			// abandon the rest of the library.
+			skipped = append(skipped, Skipped{Name: name, Path: path, Reason: err.Error()})
+			continue
+		}
+		if !isDir {
+			continue
+		}
+
+		title, year, ok := ParseFolder(name)
+		if !ok {
+			skipped = append(skipped, Skipped{
+				Name: name, Path: path, Reason: `does not match "Title (Year)"`,
+			})
+			continue
+		}
+
+		episodes, err := FindEpisodes(path, opts)
+		switch {
+		case err == nil:
+			shows = append(shows, newShow(path, title, year, episodes))
+		case errors.Is(err, ErrNoVideo):
+			skipped = append(skipped, Skipped{
+				Name: name, Path: path, NoMedia: true, Reason: "no episode in it",
+			})
+		case errors.Is(err, ErrNoEpisode):
+			// Still NoMedia, because the folder WAS read and what is in it is
+			// not an episode of anything: the row goes. The reason says which
+			// of the two emptinesses it was, because "there is video here that
+			// nothing can file" is a sentence somebody can act on and "no
+			// episode in it" is not.
+			skipped = append(skipped, Skipped{
+				Name: name, Path: path, NoMedia: true,
+				Reason: "video in it, but nothing named like an episode",
+			})
+		default:
+			// NOT "no episode" — "could not tell". Only a positive finding
+			// removes a row, and the whole safety argument for pruning is that
+			// these two are never confused (D33): an unreadable folder is what
+			// an unplugged disk looks like. Continuing rather than aborting is
+			// the same posture the dangling symlink above gets.
+			skipped = append(skipped, Skipped{Name: name, Path: path, Reason: err.Error()})
+		}
+	}
+
+	return shows, skipped, nil
+}
+
+// newShow sums what the picker found. See Show for why the bytes and the count
+// are taken over different things.
+func newShow(path, title string, year int, episodes []Episode) Show {
+	var size int64
+	distinct := make(map[[2]int]struct{}, len(episodes))
+	for _, e := range episodes {
+		size += e.Size
+		distinct[[2]int{e.Season, e.Episode}] = struct{}{}
+	}
+	return Show{
+		LibraryPath: path,
+		Title:       title,
+		Year:        year,
+		SizeBytes:   size,
+		Episodes:    len(distinct),
+		Status:      StatusImported,
+	}
 }
