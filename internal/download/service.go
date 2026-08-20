@@ -160,10 +160,14 @@ func (e NotCompleted) Unwrap() error { return ErrNotCompleted }
 type ManualImporter interface {
 	Import(ctx context.Context, t torrent.Torrent, d store.Download) (store.Movie, error)
 
-	// RemoveFromLibrary deletes a movie's folder. It is the importer's because
-	// the importer created it and holds LIBRARY_MOVIES, which is what makes its
-	// containment check meaningful (docs/decisions.md D19).
-	RemoveFromLibrary(libraryPath string) error
+	// RemoveFromLibrary deletes a title's folder. It is the importer's because
+	// the importer created it and holds both library roots, which is what makes
+	// its containment check meaningful (docs/decisions.md D19).
+	//
+	// The media type is passed rather than inferred because there are two roots
+	// since T93, and checking a show against LIBRARY_MOVIES is how a delete used
+	// to take the rows and leave the whole show on disk.
+	RemoveFromLibrary(mediaType, libraryPath string) error
 }
 
 // Request is one dispatch: the release to grab, and the film it is for.
@@ -483,7 +487,7 @@ func (s *Service) DeleteMovie(ctx context.Context, id int64) (Deletion, error) {
 	}
 
 	// 2. Our own hardlink and the folder holding it.
-	if err := s.importer.RemoveFromLibrary(report.LibraryPath); err != nil {
+	if err := s.importer.RemoveFromLibrary(movie.MediaType, report.LibraryPath); err != nil {
 		if !errors.Is(err, library.ErrOutsideRoot) {
 			return Deletion{}, fmt.Errorf("delete movie %d: %w", id, err)
 		}

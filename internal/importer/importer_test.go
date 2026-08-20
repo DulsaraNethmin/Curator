@@ -135,7 +135,7 @@ func TestImportPrefersTheLargestAndReportsTheOthers(t *testing.T) {
 func TestImportRejectsATitleThatIsNotAName(t *testing.T) {
 	for _, title := range []string{"../../etc/cron.d", "Movies/Evil", "..", ".", `back\slash`} {
 		h := newHarness(t)
-		h.store.movies[1] = store.Movie{ID: 1, Title: title, Year: 2014}
+		h.store.movies[1] = store.Movie{ID: 1, Title: title, Year: 2014, MediaType: store.MediaTypeMovie}
 		content := h.download("release", "feature.mkv")
 
 		if _, err := h.importer.Import(context.Background(), completed(content), h.dl); err == nil {
@@ -616,7 +616,8 @@ func TestRefreshIsOncePerCallAndOnlyAfterAnImport(t *testing.T) {
 
 	// Three imports in one tick, then one Refresh: one scan, not three.
 	for i, name := range []string{"a", "b", "c"} {
-		h.store.movies[int64(i+1)] = store.Movie{ID: int64(i + 1), Title: "Film " + name, Year: 2014}
+		h.store.movies[int64(i+1)] = store.Movie{
+			ID: int64(i + 1), Title: "Film " + name, Year: 2014, MediaType: store.MediaTypeMovie}
 		content := h.download("release-"+name, "feature.mkv")
 		if _, err := h.importer.Import(ctx, completed(content), store.Download{MovieID: int64(i + 1), TorrentHash: testHash}); err != nil {
 			t.Fatalf("Import %s: %v", name, err)
@@ -680,39 +681,64 @@ type harness struct {
 	root      string
 	downloads string
 	library   string
+	tv        string
 	store     *fakeStore
 	importer  *Importer
 	logs      *bytes.Buffer
 	dl        store.Download
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessWithTV(t, true) }
+
+// newHarnessWithTV builds the importer with or without a television root, which
+// is the LIBRARY_TV opt-in as the importer sees it. The directory is created
+// either way; what changes is whether the Importer was told about it, because
+// that is the only thing an unset LIBRARY_TV changes.
+func newHarnessWithTV(t *testing.T, television bool) *harness {
 	t.Helper()
 	root := t.TempDir()
 	downloads := filepath.Join(root, "downloads")
 	lib := filepath.Join(root, "library", "movies")
-	for _, dir := range []string{downloads, lib} {
+	tv := filepath.Join(root, "library", "tv")
+	for _, dir := range []string{downloads, lib, tv} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", dir, err)
 		}
 	}
 
+	// media_type is set on the fixture rather than left empty, and the importer
+	// refuses a row without one: the column is NOT NULL DEFAULT 'movie' and
+	// validated on every write, so an empty value is a bug or a hand-edited
+	// database and never something to file with the films (docs/decisions.md D48).
 	st := &fakeStore{movies: map[int64]store.Movie{
-		1: {ID: 1, Title: "Interstellar", Year: 2014},
+		1: {ID: 1, Title: "Interstellar", Year: 2014, MediaType: store.MediaTypeMovie},
 	}}
 	logs := &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
+	roots := Roots{Movies: lib}
+	if television {
+		roots.TV = tv
+	}
+
 	// Paths.Curator is empty: the fixtures are real paths on this machine, which
 	// is the verbatim case. Translation has its own table test.
-	im := New(st, lib, nil, log)
+	im := New(st, roots, nil, log)
 	im.now = func() time.Time { return importAt }
 
 	return &harness{
-		t: t, root: root, downloads: downloads, library: lib,
+		t: t, root: root, downloads: downloads, library: lib, tv: tv,
 		store: st, importer: im, logs: logs,
 		dl: store.Download{MovieID: 1, TorrentHash: testHash},
 	}
+}
+
+// show replaces the fixture row with a television one, so the same harness
+// imports a show. The title is Severance because that is the release phase 11
+// measured against the live indexers.
+func (h *harness) show() {
+	h.t.Helper()
+	h.store.movies[1] = store.Movie{ID: 1, Title: "Severance", Year: 2022, MediaType: store.MediaTypeTV}
 }
 
 // download builds a release folder holding one feature file and returns its path.
@@ -814,12 +840,20 @@ func (f *fakeStore) GetMovie(_ context.Context, id int64) (store.Movie, error) {
 	return m, nil
 }
 
+// MarkImported answers with the fixture row rather than a hard-coded film, so
+// the log line a show produces says the show's own title. The real one resolves
+// the row through the download's hash; this one takes the fixture every test
+// dispatches against.
 func (f *fakeStore) MarkImported(_ context.Context, hash, libraryPath string, size int64, at time.Time) (store.Movie, error) {
 	if f.markErr != nil {
 		return store.Movie{}, f.markErr
 	}
 	f.marked = append(f.marked, markCall{hash: hash, path: libraryPath, size: size, at: at})
-	return store.Movie{ID: 1, Title: "Interstellar", Year: 2014, Status: store.StatusImported, LibraryPath: &libraryPath}, nil
+	saved := f.movies[1]
+	saved.Status = store.StatusImported
+	saved.LibraryPath = &libraryPath
+	saved.SizeBytes = &size
+	return saved, nil
 }
 
 type fakeRefresher struct {

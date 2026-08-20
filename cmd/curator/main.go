@@ -338,9 +338,11 @@ func run() error {
 			"refresh, and a film's page will show no Open in Jellyfin link")
 	}
 
-	// The library root is the import destination as well as the scan source. An
-	// importer writing anywhere else would produce movies the scanner never sees.
-	imports := importer.New(db, cfg.LibraryMovies, refresher, log)
+	// The library roots are the import destinations as well as the scan sources.
+	// An importer writing anywhere else would produce movies the scanner never
+	// sees. LibraryTV may be empty — television is off, and the importer refuses
+	// a show rather than filing one under the films.
+	imports := importer.New(db, importer.Roots{Movies: cfg.LibraryMovies, TV: cfg.LibraryTV}, refresher, log)
 
 	// ffmpeg, probed ONCE and here rather than per request. A miss is the fourth
 	// optional dependency with this shape — direct play still works, and the
