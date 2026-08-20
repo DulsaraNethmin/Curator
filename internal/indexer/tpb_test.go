@@ -685,6 +685,42 @@ func TestTPBLive(t *testing.T) {
 		}
 	}
 
+	// Television, live, and in THIS test rather than a third one. The rule for a
+	// failed live search lives in one place and both live tests ask it (T76); a
+	// new test with a skip rule of its own is precisely the divergence that
+	// existed to be removed. So this is another call under the same rule, the
+	// same client and the same control name.
+	//
+	// What it proves is the one thing no fixture can: that cat=205,208 is still
+	// what television is filed under at apibay. The fixture pins how the answer
+	// parses, and it would go on passing forever after the categories moved.
+	tv, err := tpb.Search(ctx, Query{Title: "Severance", Media: MediaTV, Season: 2})
+	if err != nil {
+		if verdict, why := classifyLiveFailure(err, rec.lastStatus(), dnsWorks); verdict == liveSkip {
+			t.Skipf("skipping live apibay television check: %s: %v", why, err)
+		}
+		t.Fatalf("live Search (television): %v", err)
+	}
+	if len(tv) == 0 {
+		t.Fatalf("live television search in categories %s returned nothing", tpbTVCategories)
+	}
+	// At least one row has to state a season, or these are not the television
+	// categories any more — which is the failure this call exists to catch.
+	var seasons int
+	for _, r := range tv {
+		if r.Season > 0 {
+			seasons++
+		}
+		if r.Year != 0 {
+			t.Errorf("live television release %q carries year %d, want none", r.Title, r.Year)
+			break
+		}
+	}
+	if seasons == 0 {
+		t.Errorf("none of the %d live television releases names a season: %s", len(tv), tv[0].Title)
+	}
+	t.Logf("live: %d television releases, %d naming a season", len(tv), seasons)
+
 	// The trap, live: apibay answers this with its sentinel row, and none of it
 	// may reach a caller.
 	empty, err := tpb.Search(ctx, Query{Title: "zzqqxxnosuchmoviezz9999"})
