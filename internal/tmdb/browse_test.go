@@ -92,6 +92,14 @@ func TestEveryEndpointScrubsTheAPIKey(t *testing.T) {
 			_, err := client.Show(ctx, 1396)
 			return err
 		},
+		"TrendingShows": func(ctx context.Context) error {
+			_, err := client.TrendingShows(ctx)
+			return err
+		},
+		"PopularShows": func(ctx context.Context) error {
+			_, err := client.PopularShows(ctx)
+			return err
+		},
 	}
 
 	for name, call := range calls {
@@ -259,13 +267,15 @@ func TestBrowseReportsARejectedKey(t *testing.T) {
 	ctx := context.Background()
 
 	for name, err := range map[string]error{
-		"SearchMovies": second(client.SearchMovies(ctx, "avengers", 0)),
-		"Movie":        second(client.Movie(ctx, 299534)),
-		"Trending":     second(client.Trending(ctx)),
-		"Popular":      second(client.Popular(ctx)),
-		"SearchShow":   second(client.SearchShow(ctx, "Breaking Bad", 2008)),
-		"SearchShows":  second(client.SearchShows(ctx, "the office", 0)),
-		"Show":         second(client.Show(ctx, 1396)),
+		"SearchMovies":  second(client.SearchMovies(ctx, "avengers", 0)),
+		"Movie":         second(client.Movie(ctx, 299534)),
+		"Trending":      second(client.Trending(ctx)),
+		"Popular":       second(client.Popular(ctx)),
+		"SearchShow":    second(client.SearchShow(ctx, "Breaking Bad", 2008)),
+		"SearchShows":   second(client.SearchShows(ctx, "the office", 0)),
+		"Show":          second(client.Show(ctx, 1396)),
+		"TrendingShows": second(client.TrendingShows(ctx)),
+		"PopularShows":  second(client.PopularShows(ctx)),
 	} {
 		if !errors.Is(err, ErrUnauthorized) {
 			t.Errorf("%s: err = %v, want ErrUnauthorized", name, err)

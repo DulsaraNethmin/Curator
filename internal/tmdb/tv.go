@@ -169,6 +169,38 @@ func (c *Client) searchTV(ctx context.Context, query string, year int) ([]search
 	return asMovieShapedAll(body.Results), nil
 }
 
+// TrendingShows returns this week's trending shows — the counterpart of
+// Trending, over /trending/tv/week rather than /trending/movie/week.
+//
+// TMDB keeps television on its own trending list rather than mixing the two, so
+// there is no filtering to do here. /trending/all/week exists and was not used:
+// it interleaves films, shows and people, and a page of cards that might each be
+// any of three things is a branch in the UI, not a convenience.
+func (c *Client) TrendingShows(ctx context.Context) ([]Match, error) {
+	return c.listTV(ctx, "/trending/tv/week", "trending shows")
+}
+
+// PopularShows returns TMDB's popular shows, first page — the counterpart of
+// Popular, over /tv/popular. Note the shape of the path: television is
+// /tv/popular where film is /movie/popular, but trending is /trending/tv/week
+// where film is /trending/movie/week. TMDB is not consistent about which
+// position the media type takes, which is why every path in this package is
+// pinned by a test that asserts the exact path was requested.
+func (c *Client) PopularShows(ctx context.Context) ([]Match, error) {
+	return c.listTV(ctx, "/tv/popular", "popular shows")
+}
+
+// listTV is list over the television envelope. The only difference is which
+// struct decodes the page, and it converts before returning so the result is
+// the same []Match the film lists produce.
+func (c *Client) listTV(ctx context.Context, path, what string) ([]Match, error) {
+	var body tvSearchResponse
+	if err := c.get(ctx, path, nil, what, &body); err != nil {
+		return nil, err
+	}
+	return toMatches(asMovieShapedAll(body.Results)), nil
+}
+
 // tvDetailsResponse is /tv/{id}. It embeds tvResult because TMDB repeats those
 // fields verbatim there, exactly as detailsResponse embeds searchResult.
 //

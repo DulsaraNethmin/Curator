@@ -263,6 +263,85 @@ func TestSearchShowsRejectsAnEmptyQuery(t *testing.T) {
 	}
 }
 
+// The two browse lists, and the paths are half the point: TMDB puts the media
+// type in a different position for each — /trending/tv/week but /tv/popular —
+// so a plausible-looking /trending/movie/week → /trending/tv/week edit paired
+// with /movie/popular → /movie/tv is exactly the mistake to guard. pathServer
+// fails any path the map does not name.
+//
+// The recorded pages are trimmed to three shows each. What is under test is the
+// name/first_air_date mapping and the path, neither of which gets any truer at
+// twenty.
+func TestTrendingShowsAndPopularShows(t *testing.T) {
+	client := browseClient(t, map[string]string{
+		"/trending/tv/week": "trending_tv_week.json",
+		"/tv/popular":       "tv_popular.json",
+	})
+	ctx := context.Background()
+
+	for name, tc := range map[string]struct {
+		call      func() ([]Match, error)
+		wantFirst string
+		wantYear  int
+	}{
+		"TrendingShows": {func() ([]Match, error) { return client.TrendingShows(ctx) }, "The Last of Us", 2023},
+		"PopularShows":  {func() ([]Match, error) { return client.PopularShows(ctx) }, "Grey's Anatomy", 2005},
+	} {
+		got, err := tc.call()
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if len(got) != 3 {
+			t.Errorf("%s: got %d, want the recorded page of 3", name, len(got))
+			continue
+		}
+		// Each list must come back from ITS OWN path — a swapped pair would
+		// still be three well-formed cards.
+		if got[0].Title != tc.wantFirst || got[0].Year != tc.wantYear {
+			t.Errorf("%s: first card = %q (%d), want %q (%d)", name, got[0].Title, got[0].Year, tc.wantFirst, tc.wantYear)
+		}
+		for i, m := range got {
+			if m.TMDBID == 0 || m.Title == "" || m.Year == 0 {
+				t.Errorf("%s: card %d is unmapped: %+v", name, i, m)
+			}
+		}
+	}
+}
+
+// A show with no backdrop is a card like any other — Family Guy's is null in the
+// recorded page, and dropping it to make a grid look tidy is not this project's
+// habit.
+func TestPopularShowsKeepsACardWithNoBackdrop(t *testing.T) {
+	client := browseClient(t, map[string]string{"/tv/popular": "tv_popular.json"})
+
+	got, err := client.PopularShows(context.Background())
+	if err != nil {
+		t.Fatalf("PopularShows: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d cards, want 3 — the one with a null backdrop was dropped", len(got))
+	}
+	if got[1].Title != "Family Guy" || got[1].BackdropPath != "" {
+		t.Errorf("card 1 = %+v, want Family Guy with an empty BackdropPath", got[1])
+	}
+}
+
+func TestTVBrowseEmptyPageIsNotNil(t *testing.T) {
+	client := browseClient(t, map[string]string{"/tv/popular": "empty.json"})
+
+	got, err := client.PopularShows(context.Background())
+	if err != nil {
+		t.Fatalf("PopularShows: %v", err)
+	}
+	if got == nil {
+		t.Error("an empty page came back nil")
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d results, want 0", len(got))
+	}
+}
+
 func TestShowDecodesEverythingTheScreenShows(t *testing.T) {
 	client := browseClient(t, map[string]string{"/tv/1396": "tv_1396.json"})
 
