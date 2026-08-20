@@ -64,7 +64,7 @@ func TestOpenAppliesSchemaTwice(t *testing.T) {
 	}
 	defer second.Close()
 
-	movies, err := second.ListMovies(ctx)
+	movies, err := second.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestUpsertMovieByPathIsIdempotent(t *testing.T) {
 		t.Errorf("second upsert produced id %d, want %d", updated.ID, inserted.ID)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestMoviesMissingMetadataReturnsOnlyUnmatched(t *testing.T) {
 		t.Fatalf("SetTMDBMetadata: %v", err)
 	}
 
-	missing, err := s.MoviesMissingMetadata(ctx)
+	missing, err := s.MoviesMissingMetadata(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("MoviesMissingMetadata: %v", err)
 	}
@@ -386,7 +386,7 @@ func TestListMoviesNewestFirst(t *testing.T) {
 		tick++
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestListMoviesBreaksAddedAtTiesByID(t *testing.T) {
 		ids = append(ids, row.ID)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -440,7 +440,7 @@ func TestGetMovieNotFound(t *testing.T) {
 func TestListMoviesEmptyIsNotNil(t *testing.T) {
 	s := newTestStore(t)
 
-	movies, err := s.ListMovies(context.Background())
+	movies, err := s.ListMovies(context.Background(), MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}

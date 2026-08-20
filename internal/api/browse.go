@@ -164,7 +164,7 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	library, err := s.store.LibraryByTMDBID(r.Context())
+	library, err := s.store.LibraryByTMDBID(r.Context(), store.MediaTypeMovie)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
@@ -221,7 +221,7 @@ func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
 		s.failTMDB(w, err)
 		return
 	}
-	library, err := s.store.LibraryByTMDBID(r.Context())
+	library, err := s.store.LibraryByTMDBID(r.Context(), store.MediaTypeMovie)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
@@ -251,7 +251,7 @@ func (s *Server) handleTMDBMovie(w http.ResponseWriter, r *http.Request) {
 		s.failTMDB(w, err)
 		return
 	}
-	library, err := s.store.LibraryByTMDBID(r.Context())
+	library, err := s.store.LibraryByTMDBID(r.Context(), store.MediaTypeMovie)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return

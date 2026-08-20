@@ -92,7 +92,7 @@ func TestUpsertWantedMovieTwiceYieldsOneRow(t *testing.T) {
 		t.Errorf("second upsert produced id %d, want the first's %d", second.ID, first.ID)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestUpsertWantedMovieMatchesOnTMDBIDBeforeTitle(t *testing.T) {
 			second.Title, second.Year)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestManyWantedMoviesCoexistWithNullUniqueColumns(t *testing.T) {
 		t.Errorf("got %d distinct ids for %d wanted movies", len(ids), len(titles))
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestWantedMovieDoesNotDisturbTheScanUpsert(t *testing.T) {
 		t.Errorf("rescan id = %d, want the scan's %d", rescan.ID, scan.ID)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestUpsertWantedMovieReturnsAnAlreadyImportedMovie(t *testing.T) {
 		t.Errorf("library_path = %v, want %q preserved", got.LibraryPath, path)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}

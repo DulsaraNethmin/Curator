@@ -126,7 +126,7 @@ func (s *Server) alreadyHave(w http.ResponseWriter, r *http.Request, tmdbID *int
 		return false
 	}
 
-	library, err := s.store.LibraryByTMDBID(r.Context())
+	library, err := s.store.LibraryByTMDBID(r.Context(), store.MediaTypeMovie)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return true

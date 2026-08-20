@@ -67,7 +67,7 @@ func TestAManualMatchSurvivesARescan(t *testing.T) {
 
 	// And the row is no longer work for the matching pass, which is the other half
 	// of why it survives: the scan never looks at it again.
-	missing, err := s.MoviesMissingMetadata(ctx)
+	missing, err := s.MoviesMissingMetadata(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("MoviesMissingMetadata: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestClearingAMatchWouldHandTheRowBackToTheScan(t *testing.T) {
 		t.Fatalf("clear: %v", err)
 	}
 
-	missing, err := s.MoviesMissingMetadata(ctx)
+	missing, err := s.MoviesMissingMetadata(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("MoviesMissingMetadata: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestClearingAMatchWouldHandTheRowBackToTheScan(t *testing.T) {
 	if _, err := s.CorrectMatch(ctx, again.ID, TMDBMatch{TMDBID: 299536, Year: ptrInt(2018)}); err != nil {
 		t.Fatalf("CorrectMatch: %v", err)
 	}
-	missing, err = s.MoviesMissingMetadata(ctx)
+	missing, err = s.MoviesMissingMetadata(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("MoviesMissingMetadata after correcting: %v", err)
 	}

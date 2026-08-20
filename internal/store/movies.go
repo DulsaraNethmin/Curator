@@ -263,18 +263,52 @@ func (s *Store) UpsertMovieByPath(ctx context.Context, m ScannedMovie) (Movie, b
 	return row, inserted, nil
 }
 
+// tmdbIDWrite is the SET clause that lands a TMDB id in the column this row's
+// own media_type owns, leaving the other alone.
+//
+// **The row decides, not the caller.** A media type passed in beside the id
+// would be a second source of truth about something the row already states, and
+// getting it wrong puts a tv id in the movie column — which is the exact
+// corruption tmdbColumn exists to prevent, arrived at from the other direction.
+// The id is bound twice because only one branch of each CASE ever fires.
+const tmdbIDWrite = `
+	    tmdb_id    = CASE media_type WHEN 'tv' THEN tmdb_id ELSE ? END,
+	    tmdb_tv_id = CASE media_type WHEN 'tv' THEN ? ELSE tmdb_tv_id END`
+
+// currentMatch reads a row's media type and the TMDB id it currently holds,
+// taking that id from whichever column the media type owns.
+//
+// It reads both columns and chooses in Go rather than interpolating tmdbColumn
+// into the SELECT, because the media type is the thing being looked up: a query
+// that needed the answer in order to name its own column could not run.
+func currentMatch(ctx context.Context, tx *sql.Tx, id int64) (string, *int64, error) {
+	var (
+		mediaType     string
+		movieID, tvID *int64
+	)
+	if err := tx.QueryRowContext(ctx,
+		`SELECT media_type, tmdb_id, tmdb_tv_id FROM movies WHERE id = ?`, id,
+	).Scan(&mediaType, &movieID, &tvID); err != nil {
+		return "", nil, err
+	}
+	if mediaType == MediaTypeTV {
+		return mediaType, tvID, nil
+	}
+	return mediaType, movieID, nil
+}
+
 // SetTMDBMetadata records a match against a movie row. It is the write half of
 // MoviesMissingMetadata's read: without it a match found during a scan could not
 // be persisted, and phase 1 is not done until GET /api/movies carries metadata.
 //
-// tmdb_id is UNIQUE, so matching two folders to the same TMDB id fails here
-// rather than silently collapsing them into one.
+// Both TMDB id columns are UNIQUE, so matching two folders to the same TMDB id
+// fails here rather than silently collapsing them into one.
 func (s *Store) SetTMDBMetadata(ctx context.Context, id int64, match TMDBMatch) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE movies
-		SET tmdb_id = ?, title = COALESCE(?, title), overview = ?, poster_path = ?
+		SET`+tmdbIDWrite+`, title = COALESCE(?, title), overview = ?, poster_path = ?
 		WHERE id = ?`,
-		match.TMDBID, match.Title, match.Overview, match.PosterPath, id)
+		match.TMDBID, match.TMDBID, match.Title, match.Overview, match.PosterPath, id)
 	if err != nil {
 		return fmt.Errorf("set tmdb metadata %d: %w", id, err)
 	}
@@ -316,8 +350,8 @@ func (s *Store) MatchMovie(ctx context.Context, id int64, match TMDBMatch) (Movi
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
-	var existing *int64
-	switch err := tx.QueryRowContext(ctx, `SELECT tmdb_id FROM movies WHERE id = ?`, id).Scan(&existing); {
+	mediaType, existing, err := currentMatch(ctx, tx, id)
+	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return fail(ErrNotFound)
 	case err != nil:
@@ -330,9 +364,13 @@ func (s *Store) MatchMovie(ctx context.Context, id int64, match TMDBMatch) (Movi
 		return fail(ErrAlreadyMatched)
 	}
 
+	// Scoped to this row's own id space. A film and a show may hold the same
+	// number, so probing both columns would refuse a legitimate match with a
+	// sentence about a film the user has never heard of.
 	var other int64
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT id FROM movies WHERE tmdb_id = ?`, match.TMDBID).Scan(&other); {
+		fmt.Sprintf(`SELECT id FROM movies WHERE %s = ?`, tmdbColumn(mediaType)),
+		match.TMDBID).Scan(&other); {
 	case errors.Is(err, sql.ErrNoRows):
 		// The only outcome that proceeds.
 	case err != nil:
@@ -393,8 +431,8 @@ func (s *Store) CorrectMatch(ctx context.Context, id int64, match TMDBMatch) (Mo
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
-	var existing *int64
-	switch err := tx.QueryRowContext(ctx, `SELECT tmdb_id FROM movies WHERE id = ?`, id).Scan(&existing); {
+	mediaType, existing, err := currentMatch(ctx, tx, id)
+	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return fail(ErrNotFound)
 	case err != nil:
@@ -405,9 +443,11 @@ func (s *Store) CorrectMatch(ctx context.Context, id int64, match TMDBMatch) (Mo
 
 	// `AND id != ?` is the one difference from MatchMovie's probe. Without it a
 	// correction that lands on the film already stored would collide with itself.
+	// The column is this row's own, for the reason MatchMovie's probe states.
 	var other int64
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT id FROM movies WHERE tmdb_id = ? AND id != ?`, match.TMDBID, id).Scan(&other); {
+		fmt.Sprintf(`SELECT id FROM movies WHERE %s = ? AND id != ?`, tmdbColumn(mediaType)),
+		match.TMDBID, id).Scan(&other); {
 	case errors.Is(err, sql.ErrNoRows):
 		// The only outcome that proceeds.
 	case err != nil:
@@ -445,22 +485,39 @@ func (s *Store) CorrectMatch(ctx context.Context, id int64, match TMDBMatch) (Mo
 func writeMatch(ctx context.Context, tx *sql.Tx, id int64, match TMDBMatch) error {
 	_, err := tx.ExecContext(ctx, `
 		UPDATE movies
-		SET tmdb_id = ?, title = COALESCE(?, title), overview = ?, poster_path = ?,
+		SET`+tmdbIDWrite+`, title = COALESCE(?, title), overview = ?, poster_path = ?,
 		    tmdb_year = ?
 		WHERE id = ?`,
-		match.TMDBID, match.Title, match.Overview, match.PosterPath,
+		match.TMDBID, match.TMDBID, match.Title, match.Overview, match.PosterPath,
 		match.Year, id)
 	return err
 }
 
-// ListMovies returns every movie, newest first. id breaks ties on added_at
-// because a scan stamps a whole batch of inserts from one clock read.
-func (s *Store) ListMovies(ctx context.Context) ([]Movie, error) {
-	movies, err := s.queryMovies(ctx, selectMovie+` ORDER BY added_at DESC, id DESC`)
+// ListMovies returns every row of one media type, newest first. id breaks ties
+// on added_at because a scan stamps a whole batch of inserts from one clock read.
+//
+// **mediaType is required rather than optional, and there is no value meaning
+// "both".** Every caller of this and of the three reads below wants one kind of
+// thing, and a default that reads fine at the call site is how a show ends up
+// rendered as a film on the library screen. Making it a parameter turned every
+// call site into a decision somebody had to make on purpose.
+func (s *Store) ListMovies(ctx context.Context, mediaType string) ([]Movie, error) {
+	if !validMediaType(mediaType) {
+		return nil, fmt.Errorf("list movies: %w", badMediaType(mediaType))
+	}
+	movies, err := s.queryMovies(ctx,
+		selectMovie+` WHERE media_type = ? ORDER BY added_at DESC, id DESC`, mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("list movies: %w", err)
 	}
 	return movies, nil
+}
+
+// badMediaType is the refusal every media-scoped read shares. It is an error
+// rather than a silent fallback to "movie" because a caller that got this wrong
+// asked the wrong question, and answering the other one is how the two get mixed.
+func badMediaType(mediaType string) error {
+	return fmt.Errorf("%q is not a media type (%q or %q)", mediaType, MediaTypeMovie, MediaTypeTV)
 }
 
 // GetMovie returns one movie by id, or an error wrapping ErrNotFound if there is
@@ -476,11 +533,24 @@ func (s *Store) GetMovie(ctx context.Context, id int64) (Movie, error) {
 	return m, nil
 }
 
-// MoviesMissingMetadata returns the rows TMDB has not matched — tmdb_id IS NULL.
+// MoviesMissingMetadata returns the rows of one media type TMDB has not matched.
 // It is the work list for the matching pass, and what "record NULL and surface
 // it, never guess" (decisions.md D9) means in practice.
-func (s *Store) MoviesMissingMetadata(ctx context.Context) ([]Movie, error) {
-	movies, err := s.queryMovies(ctx, selectMovie+` WHERE tmdb_id IS NULL ORDER BY added_at DESC, id DESC`)
+//
+// **The media_type predicate is the load-bearing half, not the column choice.**
+// Without it every show is on this list on every scan — a show's `tmdb_id` is
+// NULL by construction — and the caller feeds the list to TMDB's /search/movie
+// and writes the answer back with SetTMDBMetadata, which overwrites
+// unconditionally by design. For Fargo, Watchmen, Hannibal, Westworld, Dune and
+// Snowpiercer that lookup SUCCEEDS, and the show quietly acquires a film's id,
+// overview and poster. No error, no log, and it re-fires every scan.
+func (s *Store) MoviesMissingMetadata(ctx context.Context, mediaType string) ([]Movie, error) {
+	if !validMediaType(mediaType) {
+		return nil, fmt.Errorf("list movies missing metadata: %w", badMediaType(mediaType))
+	}
+	movies, err := s.queryMovies(ctx, fmt.Sprintf(
+		selectMovie+` WHERE media_type = ? AND %s IS NULL ORDER BY added_at DESC, id DESC`,
+		tmdbColumn(mediaType)), mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("list movies missing metadata: %w", err)
 	}
@@ -574,17 +644,26 @@ type LibraryState struct {
 // torrent is at 60% as "wanted". The state that is true lives in
 // downloads.state, where 'imported' and 'failed' are the two that do not count
 // as in flight.
-func (s *Store) LibraryByTMDBID(ctx context.Context) (map[int64]LibraryState, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.tmdb_id, m.id, m.status, m.library_path,
+//
+// **One media type per call, and the reason is that the two id spaces overlap.**
+// A single map keyed on a bare number would badge a film's poster "already in
+// your library" because a show happens to hold that number as its tv id — and
+// worse, the fourth caller is a dispatch guard, so it would refuse the grab with
+// a sentence naming a film the user never asked about.
+func (s *Store) LibraryByTMDBID(ctx context.Context, mediaType string) (map[int64]LibraryState, error) {
+	if !validMediaType(mediaType) {
+		return nil, fmt.Errorf("library by tmdb id: %w", badMediaType(mediaType))
+	}
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT m.%[1]s, m.id, m.status, m.library_path,
 		       EXISTS (
 		           SELECT 1 FROM downloads d
 		            WHERE d.movie_id = m.id
 		              AND d.state NOT IN (?, ?)
 		       ) AS downloading
 		  FROM movies m
-		 WHERE m.tmdb_id IS NOT NULL`,
-		DownloadImported, DownloadFailed)
+		 WHERE m.media_type = ? AND m.%[1]s IS NOT NULL`, tmdbColumn(mediaType)),
+		DownloadImported, DownloadFailed, mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("library by tmdb_id: %w", err)
 	}
@@ -613,9 +692,18 @@ func (s *Store) LibraryByTMDBID(ctx context.Context) (map[int64]LibraryState, er
 // it. Title and Year ride along because the caller logs a removal by name, and
 // after the DELETE there is nothing left to look them up by.
 type OnDisk struct {
-	ID          int64
-	Title       string
-	Year        int
+	ID    int64
+	Title string
+	Year  int
+	// MediaType is here rather than in the query's WHERE clause, and that is
+	// deliberate: this list is what a prune is allowed to CONSIDER, and a row
+	// filtered out of it is a row the prune cannot see. Since a film and a show
+	// live under different roots, the caller needs the media type in order to ask
+	// "is this path inside the root that owns it" — but it must be asked about
+	// every row, not only the ones this scan happened to walk. A row whose root
+	// was not scanned falls through to "kept", which is D33's asymmetry doing
+	// exactly its job.
+	MediaType   string
 	LibraryPath string
 	Downloading bool
 }
@@ -637,7 +725,7 @@ type OnDisk struct {
 // getting.
 func (s *Store) MoviesOnDisk(ctx context.Context) ([]OnDisk, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.id, m.title, m.year, m.library_path,
+		SELECT m.id, m.title, m.year, m.media_type, m.library_path,
 		       EXISTS (
 		           SELECT 1 FROM downloads d
 		            WHERE d.movie_id = m.id
@@ -655,7 +743,7 @@ func (s *Store) MoviesOnDisk(ctx context.Context) ([]OnDisk, error) {
 	on := []OnDisk{}
 	for rows.Next() {
 		var row OnDisk
-		if err := rows.Scan(&row.ID, &row.Title, &row.Year, &row.LibraryPath, &row.Downloading); err != nil {
+		if err := rows.Scan(&row.ID, &row.Title, &row.Year, &row.MediaType, &row.LibraryPath, &row.Downloading); err != nil {
 			return nil, fmt.Errorf("movies on disk: %w", err)
 		}
 		on = append(on, row)

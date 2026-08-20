@@ -159,14 +159,27 @@ func (f *fakeStore) seedWanted(title string, year int) *store.Movie {
 	return row
 }
 
-func (f *fakeStore) LibraryByTMDBID(context.Context) (map[int64]store.LibraryState, error) {
+// The three media-scoped reads filter for real rather than ignoring the
+// argument. A fake that accepted the parameter and answered the same thing
+// regardless would let every test pass while the store mixed films and shows,
+// which is the exact bug the parameter exists to prevent.
+func (f *fakeStore) LibraryByTMDBID(_ context.Context, mediaType string) (map[int64]store.LibraryState, error) {
 	if f.libraryErr != nil {
 		return nil, f.libraryErr
 	}
 	if f.library == nil {
 		return map[int64]store.LibraryState{}, nil
 	}
-	return f.library, nil
+	// f.library is keyed by TMDB id and holds no media type of its own, so it is
+	// scoped through the rows it points at.
+	out := map[int64]store.LibraryState{}
+	for tmdbID, state := range f.library {
+		if row, ok := f.byID[state.MovieID]; ok && row.MediaType != mediaType {
+			continue
+		}
+		out[tmdbID] = state
+	}
+	return out, nil
 }
 
 func newFakeStore() *fakeStore {
@@ -294,12 +307,15 @@ func (f *fakeStore) CorrectMatch(_ context.Context, id int64, match store.TMDBMa
 	return *row, nil
 }
 
-func (f *fakeStore) ListMovies(context.Context) ([]store.Movie, error) {
+func (f *fakeStore) ListMovies(_ context.Context, mediaType string) ([]store.Movie, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
 	out := make([]store.Movie, 0, len(f.order))
 	for i := len(f.order) - 1; i >= 0; i-- { // newest first
+		if f.order[i].MediaType != mediaType {
+			continue
+		}
 		out = append(out, *f.order[i])
 	}
 	return out, nil
@@ -313,13 +329,22 @@ func (f *fakeStore) GetMovie(_ context.Context, id int64) (store.Movie, error) {
 	return *row, nil
 }
 
-func (f *fakeStore) MoviesMissingMetadata(context.Context) ([]store.Movie, error) {
+func (f *fakeStore) MoviesMissingMetadata(_ context.Context, mediaType string) ([]store.Movie, error) {
 	if f.missErr != nil {
 		return nil, f.missErr
 	}
 	var out []store.Movie
 	for _, row := range f.order {
-		if row.TMDBID == nil {
+		if row.MediaType != mediaType {
+			continue
+		}
+		// The id column is the one this media type owns, exactly as the store
+		// picks it — a show's NULL tmdb_id is not a missing match.
+		unmatched := row.TMDBID == nil
+		if mediaType == store.MediaTypeTV {
+			unmatched = row.TMDBTVID == nil
+		}
+		if unmatched {
 			out = append(out, *row)
 		}
 	}

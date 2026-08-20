@@ -40,12 +40,19 @@ type Store interface {
 	MatchMovie(ctx context.Context, id int64, match store.TMDBMatch) (store.Movie, error)
 	CorrectMatch(ctx context.Context, id int64, match store.TMDBMatch) (store.Movie, error)
 
-	ListMovies(ctx context.Context) ([]store.Movie, error)
+	// The media type is a required argument on all three, and there is no value
+	// meaning "both". Since T88 a show is a row in the same table, so a read that
+	// did not say which kind it wanted would put shows on the film grid and — far
+	// worse — put every show on the matching pass's work list, where TMDB's
+	// /search/movie would answer confidently for Fargo and Watchmen.
+	ListMovies(ctx context.Context, mediaType string) ([]store.Movie, error)
 	GetMovie(ctx context.Context, id int64) (store.Movie, error)
-	MoviesMissingMetadata(ctx context.Context) ([]store.Movie, error)
+	MoviesMissingMetadata(ctx context.Context, mediaType string) ([]store.Movie, error)
 
-	// LibraryByTMDBID annotates a TMDB card with what curator already has.
-	LibraryByTMDBID(ctx context.Context) (map[int64]store.LibraryState, error)
+	// LibraryByTMDBID annotates a TMDB card with what curator already has, within
+	// one media type's id space — TMDB's movie and tv ids overlap, so one map
+	// keyed on a bare number would badge the wrong poster.
+	LibraryByTMDBID(ctx context.Context, mediaType string) (map[int64]store.LibraryState, error)
 
 	// MoviesOnDisk and DeleteMovie are the scan's cleanup: a row for a folder
 	// with no film in it loses its row, and only its row (docs/decisions.md D33).
@@ -257,7 +264,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	missing, err := s.store.MoviesMissingMetadata(ctx)
+	missing, err := s.store.MoviesMissingMetadata(ctx, store.MediaTypeMovie)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
@@ -443,7 +450,7 @@ func (s *Server) match(ctx context.Context, m store.Movie) error {
 }
 
 func (s *Server) handleListMovies(w http.ResponseWriter, r *http.Request) {
-	movies, err := s.store.ListMovies(r.Context())
+	movies, err := s.store.ListMovies(r.Context(), store.MediaTypeMovie)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return

@@ -101,7 +101,7 @@ func TestWantedThenScanThenMarkImported(t *testing.T) {
 		t.Errorf("title = %q, want the folder's", got.Title)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -465,7 +465,7 @@ func TestDeleteMovieRemovesTheRowAndReportsItsDownloads(t *testing.T) {
 			t.Errorf("download %s survived: %v", hash, err)
 		}
 	}
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -548,7 +548,7 @@ func TestLibraryByTMDBIDIndexesOnlyMatchedFilms(t *testing.T) {
 		t.Fatalf("second folder: %v", err)
 	}
 
-	byID, err := s.LibraryByTMDBID(ctx)
+	byID, err := s.LibraryByTMDBID(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}
@@ -591,7 +591,7 @@ func TestLibraryByTMDBIDReportsDownloadingFromTheDownloadNotTheStatus(t *testing
 
 	// The download is in flight. movies.status still says 'wanted', which is the
 	// trap.
-	byID, err := s.LibraryByTMDBID(ctx)
+	byID, err := s.LibraryByTMDBID(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestLibraryByTMDBIDReportsDownloadingFromTheDownloadNotTheStatus(t *testing
 	if _, err := s.MarkImported(ctx, importHash, importPath, importSize, importedAt); err != nil {
 		t.Fatalf("MarkImported: %v", err)
 	}
-	byID, err = s.LibraryByTMDBID(ctx)
+	byID, err = s.LibraryByTMDBID(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestLibraryByTMDBIDIgnoresAFailedDownload(t *testing.T) {
 		t.Fatalf("UpdateDownloadProgress: %v", err)
 	}
 
-	byID, err := s.LibraryByTMDBID(ctx)
+	byID, err := s.LibraryByTMDBID(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestLibraryByTMDBIDIgnoresAFailedDownload(t *testing.T) {
 }
 
 func TestLibraryByTMDBIDEmptyIsAnEmptyMap(t *testing.T) {
-	byID, err := newTestStore(t).LibraryByTMDBID(context.Background())
+	byID, err := newTestStore(t).LibraryByTMDBID(context.Background(), MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}
