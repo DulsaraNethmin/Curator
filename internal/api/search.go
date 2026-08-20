@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
+	"github.com/DulsaraNethmin/curator/internal/store"
 )
 
 // Searcher is the release search the handlers need. Declared here rather than
@@ -35,9 +36,16 @@ func (s *Server) RegisterSearch(mux *http.ServeMux) {
 }
 
 // searchResponse is what GET /api/search returns.
+//
+// Media and Season echo what was actually searched for. They are not
+// decoration: a season selector that fires a request per change has to be able
+// to tell the answer to "season 2" from the answer to "season 3" still in
+// flight, and the response is the only place that fact exists.
 type searchResponse struct {
 	Title    string        `json:"title"`
 	Year     int           `json:"year"`
+	Media    string        `json:"media"`
+	Season   int           `json:"season,omitempty"`
 	Releases []releaseBody `json:"releases"`
 	Indexers []indexerBody `json:"indexers"`
 }
@@ -56,6 +64,14 @@ type releaseBody struct {
 	Seeders   int      `json:"seeders"`
 	Indexers  []string `json:"indexers"`
 	Magnet    *string  `json:"magnet"`
+
+	// Season and Episode are what the release NAME says, read by the indexers
+	// rather than taken from the query — a season pack has a season and no
+	// episode, a single episode has both, and a film has neither. `omitempty`
+	// because a film search is exactly as it was before television existed,
+	// and because 0 here means "the name does not say" rather than season 0.
+	Season  int `json:"season,omitempty"`
+	Episode int `json:"episode,omitempty"`
 }
 
 // indexerBody is one indexer's report.
@@ -97,14 +113,25 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, err)
 		return
 	}
+	mediaType, ok := s.media(w, r)
+	if !ok {
+		return
+	}
+	season, err := parseSeason(r.URL.Query().Get("season"), mediaType)
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
 
-	// Films, spelled out rather than left to the zero value: this handler is the
-	// film one, and a television search reaches the indexers through a query of
-	// its own rather than by this route learning a second media type.
+	// The media type is spelled out rather than left to the zero value, even
+	// though the zero value means the same thing: it is what decides TPB's
+	// cat= and the keyword string 1337x is handed, and neither is recoverable
+	// from a title however it is spelled (internal/indexer, Query).
 	result, err := s.searcher.Search(r.Context(), indexer.Query{
-		Title: title,
-		Year:  year,
-		Media: indexer.MediaMovie,
+		Title:  title,
+		Year:   year,
+		Media:  mediaType,
+		Season: season,
 	})
 	if err != nil {
 		// Only the caller's own context failing gets here: an indexer failing —
@@ -118,6 +145,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	out := searchResponse{
 		Title:    title,
 		Year:     year,
+		Media:    mediaType,
+		Season:   season,
 		Releases: make([]releaseBody, 0, len(releases)),
 		Indexers: make([]indexerBody, 0, len(result.Outcomes)),
 	}
@@ -131,6 +160,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			Seeders:   f.Seeders,
 			Indexers:  f.Indexers,
 			Magnet:    nil,
+			Season:    f.Season,
+			Episode:   f.Episode,
 		}
 		if f.Magnet != "" {
 			magnet := f.Magnet
@@ -146,7 +177,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	s.log.Info("search complete", "title", title, "year", year, "releases", len(out.Releases))
+	s.log.Info("search complete", "title", title, "year", year,
+		"media", mediaType, "season", season, "releases", len(out.Releases))
 	s.respond(w, http.StatusOK, out)
 }
 
@@ -191,6 +223,40 @@ func parseYear(raw string) (int, error) {
 		return 0, fmt.Errorf("year %d: not a year", year)
 	}
 	return year, nil
+}
+
+// parseSeason reads the optional season. Absent or empty is no constraint —
+// searching a show without naming a season is how you find a complete-series
+// pack — and so is 0, which internal/indexer already reads as "no season".
+//
+// **A season on a film request is a 400 rather than an ignored parameter.** It
+// is not a value a person types; it is a UI sending one media type's control
+// with the other media type's request, and answering a film search to it would
+// hide that from every screen. Season 0 is not rejected: it is a real season
+// number for specials, and library.SeasonFolder(0) is "Season 00" for exactly
+// that reason — it simply constrains nothing at the indexers.
+func parseSeason(raw, mediaType string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	season, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("season %q: not a number", raw)
+	}
+	return season, validateSeason(season, mediaType)
+}
+
+// validateSeason is the half of parseSeason that does not care where the number
+// came from — the query string here, a JSON number on POST /api/downloads.
+func validateSeason(season int, mediaType string) error {
+	if season < 0 {
+		return fmt.Errorf("season %d: not a season", season)
+	}
+	if season > 0 && mediaType != store.MediaTypeTV {
+		return fmt.Errorf("season %d: only television has seasons", season)
+	}
+	return nil
 }
 
 // splitQuality parses ?quality=1080p,2160p. The spellings themselves are

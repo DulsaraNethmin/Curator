@@ -189,9 +189,13 @@ func (s *Server) applyMatch(w http.ResponseWriter, r *http.Request, kind matchWr
 	// is holding without a reload — and jellyfin_url really does change, because
 	// jellyfinLinkFor stops taking the nil-tmdbID search branch and starts looking
 	// the film up for a deep link.
+	//
+	// The media type comes off the ROW rather than being stated as a film,
+	// because that is the fact that decides which query Jellyfin is asked —
+	// and this route is reached with a movies.id, which is one table.
 	out := movieBody{Movie: matched}
-	out.JellyfinURL = s.jellyfinLinkFor(
-		r.Context(), matched.TMDBID, matched.MatchYear(), matched.Title, matched.Status == store.StatusImported)
+	out.JellyfinURL = s.jellyfinLinkFor(r.Context(), matched.MediaType,
+		matched.TMDBID, matched.MatchYear(), matched.Title, matched.Status == store.StatusImported)
 	s.respond(w, http.StatusOK, out)
 }
 

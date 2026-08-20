@@ -187,16 +187,26 @@ func (f *fakeProvisioner) only(want jellyfin.Consent) bool {
 // because "the key it just minted, against the server it was just told about"
 // is the property that check exists to have.
 type fakeReader struct {
-	baseURL string
-	key     string
-	item    jellyfin.Item
-	err     error
-	calls   int
+	baseURL     string
+	key         string
+	item        jellyfin.Item
+	err         error
+	calls       int
+	seriesCalls int
 }
 
 func (r *fakeReader) FindMovie(context.Context, int, int) (jellyfin.Item, error) {
 	r.calls++
 	return r.item, r.err
+}
+
+// FindSeries exists to satisfy MediaServer and is counted separately, because
+// checkFilm must never reach it: it proves a minted key with a FILM, and asking
+// a Jellyfin for a Movie with a tv id is how a good key gets reported as broken
+// (T88). A test that finds seriesCalls non-zero has found that regression.
+func (r *fakeReader) FindSeries(context.Context, int, int) (jellyfin.Item, error) {
+	r.seriesCalls++
+	return jellyfin.Item{}, jellyfin.ErrNotFound
 }
 
 // setupServer wires the Playback screen over a fake Provisioner and a fake

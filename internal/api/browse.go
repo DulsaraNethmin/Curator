@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,6 +26,17 @@ type Browser interface {
 	Movie(ctx context.Context, id int) (*tmdb.Details, error)
 	Trending(ctx context.Context) ([]tmdb.Match, error)
 	Popular(ctx context.Context) ([]tmdb.Match, error)
+
+	// Television's four, and they are FOUR MORE METHODS rather than a media
+	// type on the four above. TMDB has two endpoints per question — /search/tv
+	// beside /search/movie, /tv/{id} beside /movie/{id} — and one *tmdb.Client
+	// implements all eight, so the seam that would gain a branch here is the
+	// only place the branch would not already exist. It also means a fake that
+	// answers films cannot silently answer shows with them.
+	SearchShows(ctx context.Context, query string, year int) ([]tmdb.Match, error)
+	Show(ctx context.Context, id int) (*tmdb.Details, error)
+	TrendingShows(ctx context.Context) ([]tmdb.Match, error)
+	PopularShows(ctx context.Context) ([]tmdb.Match, error)
 }
 
 // WithBrowser attaches the catalogue and returns the server.
@@ -44,6 +56,13 @@ func (s *Server) WithBrowser(b Browser) *Server {
 type MediaServer interface {
 	// FindMovie answers the item for a TMDB id, or jellyfin.ErrNotFound.
 	FindMovie(ctx context.Context, tmdbID, year int) (jellyfin.Item, error)
+
+	// FindSeries is the same question for a show, and it is a second method
+	// rather than a media type on the first because IncludeItemTypes is the
+	// only thing separating the two id spaces on a Jellyfin server: TMDB
+	// numbers films and shows independently, so asking for a Movie with a tv
+	// id can LAND on an unrelated film rather than merely miss (T92).
+	FindSeries(ctx context.Context, tmdbID, year int) (jellyfin.Item, error)
 }
 
 // WithJellyfin attaches the media server the movie screen can link into, and
@@ -60,10 +79,60 @@ func (s *Server) WithJellyfin(m MediaServer, publicURL string) *Server {
 // Everything TMDB-backed lives under /api/tmdb/, and the prefix is the rule: if
 // it is under /api/tmdb/, it goes dark without a key. /api/movies stays the
 // library — what curator actually has — and the two can never be confused.
+// Discover and search take ?media=tv rather than growing a route each, because
+// they are one screen asking one question about a different kind of thing — and
+// the parameter is what the UI's Movies|Shows toggle sets. A show's DETAIL page
+// is its own route, mirroring /api/tmdb/movies/{id}: the two id spaces overlap,
+// and a single route disambiguating a bare number by a query parameter is how a
+// film ends up rendered as a show.
 func (s *Server) RegisterBrowse(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tmdb/discover", s.handleDiscover)
 	mux.HandleFunc("GET /api/tmdb/search", s.handleTMDBSearch)
 	mux.HandleFunc("GET /api/tmdb/movies/{id}", s.handleTMDBMovie)
+	mux.HandleFunc("GET /api/tmdb/shows/{id}", s.handleTMDBShow)
+}
+
+// parseMedia reads ?media=. Absent or empty is a film, because every request
+// made before phase 11 was one and a client that has not been told about
+// television must keep meaning what it meant — the same default
+// indexer.Query.Media takes, for the same reason.
+//
+// Anything else is a 400 rather than a silent fallback to films: a typo that
+// returned films for ?media=tvshow would be a search that quietly answered a
+// different question.
+func parseMedia(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return store.MediaTypeMovie, nil
+	case store.MediaTypeMovie:
+		return store.MediaTypeMovie, nil
+	case store.MediaTypeTV:
+		return store.MediaTypeTV, nil
+	default:
+		return "", fmt.Errorf("media %q: not a media type (%q or %q)",
+			raw, store.MediaTypeMovie, store.MediaTypeTV)
+	}
+}
+
+// media reads the selector and answers the request itself when it cannot be
+// served: a 400 for a media type that does not exist, and a 503 naming
+// LIBRARY_TV for television on an install that has not turned it on.
+//
+// The television gate runs BEFORE the browser check on every route that has
+// one, and the order is deliberate. Both are 503s naming a variable, and this
+// one is the more fundamental fact: television being off is not something a
+// TMDB key changes, and pointing somebody at TMDB_API_KEY when the Shows tab
+// does not exist on their install sends them to fix the wrong line.
+func (s *Server) media(w http.ResponseWriter, r *http.Request) (string, bool) {
+	mediaType, err := parseMedia(r.URL.Query().Get("media"))
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, err)
+		return "", false
+	}
+	if mediaType == store.MediaTypeTV && s.televisionOff(w) {
+		return "", false
+	}
+	return mediaType, true
 }
 
 // libraryStateBody is what curator already has for a film, or null.
@@ -120,6 +189,42 @@ type movieDetailBody struct {
 	JellyfinURL string `json:"jellyfin_url,omitempty"`
 }
 
+// showDetailBody is a card plus everything the show screen shows.
+//
+// It shares movieCard with the film — a poster, a title, a year and what
+// curator already has are the same facts about both — and diverges below it,
+// where the two genuinely differ. Runtime, release_date and imdb_id are absent
+// rather than zero: TMDB has no runtime for a series (episode_run_time is a
+// list of per-episode lengths, carried here as episode_runtime), first_air_date
+// is the date that exists, and a show's IMDB id costs a second request nothing
+// yet needs (internal/tmdb, Details).
+type showDetailBody struct {
+	movieCard
+
+	Tagline string   `json:"tagline"`
+	Genres  []string `json:"genres"`
+	// Status is a show's vocabulary here — "Returning Series", "Ended",
+	// "Canceled", "In Production" — where a film's is "Released".
+	Status           string   `json:"status"`
+	OriginalLanguage string   `json:"original_language"`
+	SpokenLanguages  []string `json:"spoken_languages"`
+	Studios          []string `json:"studios"`
+	Homepage         string   `json:"homepage"`
+
+	FirstAirDate string `json:"first_air_date"`
+	// LastAirDate is the most recently aired episode and NOT a promise that the
+	// show has finished; status is where that is said.
+	LastAirDate    string `json:"last_air_date"`
+	Seasons        int    `json:"seasons"`
+	Episodes       int    `json:"episodes"`
+	EpisodeRuntime int    `json:"episode_runtime"` // minutes, TMDB's episode_run_time[0]
+
+	// Absent rather than empty in the two states that mean "there is no link",
+	// exactly as on the film's page: no Jellyfin configured, and a show curator
+	// does not have on disk.
+	JellyfinURL string `json:"jellyfin_url,omitempty"`
+}
+
 // discoverRow is one rail on the Discover screen.
 //
 // OK and Error are the indexers[] shape, deliberately. One rail failing is a
@@ -134,6 +239,10 @@ type discoverRow struct {
 }
 
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	mediaType, ok := s.media(w, r)
+	if !ok {
+		return
+	}
 	if s.browser == nil {
 		s.failTMDB(w, errTMDBUnconfigured)
 		return
@@ -143,9 +252,18 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		{ID: "trending", Title: "Trending this week"},
 		{ID: "popular", Title: "Popular"},
 	}
+	// The rail ids and titles are the same for both media types — the screen
+	// asks one media type at a time, so "Trending this week" is unambiguous and
+	// a "Trending shows" title would be the toggle's job said twice.
 	fetch := []func(context.Context) ([]tmdb.Match, error){
 		s.browser.Trending,
 		s.browser.Popular,
+	}
+	if mediaType == store.MediaTypeTV {
+		fetch = []func(context.Context) ([]tmdb.Match, error){
+			s.browser.TrendingShows,
+			s.browser.PopularShows,
+		}
 	}
 
 	// Concurrently: two sequential ten-second timeouts would be twenty seconds of
@@ -164,7 +282,10 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	library, err := s.store.LibraryByTMDBID(r.Context(), store.MediaTypeMovie)
+	// Scoped to the media type these cards are, because TMDB's two id
+	// sequences overlap: one map keyed on a bare number would badge Severance's
+	// poster with the film holding movie id 95396 (D48).
+	library, err := s.store.LibraryByTMDBID(r.Context(), mediaType)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
@@ -196,10 +317,14 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		rows[i].Results = toCards(results[i], library)
 	}
 
-	s.respond(w, http.StatusOK, map[string]any{"rows": rows})
+	s.respond(w, http.StatusOK, map[string]any{"media": mediaType, "rows": rows})
 }
 
 func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
+	mediaType, ok := s.media(w, r)
+	if !ok {
+		return
+	}
 	if s.browser == nil {
 		s.failTMDB(w, errTMDBUnconfigured)
 		return
@@ -216,12 +341,16 @@ func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	matches, err := s.browser.SearchMovies(r.Context(), query, year)
+	search := s.browser.SearchMovies
+	if mediaType == store.MediaTypeTV {
+		search = s.browser.SearchShows
+	}
+	matches, err := search(r.Context(), query, year)
 	if err != nil {
 		s.failTMDB(w, err)
 		return
 	}
-	library, err := s.store.LibraryByTMDBID(r.Context(), store.MediaTypeMovie)
+	library, err := s.store.LibraryByTMDBID(r.Context(), mediaType)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
@@ -230,6 +359,7 @@ func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, http.StatusOK, map[string]any{
 		"query":   query,
 		"year":    year,
+		"media":   mediaType,
 		"results": toCards(matches, library),
 	})
 }
@@ -281,7 +411,72 @@ func (s *Server) handleTMDBMovie(w http.ResponseWriter, r *http.Request) {
 		body.SpokenLanguages = []string{}
 	}
 
-	body.JellyfinURL = s.jellyfinLink(r.Context(), body)
+	body.JellyfinURL = s.jellyfinLink(r.Context(), store.MediaTypeMovie, body.movieCard)
+
+	s.respond(w, http.StatusOK, body)
+}
+
+// handleTMDBShow is handleTMDBMovie for a show, and the fields it does NOT
+// carry are the reason it is a second handler rather than a branch.
+//
+// tmdb.Details serves both kinds with the film-only fields zero for a show, so
+// a shared body would put `"runtime": 0` and `"release_date": ""` on every show
+// — a screen reading them would draw "0 min" for a series that ran five years.
+// The television fields (first air date, last air date, seasons, episodes) have
+// no film equivalent to be squeezed into either.
+func (s *Server) handleTMDBShow(w http.ResponseWriter, r *http.Request) {
+	if s.televisionOff(w) {
+		return
+	}
+	if s.browser == nil {
+		s.failTMDB(w, errTMDBUnconfigured)
+		return
+	}
+
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		s.fail(w, http.StatusBadRequest, errors.New("id must be a tmdb id"))
+		return
+	}
+
+	details, err := s.browser.Show(r.Context(), id)
+	if err != nil {
+		s.failTMDB(w, err)
+		return
+	}
+	library, err := s.store.LibraryByTMDBID(r.Context(), store.MediaTypeTV)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	body := showDetailBody{
+		movieCard:        toCard(details.Match, library),
+		Tagline:          details.Tagline,
+		Genres:           details.Genres,
+		Status:           details.Status,
+		OriginalLanguage: details.OriginalLanguage,
+		SpokenLanguages:  details.SpokenLanguages,
+		Studios:          details.Studios,
+		Homepage:         details.Homepage,
+		FirstAirDate:     details.FirstAirDate,
+		LastAirDate:      details.LastAirDate,
+		Seasons:          details.NumberOfSeasons,
+		Episodes:         details.NumberOfEpisodes,
+		EpisodeRuntime:   details.EpisodeRuntime,
+	}
+	// [] and never null: the UI iterates all three.
+	if body.Genres == nil {
+		body.Genres = []string{}
+	}
+	if body.Studios == nil {
+		body.Studios = []string{}
+	}
+	if body.SpokenLanguages == nil {
+		body.SpokenLanguages = []string{}
+	}
+
+	body.JellyfinURL = s.jellyfinLink(r.Context(), store.MediaTypeTV, body.movieCard)
 
 	s.respond(w, http.StatusOK, body)
 }
@@ -337,10 +532,10 @@ func toCard(m tmdb.Match, library map[int64]store.LibraryState) movieCard {
 // something that is not there. store.StatusImported is the test rather than
 // library != nil, because a wanted or downloading film is in the database and
 // not on the disk.
-func (s *Server) jellyfinLink(ctx context.Context, body movieDetailBody) string {
-	tmdbID := int64(body.TMDBID)
-	imported := body.Library != nil && body.Library.State == store.StatusImported
-	return s.jellyfinLinkFor(ctx, &tmdbID, body.Year, body.Title, imported)
+func (s *Server) jellyfinLink(ctx context.Context, mediaType string, card movieCard) string {
+	tmdbID := int64(card.TMDBID)
+	imported := card.Library != nil && card.Library.State == store.StatusImported
+	return s.jellyfinLinkFor(ctx, mediaType, &tmdbID, card.Year, card.Title, imported)
 }
 
 // jellyfinLinkFor is jellyfinLink's body, reached from the catalogue page above
@@ -355,7 +550,7 @@ func (s *Server) jellyfinLink(ctx context.Context, body movieDetailBody) string 
 //
 // [D35]: ../../docs/decisions.md
 // [D6]: ../../docs/decisions.md
-func (s *Server) jellyfinLinkFor(ctx context.Context, tmdbID *int64, year int, title string, imported bool) string {
+func (s *Server) jellyfinLinkFor(ctx context.Context, mediaType string, tmdbID *int64, year int, title string, imported bool) string {
 	if s.jellyfin == nil || strings.TrimSpace(s.jellyfinURL) == "" {
 		return ""
 	}
@@ -369,7 +564,12 @@ func (s *Server) jellyfinLinkFor(ctx context.Context, tmdbID *int64, year int, t
 	// The lookup carries its own deadline inside internal/jellyfin, because
 	// this one is in front of a person waiting for a page rather than behind a
 	// poller. Measured against the real 10.10.7 over a LAN: 5.5 ms.
-	item, err := s.jellyfin.FindMovie(ctx, int(*tmdbID), year)
+	//
+	// The media type picks the query, and it has to: FindMovie pins
+	// IncludeItemTypes=Movie, so a show asked for through it misses every time
+	// and — because ErrNotFound is deliberately not logged below — the
+	// downgraded link would be permanent and invisible (T92).
+	item, err := s.findOnMediaServer(ctx, mediaType, int(*tmdbID), year)
 	if err == nil {
 		return jellyfin.WebItemURL(s.jellyfinURL, item)
 	}
@@ -380,10 +580,18 @@ func (s *Server) jellyfinLinkFor(ctx context.Context, tmdbID *int64, year int, t
 	// Jellyfin that is off both silently downgrade the link, and "why is Open
 	// in Jellyfin always a search" is otherwise a question with no evidence.
 	if !errors.Is(err, jellyfin.ErrNotFound) {
-		s.log.Warn("jellyfin: could not look this film up, so the link is a search instead",
-			"tmdb_id", *tmdbID, "err", err)
+		s.log.Warn("jellyfin: could not look this title up, so the link is a search instead",
+			"tmdb_id", *tmdbID, "media_type", mediaType, "err", err)
 	}
 	return jellyfin.WebSearchURL(s.jellyfinURL, title)
+}
+
+// findOnMediaServer asks the media server for one title, by media type.
+func (s *Server) findOnMediaServer(ctx context.Context, mediaType string, tmdbID, year int) (jellyfin.Item, error) {
+	if mediaType == store.MediaTypeTV {
+		return s.jellyfin.FindSeries(ctx, tmdbID, year)
+	}
+	return s.jellyfin.FindMovie(ctx, tmdbID, year)
 }
 
 // errTMDBUnconfigured is the no-key state, phrased the way ErrUnconfigured is
