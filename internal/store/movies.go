@@ -16,9 +16,43 @@ const (
 	StatusImported    = "imported"
 )
 
-// MediaTypeMovie is the default media_type. It exists as a column from the start
-// so TV is additive later (decisions.md D6).
-const MediaTypeMovie = "movie"
+// The values media_type carries. The column has existed since phase 1 so that TV
+// would be additive later (decisions.md D6), and phase 11 is where that is spent.
+//
+// These two strings are the whole enum, and validMediaType is the only gate on
+// it. That matters more than it looks: tmdbColumn below turns one of them into a
+// SQL identifier, so anything that widens this set widens what can be
+// interpolated into a query.
+const (
+	MediaTypeMovie = "movie"
+	MediaTypeTV    = "tv"
+)
+
+// validMediaType reports whether m is one of the two values the schema means.
+func validMediaType(m string) bool {
+	return m == MediaTypeMovie || m == MediaTypeTV
+}
+
+// tmdbColumn is the column holding this media type's TMDB id.
+//
+// **They are two columns because TMDB's movie and tv id sequences overlap**, and
+// `tmdb_id` is UNIQUE at table level: Severance is tv id 95396 and a film holds
+// movie id 95396 too. Storing both in one column is not a rare loud collision, it
+// is routine silent corruption — UpsertWanted's `WHERE tmdb_id = ?` probe would
+// return the film's row and attach a season pack to it, with no error anywhere.
+// Relaxing the constraint means rebuilding the table that holds the library, and
+// migrate.go cannot do that; a second nullable column is additive and it can.
+//
+// The return value is one of two compile-time literals, chosen by a value
+// validMediaType has already accepted, and it is interpolated because SQLite
+// cannot bind an identifier — the same rule addColumn states. It must never
+// become anything a caller supplies.
+func tmdbColumn(mediaType string) string {
+	if mediaType == MediaTypeTV {
+		return "tmdb_tv_id"
+	}
+	return "tmdb_id"
+}
 
 // ErrNotFound reports that no row matched. GetMovie wraps it, so internal/api can
 // turn a missing id into a 404 with errors.Is.
@@ -63,8 +97,12 @@ var (
 // which is true by construction for every row the scan matched, because
 // SearchMovie rejects a candidate whose year disagrees. See MatchYear.
 type Movie struct {
-	ID          int64      `json:"id"`
-	TMDBID      *int64     `json:"tmdb_id"`
+	ID     int64  `json:"id"`
+	TMDBID *int64 `json:"tmdb_id"`
+	// TMDBTVID is the same fact for a show, in its own column because the two id
+	// sequences overlap — see tmdbColumn. Exactly one of the pair is ever
+	// non-NULL, and which one is decided by media_type rather than by a caller.
+	TMDBTVID    *int64     `json:"tmdb_tv_id"`
 	Title       string     `json:"title"`
 	Year        int        `json:"year"`
 	TMDBYear    *int       `json:"tmdb_year"`
@@ -149,7 +187,7 @@ type TMDBMatch struct {
 }
 
 const selectMovie = `
-SELECT id, tmdb_id, title, year, tmdb_year, media_type, overview, poster_path,
+SELECT id, tmdb_id, tmdb_tv_id, title, year, tmdb_year, media_type, overview, poster_path,
        status, library_path, quality, size_bytes, added_at, imported_at
 FROM movies`
 
@@ -485,7 +523,7 @@ func scanMovie(row rowScanner) (Movie, error) {
 		importedAt any
 	)
 	if err := row.Scan(
-		&m.ID, &m.TMDBID, &m.Title, &m.Year, &m.TMDBYear, &m.MediaType, &m.Overview, &m.PosterPath,
+		&m.ID, &m.TMDBID, &m.TMDBTVID, &m.Title, &m.Year, &m.TMDBYear, &m.MediaType, &m.Overview, &m.PosterPath,
 		&m.Status, &m.LibraryPath, &m.Quality, &m.SizeBytes, &addedAt, &importedAt,
 	); err != nil {
 		return Movie{}, err
