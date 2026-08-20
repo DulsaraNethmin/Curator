@@ -31,3 +31,17 @@ correcting it.
 
 Mermaid must render before committing; `click` is a reserved word in flowcharts and a bad node name
 fails silently on GitHub.
+
+## Records to mark corrected in place, not rewrite
+
+`docs/progress.md` is a record kept in the order things were found, so a line
+that has since become false is annotated rather than edited — the posture T51
+used for the container arithmetic.
+
+- **`docs/progress.md:537`** quotes the API's own 404 as
+  `"tmdb movie 999999999: no such movie"`. T89 changed that sentinel's text to
+  `"tmdb: no such title"`, because one error now covers two media types.
+- **`docs/tasks/T77-a-dead-host-fails-loudly.md`** links `decisions.md#d42`,
+  which is not an anchor GitHub resolves — D42's heading is long and the anchor
+  needs its full slug. A one-line fix, listed here so it is done deliberately
+  rather than by whoever notices it next.
