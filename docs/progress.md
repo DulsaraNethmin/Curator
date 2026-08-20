@@ -1027,11 +1027,83 @@ key**, so a second config beside the Pi's needs only a different `Endpoint` line
 
 ### Still live going out
 
-- **The tunnel has still never been torn down under a live download.** The sentinel was seen holding
-  and releasing on a *real, unstaged* transient failure (an `EOF` on the exit check), which is the
-  same code path — but killing the peer mid-download and watching the bytes stop **in bytes** is not
-  the same test, and it is not done.
+- ~~**The tunnel has still never been torn down under a live download.**~~ **Done** — this is
+  [T87](tasks/T87-the-tunnel-torn-down-under-load.md), below. It was carried unrun through four
+  phases and is the last thing D27 was owed.
 - **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot` is flaky on this laptop**, and it
   is not this work's doing: measured at roughly one failure in three on `56ec0f3`, before any of it.
   It waits ten seconds for a cancelled ffmpeg to return. `make check` is therefore not reliably green
   here on the first run, which is worth knowing before anybody reads a red gate as a regression.
+
+---
+
+## T87 — the tunnel torn down under a live download
+
+The acceptance test [D27](decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket) has
+owed since phase 6. Line 640 of this document carried *"kill the tunnel mid-download and confirm
+traffic stops"* unrun through four phases, and [T85](tasks/T85-the-capture-that-settles-it.md) said
+in its own "Not done here" that the capture was not it. Full detail in
+[T87](tasks/T87-the-tunnel-torn-down-under-load.md).
+
+**How you kill a peer, since the first two ways do not work.** Repointing the peer's endpoint at a
+black hole does nothing — an endpoint is where we *send*, and inbound packets match on key index
+rather than source address, so the far end went on streaming and the device counter climbed
+**39 MB in the thirty seconds after the repoint**. Removing the peer works but leaves a device that
+has never handshaken, so the verdict is `waiting` and the 180 s the guarantee is written in is never
+exercised. **Swapping the device's private key** is the one that reproduces reality: the peer stays,
+every keypair expires, and `lastHandshakeNano` is left alone — a tunnel up, configured, handshaken in
+the past and carrying nothing, which is exactly a VPN server that has stopped answering.
+
+### Measured, on a real NordVPN Singapore endpoint
+
+| Reading | Result |
+|---|---|
+| bytes across 20 s **before** the kill | **61,770,060** |
+| bytes across 20 s **after** the kill | **0** |
+| held at | **3m0s**, naming the tunnel: *"the last handshake with 187.15.103.112:51820 was 3m2s ago, longer than the 3m0s a peer will accept a keypair for"* |
+| released, and resumed | at **0.0623**, having been held at 0.0623 |
+
+**The floor is a few KB rather than zero, and that is the point rather than a concession.** Both ends
+go on trying to rekey a session that is gone and WireGuard's own protocol traffic counts as received —
+320 B across 20 s on one run, 0 B on another. A floor of "nothing at all" fails on protocol noise; a
+percentage would grow with the leak it exists to catch.
+
+It ran on a **second config**, one `Endpoint` line changed, which is T85's finding that every NordVPN
+Singapore server publishes the same WireGuard public key. Four minutes, because 180 s is
+`REJECT_AFTER_TIME` and shortening it would measure something else.
+
+### One thing a person reads, which was wrong
+
+A dead tunnel blamed **cloudflare**. `Verdict.Detail` carried `err.Error()` from the exit check, and
+that string is not a diagnostic — `Sentinel` hands it to `Engine.Hold` and the Activity screen renders
+it verbatim, so a VPN server that stopped answering produced *"…asking
+https://www.cloudflare.com/cdn-cgi/trace through the tunnel: context deadline exceeded"* under the
+stalled row. It named a third party as the culprit, put the check URL on a screen with no
+authentication in front of it ([D18](decisions.md#d18--the-log-tail-is-readable-without-authentication-so-it-is-redacted-at-the-source)),
+and withheld the diagnosis `Check` had already reached two lines earlier. T83's claim is that a held
+download names the tunnel instead of blaming the swarm; this named cloudflare instead, which is the
+same failure wearing a different coat. **Only the live teardown could have found it** — every unit
+test in that package asserts on `State`, not on the sentence.
+
+### The three tests the T82–T84 plan specified and never shipped
+
+Fourteen of seventeen were written and nothing recorded the other three as dropped. All three are
+here: the in-process teardown (the seam is the `PacketConn`, not the `Conn` — `DialContext` carries
+trackers and webseeds and no payload at all, so a fake that closed dials would have proved nothing),
+what the client *ends up holding* rather than what it was asked for, and a `/proc/self/fd` snapshot
+that matches every socket gained **by inode** against what the `Network` handed out.
+
+All three were verified by **reintroducing the leak they are aimed at**: with `cc.DisableTCP = false`
+restored in `bindConfig`, the whole 1 MB arrives over TCP with the tunnel carrying not one byte. The
+`/proc` test is Linux-gated and was measured in a `golang:1.25` container — **sixteen executions, no
+failure**.
+
+### Still live going out
+
+- **A socket inventory cannot retire T85.** A snapshot sees only sockets still open when it is taken,
+  and the fifth leak — a tracker name through `net.ResolveUDPAddr` — opens and closes a UDP socket
+  inside one stdlib call. That whole class stays invisible to any inventory, which is why looking at
+  the wire remains its own instrument.
+- **The dialer half is not assertable.** anacrolix keeps `cl.dialers` unexported with no accessor, so
+  the teardown test is the only thing that would catch a fallback dialer.
+- **One laptop, one endpoint, once**, as with every live VPN measurement since phase 6.
