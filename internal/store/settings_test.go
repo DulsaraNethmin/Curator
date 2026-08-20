@@ -201,9 +201,9 @@ func servesAReason(t *testing.T, s *Store) {
 	t.Helper()
 	ctx := context.Background()
 
-	m, err := s.UpsertWantedMovie(ctx, "Interstellar", 2014, nil)
+	m, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Interstellar", Year: 2014, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	hash := fmt.Sprintf("%040d", len(t.Name())+int(m.ID))
 	if _, err := s.InsertDownload(ctx, Download{
@@ -309,7 +309,7 @@ func servesATMDBYear(t *testing.T, s *Store) {
 
 	const path = "/movies/Some Home Video (2019)"
 	m, _, err := s.UpsertMovieByPath(ctx, ScannedMovie{
-		LibraryPath: path, Title: "Some Home Video", Year: 2019,
+		MediaType: MediaTypeMovie, LibraryPath: path, Title: "Some Home Video", Year: 2019,
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)

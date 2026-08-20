@@ -146,10 +146,18 @@ type ScannedMovie struct {
 	LibraryPath string
 	Title       string
 	Year        int
-	MediaType   string // empty defaults to MediaTypeMovie
-	Status      string // empty defaults to StatusImported
-	Quality     *string
-	SizeBytes   *int64
+	// MediaType is required, and it did not used to be. Empty defaulted to
+	// MediaTypeMovie, which was correct while there was one media type and became
+	// a loaded gun the moment there were two: UpsertMovieByPath REWRITES
+	// media_type from this field on every pass, so one construction site that
+	// forgot it would silently relabel a show as a film — and the very next
+	// prune would then delete it for sitting outside LIBRARY_MOVIES.
+	//
+	// Status keeps its default because it has no such second reader.
+	MediaType string
+	Status    string // empty defaults to StatusImported
+	Quality   *string
+	SizeBytes *int64
 }
 
 // TMDBMatch is what a TMDB lookup established about a movie.
@@ -205,10 +213,10 @@ func (s *Store) UpsertMovieByPath(ctx context.Context, m ScannedMovie) (Movie, b
 		return Movie{}, false, errors.New("upsert: library_path is empty")
 	}
 
-	mediaType := m.MediaType
-	if mediaType == "" {
-		mediaType = MediaTypeMovie
+	if !validMediaType(m.MediaType) {
+		return Movie{}, false, fmt.Errorf("upsert %s: %w", m.LibraryPath, badMediaType(m.MediaType))
 	}
+	mediaType := m.MediaType
 	status := m.Status
 	if status == "" {
 		status = StatusImported
@@ -639,7 +647,7 @@ type LibraryState struct {
 //
 // Downloading is an EXISTS over downloads rather than movies.status, and that is
 // not a detail. **store.StatusDownloading is declared and never written**:
-// UpsertWantedMovie inserts 'wanted' and the importer writes 'imported', so
+// UpsertWanted inserts 'wanted' and the importer writes 'imported', so
 // nothing ever sets it. A card reading movies.status would label a film whose
 // torrent is at 60% as "wanted". The state that is true lives in
 // downloads.state, where 'imported' and 'failed' are the two that do not count

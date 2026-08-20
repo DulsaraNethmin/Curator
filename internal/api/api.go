@@ -239,6 +239,12 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	for _, m := range found {
 		size := m.SizeBytes
 		_, inserted, err := s.store.UpsertMovieByPath(ctx, store.ScannedMovie{
+			// Required since T88, and stated at every construction site rather
+			// than defaulted. UpsertMovieByPath REWRITES media_type from this
+			// field on every pass, so a site that left it out would relabel a
+			// show as a film — and the prune below would then delete it for
+			// sitting outside LIBRARY_MOVIES.
+			MediaType:   store.MediaTypeMovie,
 			LibraryPath: m.LibraryPath,
 			Title:       m.Title,
 			Year:        m.Year,

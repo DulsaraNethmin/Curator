@@ -33,6 +33,7 @@ func ptrInt(n int) *int          { return &n }
 // about. The title carries the ' - ' colon substitution from CLAUDE.md.
 func scanned(path string) ScannedMovie {
 	return ScannedMovie{
+		MediaType:   MediaTypeMovie,
 		LibraryPath: path,
 		Title:       "Avengers - Infinity War",
 		Year:        2018,
@@ -130,6 +131,7 @@ func TestUpsertMovieByPathIsIdempotent(t *testing.T) {
 	const path = "/movies/Spider-Man - No Way Home (2021)"
 
 	first := ScannedMovie{
+		MediaType:   MediaTypeMovie,
 		LibraryPath: path,
 		Title:       "Spider-Man - No Way Home",
 		Year:        2021,
@@ -458,10 +460,20 @@ func TestUpsertRejectsEmptyLibraryPath(t *testing.T) {
 	}
 }
 
-func TestUpsertDefaultsMediaTypeAndStatus(t *testing.T) {
+// Status still defaults; media_type no longer does, and T88 took that default
+// away on purpose.
+//
+// It was correct while there was one media type. With two it became a loaded
+// gun: UpsertMovieByPath REWRITES media_type from this field on every pass, so a
+// single construction site that left it out would relabel a show as a film — and
+// the prune would then delete that row for sitting outside LIBRARY_MOVIES,
+// taking its downloads with it. An empty media type is now a refusal at the
+// write rather than a wrong row nobody sees until a scan.
+func TestUpsertDefaultsStatusButRequiresAMediaType(t *testing.T) {
 	s := newTestStore(t)
+	ctx := context.Background()
 
-	m, _, err := s.UpsertMovieByPath(context.Background(), scanned("/movies/Defaults (2020)"))
+	m, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Defaults (2020)"))
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -470,6 +482,21 @@ func TestUpsertDefaultsMediaTypeAndStatus(t *testing.T) {
 	}
 	if m.Status != StatusImported {
 		t.Errorf("status = %q, want %q", m.Status, StatusImported)
+	}
+
+	blank := scanned("/movies/No Media Type (2020)")
+	blank.MediaType = ""
+	if _, _, err := s.UpsertMovieByPath(ctx, blank); err == nil {
+		t.Fatal("an upsert with no media type was accepted, and would have written a film")
+	}
+
+	// And it wrote nothing on the way to refusing.
+	films, err := s.ListMovies(ctx, MediaTypeMovie)
+	if err != nil {
+		t.Fatalf("ListMovies: %v", err)
+	}
+	if len(films) != 1 {
+		t.Fatalf("%d rows after the refusal, want the one that succeeded", len(films))
 	}
 }
 

@@ -269,6 +269,59 @@ func TestAHandMatchIsScopedToItsOwnIDSpace(t *testing.T) {
 	}
 }
 
+// #4, and the one that would have been hardest to notice.
+//
+// UpsertWanted's contract is to return an EXISTING row untouched when it already
+// knows the title. Unscoped, its `WHERE tmdb_id = ?` probe for Severance's tv id
+// 95396 finds the film holding movie id 95396 and returns it — so the season
+// pack gets attached to that film, the import lands under the movies root, and
+// nothing anywhere reports an error.
+func TestDispatchingAShowDoesNotAttachItToAFilmWithTheSameNumber(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	film := seedFilm(t, s, "Coincidence", 2011, 95396)
+
+	show, err := s.UpsertWanted(ctx, Wanted{
+		MediaType: MediaTypeTV, Title: "Severance", Year: 2022, TMDBID: ptrInt64(95396),
+	})
+	if err != nil {
+		t.Fatalf("UpsertWanted for a show: %v", err)
+	}
+	if show.ID == film.ID {
+		t.Fatal("dispatching a show returned the FILM's row — the season pack would import into the film's folder")
+	}
+	if show.MediaType != MediaTypeTV {
+		t.Errorf("media_type = %q, want %q", show.MediaType, MediaTypeTV)
+	}
+	if show.TMDBTVID == nil || *show.TMDBTVID != 95396 {
+		t.Errorf("tmdb_tv_id = %v, want 95396", show.TMDBTVID)
+	}
+
+	// The identity half still works within one media type: asking twice is one row.
+	again, err := s.UpsertWanted(ctx, Wanted{
+		MediaType: MediaTypeTV, Title: "Severance", Year: 2022, TMDBID: ptrInt64(95396),
+	})
+	if err != nil {
+		t.Fatalf("UpsertWanted twice: %v", err)
+	}
+	if again.ID != show.ID {
+		t.Errorf("a second dispatch forked the show into rows %d and %d", show.ID, again.ID)
+	}
+}
+
+// A media type is required here too, and for a sharper reason than tidiness: a
+// show dispatched as a film would be recorded under the movies root and deleted
+// by the next scan, downloads and all.
+func TestDispatchRequiresAMediaType(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.UpsertWanted(context.Background(), Wanted{
+		Title: "Severance", Year: 2022, TMDBID: ptrInt64(95396),
+	}); err == nil {
+		t.Fatal("a dispatch with no media type was accepted")
+	}
+}
+
 // Every media-scoped read refuses a media type that is not one of the two,
 // rather than quietly answering about films.
 //
