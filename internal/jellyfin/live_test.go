@@ -293,7 +293,7 @@ func TestLiveProvision(t *testing.T) {
 		t.Errorf("a wrong password gave %v, want ErrBadCredentials", err)
 	}
 
-	if err := p.AddLibrary(ctx, session, libraryName, libraryPath, OnlyIfUnconfigured); err != nil {
+	if err := p.AddLibrary(ctx, session, libraryName, MovieLibrary, libraryPath, OnlyIfUnconfigured); err != nil {
 		t.Fatalf("AddLibrary(%s): %v", libraryPath, err)
 	}
 
@@ -502,7 +502,7 @@ func TestLiveAdopt(t *testing.T) {
 
 	// Adding a library is additive and does not disturb the ones already there.
 	if path := strings.TrimSpace(os.Getenv("JELLYFIN_ADOPT_PATH")); path != "" {
-		if err := p.AddLibrary(ctx, session, "curator", path, AdoptConfigured); err != nil {
+		if err := p.AddLibrary(ctx, session, "curator", MovieLibrary, path, AdoptConfigured); err != nil {
 			t.Fatalf("AddLibrary(%s) with the adopt opt-in: %v", path, err)
 		}
 		after, err := p.Libraries(ctx, session)

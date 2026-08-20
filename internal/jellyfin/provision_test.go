@@ -149,8 +149,13 @@ func (f *fakeJellyfin) serve(w http.ResponseWriter, r *http.Request) {
 			locations = append(locations, info.Path)
 		}
 		f.mu.Lock()
+		// CollectionType is echoed back because the real listing carries it:
+		// it is how the adopt branch tells a household's Shows library from
+		// its Movies one when the two paths are behind different mounts.
 		f.folders = append(f.folders, map[string]any{
-			"Name": r.URL.Query().Get("name"), "Locations": locations,
+			"Name":           r.URL.Query().Get("name"),
+			"Locations":      locations,
+			"CollectionType": r.URL.Query().Get("collectionType"),
 		})
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
@@ -340,7 +345,7 @@ func TestProvisionRunsTheMeasuredSequence(t *testing.T) {
 	if session.Token == "" || session.UserID != "user-1" || session.ServerID != "srv-1" {
 		t.Fatalf("session = %+v, want a token, user-1 and srv-1", session)
 	}
-	if err := p.AddLibrary(ctx, session, "Movies", "/media/movies", OnlyIfUnconfigured); err != nil {
+	if err := p.AddLibrary(ctx, session, "Movies", MovieLibrary, "/media/movies", OnlyIfUnconfigured); err != nil {
 		t.Fatalf("AddLibrary: %v", err)
 	}
 	key, err := p.MintKey(ctx, session, KeyAppName, OnlyIfUnconfigured)
@@ -488,7 +493,7 @@ func TestAddLibraryAndMintKeyNeedAnExplicitOptInOnAConfiguredServer(t *testing.T
 	ctx := context.Background()
 	session := Session{Token: "user-token", UserID: "user-1", ServerID: "srv-1"}
 
-	if err := p.AddLibrary(ctx, session, "Movies", "/media/movies", OnlyIfUnconfigured); !errors.Is(err, ErrAlreadyConfigured) {
+	if err := p.AddLibrary(ctx, session, "Movies", MovieLibrary, "/media/movies", OnlyIfUnconfigured); !errors.Is(err, ErrAlreadyConfigured) {
 		t.Errorf("AddLibrary without consent: err = %v, want ErrAlreadyConfigured", err)
 	}
 	if _, err := p.MintKey(ctx, session, KeyAppName, OnlyIfUnconfigured); !errors.Is(err, ErrAlreadyConfigured) {
@@ -503,7 +508,7 @@ func TestAddLibraryAndMintKeyNeedAnExplicitOptInOnAConfiguredServer(t *testing.T
 	// With the opt-in, both work — that is the whole adopt branch, and it is
 	// additive: nothing under /Startup/ runs either way.
 	fake.forget()
-	if err := p.AddLibrary(ctx, session, "Movies", "/media/movies", AdoptConfigured); err != nil {
+	if err := p.AddLibrary(ctx, session, "Movies", MovieLibrary, "/media/movies", AdoptConfigured); err != nil {
 		t.Errorf("AddLibrary with consent: %v", err)
 	}
 	key, err := p.MintKey(ctx, session, KeyAppName, AdoptConfigured)
@@ -531,7 +536,7 @@ func TestAddLibrarySendsPathInfosAndNothingElse(t *testing.T) {
 	p := fake.provisioner()
 	session := Session{Token: "user-token"}
 
-	if err := p.AddLibrary(context.Background(), session, "Movies", "/media/movies", OnlyIfUnconfigured); err != nil {
+	if err := p.AddLibrary(context.Background(), session, "Movies", MovieLibrary, "/media/movies", OnlyIfUnconfigured); err != nil {
 		t.Fatalf("AddLibrary: %v", err)
 	}
 
@@ -585,6 +590,80 @@ func TestAddLibrarySendsPathInfosAndNothingElse(t *testing.T) {
 	}
 }
 
+// The one thing that differs between curator's two libraries, and the one that
+// cannot be got wrong quietly: a Shows library created with collectionType=movies
+// is created, scans, and holds nothing.
+func TestAddLibrarySendsTheCollectionTypeForTheKind(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind LibraryKind
+		want string
+	}{
+		{"films", MovieLibrary, "movies"},
+		// "tvshows" is Jellyfin's own spelling. "shows" and "tv" are not
+		// collection types it knows, and it refuses neither.
+		{"television", ShowLibrary, "tvshows"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newFakeJellyfin(t)
+			path := "/media/" + tc.name
+
+			if err := fake.provisioner().AddLibrary(
+				context.Background(), Session{Token: "t"}, "Whatever", tc.kind, path, OnlyIfUnconfigured,
+			); err != nil {
+				t.Fatalf("AddLibrary: %v", err)
+			}
+
+			var post recorded
+			for _, r := range fake.requests() {
+				if r.route() == "POST "+pathVirtualFolders {
+					post = r
+				}
+			}
+			if got := post.Query.Get("collectionType"); got != tc.want {
+				t.Errorf("collectionType = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The listing carries the type back, which is what lets a caller tell a
+// household's Shows library from its Movies one when the paths are behind two
+// different mounts and cannot be compared.
+func TestLibrariesReportTheirCollectionType(t *testing.T) {
+	fake := newFakeJellyfin(t)
+	fake.answer("GET "+pathVirtualFolders, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, []map[string]any{
+			{"Name": "Movies", "Locations": []string{"/movies"}, "CollectionType": "movies"},
+			{"Name": "Shows", "Locations": []string{"/tv"}, "CollectionType": "tvshows"},
+			// A folder somebody added without choosing a type. Empty is a real
+			// state and not a decode failure.
+			{"Name": "old stuff", "Locations": []string{"/old"}},
+		})
+	})
+
+	got, err := fake.provisioner().Libraries(context.Background(), Session{Token: "t"})
+	if err != nil {
+		t.Fatalf("Libraries: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d libraries, want 3", len(got))
+	}
+	if !got[0].Holds(MovieLibrary) || got[0].Holds(ShowLibrary) {
+		t.Errorf("Movies library reported as %+v", got[0])
+	}
+	if !got[1].Holds(ShowLibrary) || got[1].Holds(MovieLibrary) {
+		t.Errorf("Shows library reported as %+v", got[1])
+	}
+	if got[2].Holds(MovieLibrary) || got[2].Holds(ShowLibrary) {
+		t.Errorf("a mixed library claimed a kind: %+v", got[2])
+	}
+	// The casing is somebody else's spelling, exactly as ProviderIds.Tmdb is.
+	if !(Library{CollectionType: "TvShows"}).Holds(ShowLibrary) {
+		t.Error("Holds is case-sensitive; a version that spelled it differently would stop matching")
+	}
+}
+
 // A 204 is not proof the library exists: a folder created with
 // refreshLibrary=false came back in the listing with no ItemId and no
 // LibraryOptions key at all until a refresh materialised it.
@@ -597,7 +676,7 @@ func TestAddLibraryFailsWhenTheListingDoesNotContainThePath(t *testing.T) {
 		writeJSON(w, []map[string]any{{"Name": "Movies", "Locations": []string{"/somewhere/else"}}})
 	})
 
-	err := fake.provisioner().AddLibrary(context.Background(), Session{Token: "t"}, "Movies", "/media/movies", OnlyIfUnconfigured)
+	err := fake.provisioner().AddLibrary(context.Background(), Session{Token: "t"}, "Movies", MovieLibrary, "/media/movies", OnlyIfUnconfigured)
 	if err == nil {
 		t.Fatal("a 204 with no library behind it reported success")
 	}
@@ -632,7 +711,7 @@ func TestAddLibraryBelievesTheListingRatherThanAFailedStatus(t *testing.T) {
 	})
 
 	if err := fake.provisioner().AddLibrary(
-		context.Background(), Session{Token: "t"}, "Movies", "/media/movies", OnlyIfUnconfigured,
+		context.Background(), Session{Token: "t"}, "Movies", MovieLibrary, "/media/movies", OnlyIfUnconfigured,
 	); err != nil {
 		t.Errorf("AddLibrary: %v — the listing says the library is there", err)
 	}
@@ -648,7 +727,7 @@ func TestAddLibraryStillFailsWhenTheLibraryReallyIsNotThere(t *testing.T) {
 	})
 
 	err := fake.provisioner().AddLibrary(
-		context.Background(), Session{Token: "t"}, "Movies", "/media/movies", OnlyIfUnconfigured)
+		context.Background(), Session{Token: "t"}, "Movies", MovieLibrary, "/media/movies", OnlyIfUnconfigured)
 	if !errors.Is(err, ErrUnexpectedResponse) {
 		t.Errorf("err = %v, want ErrUnexpectedResponse so the screen degrades to instructions", err)
 	}
@@ -661,7 +740,7 @@ func TestAddLibraryAcceptsATrailingSlashInTheListing(t *testing.T) {
 		writeJSON(w, []map[string]any{{"Name": "Movies", "Locations": []string{"/media/movies/"}}})
 	})
 
-	if err := fake.provisioner().AddLibrary(context.Background(), Session{Token: "t"}, "Movies", "/media/movies", OnlyIfUnconfigured); err != nil {
+	if err := fake.provisioner().AddLibrary(context.Background(), Session{Token: "t"}, "Movies", MovieLibrary, "/media/movies", OnlyIfUnconfigured); err != nil {
 		t.Errorf("AddLibrary: %v", err)
 	}
 }
@@ -1026,7 +1105,7 @@ func TestAnUnexpectedShapeAtAnyStepIsTheInstructionsError(t *testing.T) {
 			return err
 		}},
 		"Library/VirtualFolders": {"GET " + pathVirtualFolders, func(p *Provisioner) error {
-			return p.AddLibrary(context.Background(), Session{Token: "t"}, "Movies", "/media/movies", OnlyIfUnconfigured)
+			return p.AddLibrary(context.Background(), Session{Token: "t"}, "Movies", MovieLibrary, "/media/movies", OnlyIfUnconfigured)
 		}},
 		"Auth/Keys": {"GET " + pathAuthKeys, func(p *Provisioner) error {
 			_, err := p.MintKey(context.Background(), Session{Token: "t"}, KeyAppName, OnlyIfUnconfigured)

@@ -372,6 +372,152 @@ func TestFindMovieGivesUpOnAWedgedJellyfin(t *testing.T) {
 	}
 }
 
+// --- the same lookup for a show (T92) ---------------------------------------
+
+// seriesBody is a cut-down /Items response for a Series, in the shape the movie
+// one is in: Jellyfin files a show's TMDB id under the same "Tmdb" key.
+const seriesBody = `{"Items":[
+ {"Id":"sss","ServerId":"srv","Name":"Severance","ProviderIds":{"Tmdb":"95396","Tvdb":"371980"}}
+],"TotalRecordCount":1}`
+
+// The one parameter that separates the two id spaces. TMDB numbers films and
+// shows independently, so asking for a Movie with a tv id can land on an
+// unrelated film rather than merely miss.
+func TestFindSeriesAsksForASeriesAndNothingElse(t *testing.T) {
+	var got *http.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Clone(r.Context())
+		_, _ = w.Write([]byte(seriesBody))
+	}))
+	defer srv.Close()
+
+	item, err := New(srv.URL, "s3cr3t", srv.Client()).FindSeries(context.Background(), 95396, 2022)
+	if err != nil {
+		t.Fatalf("FindSeries: %v", err)
+	}
+	if item.ID != "sss" || item.ServerID != "srv" {
+		t.Errorf("item = %+v, want {sss srv}", item)
+	}
+
+	q := got.URL.Query()
+	if q.Get("IncludeItemTypes") != "Series" {
+		t.Errorf("IncludeItemTypes = %q, want Series — a Movie query is why every show missed", q.Get("IncludeItemTypes"))
+	}
+	if got.Method != http.MethodGet {
+		t.Errorf("method = %s, want GET — this lookup must never write", got.Method)
+	}
+	if q.Get("Recursive") != "true" || q.Get("Fields") != "ProviderIds" {
+		t.Errorf("query = %q, want the same shape FindMovie sends", got.URL.RawQuery)
+	}
+	if q.Get("years") != "2022" {
+		t.Errorf("years = %q, want the show's year to narrow the first request", q.Get("years"))
+	}
+	// D32's two rules, which do not change with the media type: a user-scoped
+	// library shrinks, and both of these parameters are silently ignored.
+	if q.Has("userId") || q.Has("UserId") {
+		t.Errorf("the lookup sent a userId, which narrows the library to one user: %q", got.URL.RawQuery)
+	}
+	if q.Has("Path") || q.Has("AnyProviderIdEquals") {
+		t.Errorf("the lookup sent a parameter Jellyfin ignores: %q", got.URL.RawQuery)
+	}
+	if got.Header.Get(tokenHeader) != "s3cr3t" || strings.Contains(got.URL.String(), "s3cr3t") {
+		t.Errorf("the key went somewhere other than the header: %q", got.URL.String())
+	}
+}
+
+// The retry FindSeries has and FindMovie does not.
+//
+// Nothing has measured that a show's year agrees on both sides — Jellyfin's
+// Series.ProductionYear is the first air year and a folder may be named for the
+// season somebody has — so a narrowed miss asks again unnarrowed rather than
+// becoming a permanent, invisible fallback to the search link.
+func TestFindSeriesAsksAgainWithoutTheYearWhenTheNarrowedQueryMisses(t *testing.T) {
+	var years []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		years = append(years, r.URL.Query().Get("years"))
+		if r.URL.Query().Has("years") {
+			// The show is there; it just does not carry the year curator asked for.
+			_, _ = w.Write([]byte(`{"Items":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(seriesBody))
+	}))
+	defer srv.Close()
+
+	item, err := New(srv.URL, "k", srv.Client()).FindSeries(context.Background(), 95396, 1999)
+	if err != nil {
+		t.Fatalf("FindSeries: %v", err)
+	}
+	if item.ID != "sss" {
+		t.Errorf("item.ID = %q, want the show the unnarrowed query found", item.ID)
+	}
+	if len(years) != 2 || years[0] != "1999" || years[1] != "" {
+		t.Errorf("years asked for = %v, want the narrowed request and then one without it", years)
+	}
+}
+
+// A miss with no year to drop is one request and one miss: there is nothing to
+// retry, and a second identical query would be a round trip for nothing.
+func TestFindSeriesDoesNotRetryWhenNoYearWasSent(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`{"Items":[]}`))
+	}))
+	defer srv.Close()
+
+	if _, err := New(srv.URL, "k", srv.Client()).FindSeries(context.Background(), 95396, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if requests != 1 {
+		t.Errorf("made %d requests, want 1 — there was no narrowing to drop", requests)
+	}
+}
+
+// A revoked key is not a missing show, and it must not be retried into one
+// either: the second request would answer 401 as well and the caller would
+// still need to know which of the two it was.
+func TestFindSeriesReportsARevokedKeyWithoutRetrying(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL, "k", srv.Client()).FindSeries(context.Background(), 95396, 2022)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("err = %v, want ErrUnauthorized", err)
+	}
+	if requests != 1 {
+		t.Errorf("made %d requests for a rejected key, want 1", requests)
+	}
+	if !strings.Contains(err.Error(), "find series") {
+		t.Errorf("err = %q, want it to name the lookup that failed", err)
+	}
+}
+
+// The failure this task exists to remove, stated from the other side: the movie
+// lookup must never start answering for shows, because a show found under
+// IncludeItemTypes=Movie would be a film with the same TMDB number.
+func TestFindMovieStillAsksOnlyForMovies(t *testing.T) {
+	var itemTypes []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		itemTypes = append(itemTypes, r.URL.Query().Get("IncludeItemTypes"))
+		_, _ = w.Write([]byte(`{"Items":[]}`))
+	}))
+	defer srv.Close()
+
+	if _, err := New(srv.URL, "k", srv.Client()).FindMovie(context.Background(), 680, 1994); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	// One request, still: the retry is FindSeries's and adding it here would
+	// double every miss on a page that already has its answer.
+	if len(itemTypes) != 1 || itemTypes[0] != "Movie" {
+		t.Errorf("FindMovie asked for %v, want exactly one Movie query", itemTypes)
+	}
+}
+
 // The link the web client itself builds for a Movie, grepped out of
 // main.jellyfin.bundle.js on the real 10.10.7 rather than guessed.
 func TestWebItemURL(t *testing.T) {

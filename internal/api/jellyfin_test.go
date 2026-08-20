@@ -29,7 +29,21 @@ import (
 const (
 	testJellyfinURL = "http://jellyfin:8096"
 	testLibraryPath = "/media/movies"
+
+	// The television root, used only by the tests that turn television on.
+	// Everything else runs with LIBRARY_TV unset, which is the default state and
+	// the one where no television affordance may appear at all.
+	testTVLibraryPath = "/media/tv"
 )
+
+// createdLibrary is one library the fake was asked to create. The kind is
+// recorded beside the path because the two together are the thing that can be
+// silently wrong: a Shows library at the movies path scans and holds nothing.
+type createdLibrary struct {
+	name string
+	kind jellyfin.LibraryKind
+	path string
+}
 
 // fakeProvisioner records the sequence and fails wherever it is told to.
 //
@@ -52,6 +66,12 @@ type fakeProvisioner struct {
 	libraries  []jellyfin.Library
 	pathAnswer jellyfin.PathAnswer
 	pathErr    error
+
+	// created is every library this fake was asked to make, in order.
+	created []createdLibrary
+	// paths is what PathExists was asked about, so a test can prove the
+	// television root was — or was not — looked into at all.
+	paths []string
 
 	// consents records the Consent every additive call was made with, so a
 	// change that started adopting from the setup flow — or setting up from the
@@ -94,19 +114,23 @@ func (f *fakeProvisioner) Authenticate(context.Context, string, string) (jellyfi
 }
 
 func (f *fakeProvisioner) AddLibrary(
-	_ context.Context, session jellyfin.Session, name, libraryPath string, consent jellyfin.Consent,
+	_ context.Context, session jellyfin.Session, name string, kind jellyfin.LibraryKind,
+	libraryPath string, consent jellyfin.Consent,
 ) error {
 	if session.Token == "" {
 		return errors.New("AddLibrary ran without a session")
 	}
-	if libraryPath != testLibraryPath {
-		return fmt.Errorf("AddLibrary got path %q, want %q", libraryPath, testLibraryPath)
+	if libraryPath != testLibraryPath && libraryPath != testTVLibraryPath {
+		return fmt.Errorf("AddLibrary got path %q, want one of curator's roots", libraryPath)
 	}
 	f.consents = append(f.consents, consent)
 	if err := f.record("AddLibrary"); err != nil {
 		return err
 	}
-	f.libraries = append(f.libraries, jellyfin.Library{Name: name, Locations: []string{libraryPath}})
+	f.created = append(f.created, createdLibrary{name: name, kind: kind, path: libraryPath})
+	f.libraries = append(f.libraries, jellyfin.Library{
+		Name: name, Locations: []string{libraryPath}, CollectionType: kind.CollectionType(),
+	})
 	return nil
 }
 
@@ -136,9 +160,10 @@ func (f *fakeProvisioner) Libraries(context.Context, jellyfin.Session) ([]jellyf
 }
 
 func (f *fakeProvisioner) PathExists(_ context.Context, _ jellyfin.Session, path string) (jellyfin.PathAnswer, error) {
-	if path != testLibraryPath {
-		return jellyfin.PathUnknown, fmt.Errorf("PathExists got %q, want %q", path, testLibraryPath)
+	if path != testLibraryPath && path != testTVLibraryPath {
+		return jellyfin.PathUnknown, fmt.Errorf("PathExists got %q, want one of curator's roots", path)
 	}
+	f.paths = append(f.paths, path)
 	if err := f.record("PathExists"); err != nil {
 		return jellyfin.PathUnknown, err
 	}
@@ -182,9 +207,33 @@ func setupServer(t *testing.T, p *fakeProvisioner, states map[string]SettingStat
 	return h, writer
 }
 
+// setupServerWithTV is the same screen on an install where LIBRARY_TV is set.
+// Television being off is the default everywhere else in this file, which is
+// the state that has to leave every television affordance absent.
+func setupServerWithTV(t *testing.T, p *fakeProvisioner) (http.Handler, *fakeWriter) {
+	t.Helper()
+	wired, _ := jellyfinTestServer(t, p, nil, &fakeReader{err: jellyfin.ErrNotFound}, testTVLibraryPath)
+	return wired.handler, wired.writer
+}
+
 func setupServerWithReader(
 	t *testing.T, p *fakeProvisioner, states map[string]SettingState, reader *fakeReader,
 ) (http.Handler, *fakeWriter, *fakeReader) {
+	t.Helper()
+	wired, _ := jellyfinTestServer(t, p, states, reader, "")
+	return wired.handler, wired.writer, reader
+}
+
+// wiredJellyfin is what jellyfinTestServer built, named so the two helpers
+// above can each return the pieces they care about.
+type wiredJellyfin struct {
+	handler http.Handler
+	writer  *fakeWriter
+}
+
+func jellyfinTestServer(
+	t *testing.T, p *fakeProvisioner, states map[string]SettingState, reader *fakeReader, tvPath string,
+) (wiredJellyfin, *fakeReader) {
 	t.Helper()
 	writer := &fakeWriter{}
 	set := fullSettings()
@@ -195,16 +244,17 @@ func setupServerWithReader(
 	New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, quiet()).
 		WithSettings(set).
 		WithJellyfinSetup(JellyfinSetup{
-			URL:         testJellyfinURL,
-			LibraryPath: testLibraryPath,
-			New:         func(string) Provisioner { return p },
+			URL:           testJellyfinURL,
+			LibraryPath:   testLibraryPath,
+			TVLibraryPath: tvPath,
+			New:           func(string) Provisioner { return p },
 			Reader: func(baseURL, apiKey string) MediaServer {
 				reader.baseURL, reader.key = baseURL, apiKey
 				return reader
 			},
 		}).
 		RegisterJellyfin(mux)
-	return mux, writer, reader
+	return wiredJellyfin{handler: mux, writer: writer}, reader
 }
 
 func probe(t *testing.T, h http.Handler) (*httptest.ResponseRecorder, jellyfinProbeBody) {
@@ -326,6 +376,114 @@ func TestProvisionRunsTheSequenceAndRecordsTheResult(t *testing.T) {
 	// already been set up.
 	if !p.only(jellyfin.OnlyIfUnconfigured) {
 		t.Errorf("the setup flow made an additive call with consent %v", p.consents)
+	}
+}
+
+// --- T92: the second library, and the install that must not get one ---------
+
+// The default state of this product: LIBRARY_TV is unset, television is off,
+// and provisioning creates exactly the one library it always did.
+//
+// An empty Shows library on a stranger's Jellyfin is not a harmless extra. It
+// is a library they have to find and delete, for a feature they never turned
+// on, on a server curator had just promised to set up correctly.
+func TestProvisionCreatesNoShowsLibraryWhenTelevisionIsUnconfigured(t *testing.T) {
+	p := &fakeProvisioner{key: "k"}
+	h, _ := setupServer(t, p, nil)
+
+	rec := postProvision(t, h, `{"username":"a","password":"b"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if len(p.created) != 1 {
+		t.Fatalf("created %+v, want exactly the Movies library", p.created)
+	}
+	if got := p.created[0]; got.name != libraryName || got.kind != jellyfin.MovieLibrary || got.path != testLibraryPath {
+		t.Errorf("created %+v, want the %s library at %s", got, libraryName, testLibraryPath)
+	}
+	// And the answer says nothing about television either: the screen renders
+	// what is in the body, so an empty string here is a television row on an
+	// install that has none.
+	if body := rec.Body.String(); strings.Contains(body, "tv_library") {
+		t.Errorf("the response mentions a television library on an install with no LIBRARY_TV: %s", body)
+	}
+}
+
+// With LIBRARY_TV set, the same sequence with one more library in it — and the
+// collection type is the part that cannot be got wrong quietly, because a Shows
+// library created as `movies` scans and holds nothing.
+func TestProvisionCreatesTheShowsLibraryWhenTelevisionIsConfigured(t *testing.T) {
+	p := &fakeProvisioner{key: "k"}
+	h, _ := setupServerWithTV(t, p)
+
+	rec := postProvision(t, h, `{"username":"a","password":"b"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	want := []createdLibrary{
+		{name: libraryName, kind: jellyfin.MovieLibrary, path: testLibraryPath},
+		{name: tvLibraryName, kind: jellyfin.ShowLibrary, path: testTVLibraryPath},
+	}
+	if !slices.Equal(p.created, want) {
+		t.Errorf("created %+v, want %+v", p.created, want)
+	}
+
+	// Both libraries land before the wizard is closed, which is the property
+	// T64's ordering exists for: a failure at either leaves a server that is
+	// visibly unfinished rather than finished and missing a library.
+	sequence := strings.Join(p.calls, ",")
+	if sequence != "Configure,CreateAdmin,EnableRemoteAccess,Authenticate,AddLibrary,AddLibrary,MintKey,CompleteSetup" {
+		t.Errorf("sequence = %v", p.calls)
+	}
+	// The setup flow may never adopt, on either library.
+	if !p.only(jellyfin.OnlyIfUnconfigured) {
+		t.Errorf("the setup flow made an additive call with consent %v", p.consents)
+	}
+
+	var body jellyfinProvisionBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("provision body %q: %v", rec.Body.String(), err)
+	}
+	if body.TVLibrary != tvLibraryName || body.TVLibraryPath != testTVLibraryPath {
+		t.Errorf("body reported tv library %q at %q", body.TVLibrary, body.TVLibraryPath)
+	}
+}
+
+// A failure on the second library names the second library. "curator got as far
+// as the library" for a television one would send somebody to look at the wrong
+// half of their server.
+func TestProvisionNamesTheTelevisionLibraryWhenThatIsWhatFailed(t *testing.T) {
+	p := &fakeProvisioner{key: "k"}
+	h, _ := setupServerWithTV(t, p)
+	// The films library succeeds and the television one does not: the fake
+	// fails every call by that name, so this is the second AddLibrary.
+	p.failAt, p.failWith = "AddLibrary", jellyfin.ErrUnexpectedResponse
+
+	rec := postProvision(t, h, `{"username":"a","password":"b"}`)
+	body := failureBody(t, rec)
+	if body.Step != "the library" {
+		t.Fatalf("step = %q, want the films library — it is the first of the two", body.Step)
+	}
+	// And the manual instructions carry BOTH paths, because finishing by hand
+	// on this install means creating two libraries.
+	joined := strings.Join(body.Instructions, "\n")
+	if !strings.Contains(joined, testLibraryPath) || !strings.Contains(joined, testTVLibraryPath) {
+		t.Errorf("instructions do not name both roots: %v", body.Instructions)
+	}
+}
+
+// The manual route on an install with no television must not tell somebody to
+// create a Shows library, because there is no path to give it.
+func TestManualStepsSayNothingAboutTelevisionWhenItIsOff(t *testing.T) {
+	p := &fakeProvisioner{key: "k", failAt: "Configure", failWith: jellyfin.ErrUnexpectedResponse}
+	h, _ := setupServer(t, p, nil)
+
+	body := failureBody(t, postProvision(t, h, `{"username":"a","password":"b"}`))
+	joined := strings.Join(body.Instructions, "\n")
+	if strings.Contains(joined, tvLibraryName) || strings.Contains(joined, testTVLibraryPath) {
+		t.Errorf("instructions mention television on an install with none: %v", body.Instructions)
 	}
 }
 
@@ -798,6 +956,183 @@ func TestAdoptWillNotAddALibraryTheServerCannotSee(t *testing.T) {
 	}
 	if got := adoptedBody(t, rec).Library.State; got != libraryUnseen {
 		t.Errorf("state = %q, want %q", got, libraryUnseen)
+	}
+}
+
+// --- T92: the television root, on a server somebody else owns ---------------
+
+// Television off is the default, and it has to be absent rather than empty:
+// curator does not ask about a path it does not have, and the body carries no
+// television row for a screen to render.
+func TestAdoptSaysNothingAboutTelevisionWhenItIsOff(t *testing.T) {
+	p := adopted("k")
+	p.libraries = []jellyfin.Library{{Name: "Movies", Locations: []string{"/movies"}, CollectionType: "movies"}}
+	h, _ := setupServer(t, p, nil)
+
+	rec := postAdopt(t, h, `{"url":"`+testAdoptURL+`","username":"a","password":"b","add_tv_library":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "tv_library") {
+		t.Errorf("the response carries a television row on an install with no LIBRARY_TV: %s", rec.Body.String())
+	}
+	if slices.Contains(p.paths, testTVLibraryPath) {
+		t.Errorf("asked that server about a television path curator does not have: %v", p.paths)
+	}
+	// Even with the flag set outright. There is nowhere to put a show, so there
+	// is nothing to point a library at.
+	if len(p.created) != 0 {
+		t.Errorf("created %+v with television off", p.created)
+	}
+}
+
+// **The Pi, and the reason the collection type is read at all.**
+//
+// Measured: that box's Jellyfin holds a `Shows` library of collection type
+// `tvshows` at `/tv`, which T54 left in place — and `/tv` is the host's
+// /media/storage/media/tv, the same directory curator reaches as /media/tv
+// through its own mount. The two strings cannot be compared and the type is the
+// only evidence there is, so curator reports it covered and adds nothing.
+func TestAdoptFindsAnExistingShowsLibraryBehindADifferentMount(t *testing.T) {
+	p := adopted("k")
+	p.libraries = []jellyfin.Library{
+		{Name: "Movies", Locations: []string{"/movies"}, CollectionType: "movies"},
+		{Name: "Shows", Locations: []string{"/tv"}, CollectionType: "tvshows"},
+	}
+	// That Jellyfin cannot see curator's mount, which is what makes this the
+	// hard case rather than a path comparison in disguise.
+	p.pathAnswer = jellyfin.PathAbsent
+	h, _ := setupServerWithTV(t, p)
+
+	// Asked for outright, which is the strongest form of the assertion: even
+	// with the opt-in ticked, a server that already has television gets no
+	// second Shows library.
+	rec := postAdopt(t, h,
+		`{"url":"`+testAdoptURL+`","username":"a","password":"b","add_tv_library":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+
+	body := adoptedBody(t, rec)
+	if body.TVLibrary == nil {
+		t.Fatal("no television report on an install with LIBRARY_TV set")
+	}
+	if body.TVLibrary.State != libraryCovered {
+		t.Errorf("television state = %q, want %q (%s)", body.TVLibrary.State, libraryCovered, body.TVLibrary.Detail)
+	}
+	if len(p.created) != 0 {
+		t.Errorf("created %+v — that server already has a television library", p.created)
+	}
+	// The sentence has to be checkable by somebody who knows their own mounts,
+	// so it names the library curator found and where that library points.
+	for _, want := range []string{"Shows", "/tv", testTVLibraryPath} {
+		if !strings.Contains(body.TVLibrary.Detail, want) {
+			t.Errorf("detail = %q, want it to name %q", body.TVLibrary.Detail, want)
+		}
+	}
+	if body.TVLibraryPath != testTVLibraryPath {
+		t.Errorf("tv_library_path = %q, want %q", body.TVLibraryPath, testTVLibraryPath)
+	}
+	// The films half is untouched by any of this: nothing covers /media/movies
+	// and that server says it cannot see it, which is T66's third case.
+	if body.Library.State != libraryUnseen {
+		t.Errorf("films state = %q, want %q — the television rule must not reach the movie root",
+			body.Library.State, libraryUnseen)
+	}
+}
+
+// The ordinary case: a server with no television at all, where the offer is
+// real — and it is still a separate opt-in from the films one.
+func TestAdoptAddsAShowsLibraryOnlyWhenAskedForOne(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		body  string
+		added bool
+	}{
+		{"declined", `"add_library":false,"add_tv_library":false`, false},
+		// Consenting to a Movies library is not consenting to a Shows library.
+		{"only the films one ticked", `"add_library":true,"add_tv_library":false`, false},
+		{"accepted", `"add_library":false,"add_tv_library":true`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := adopted("k")
+			p.libraries = []jellyfin.Library{
+				{Name: "Movies", Locations: []string{testLibraryPath}, CollectionType: "movies"},
+			}
+			h, _ := setupServerWithTV(t, p)
+
+			rec := postAdopt(t, h,
+				`{"url":"`+testAdoptURL+`","username":"a","password":"b",`+tc.body+`}`)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+			}
+
+			report := adoptedBody(t, rec).TVLibrary
+			if report == nil {
+				t.Fatal("no television report on an install with LIBRARY_TV set")
+			}
+			if report.Added != tc.added {
+				t.Fatalf("added = %v, want %v (%s)", report.Added, tc.added, report.Detail)
+			}
+			if !tc.added {
+				if len(p.created) != 0 {
+					t.Errorf("created %+v without being asked", p.created)
+				}
+				if report.State != libraryAddable {
+					t.Errorf("state = %q, want %q", report.State, libraryAddable)
+				}
+				return
+			}
+			want := createdLibrary{name: tvLibraryName, kind: jellyfin.ShowLibrary, path: testTVLibraryPath}
+			if len(p.created) != 1 || p.created[0] != want {
+				t.Errorf("created %+v, want just %+v", p.created, want)
+			}
+			if !p.only(jellyfin.AdoptConfigured) {
+				t.Errorf("wrote to somebody else's server without the adopt opt-in: %v", p.consents)
+			}
+		})
+	}
+}
+
+// A Shows library that points straight at curator's own television root needs
+// no collection type to be recognised: the paths agree, which is the bundle,
+// where both services mount one volume.
+func TestAdoptCoversTheTelevisionRootByPathWhenTheMountsAgree(t *testing.T) {
+	p := adopted("k")
+	p.libraries = []jellyfin.Library{
+		{Name: "Shows", Locations: []string{testTVLibraryPath}, CollectionType: "tvshows"},
+	}
+	h, _ := setupServerWithTV(t, p)
+
+	rec := postAdopt(t, h, `{"url":"`+testAdoptURL+`","username":"a","password":"b"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	report := adoptedBody(t, rec).TVLibrary
+	if report == nil || report.State != libraryCovered {
+		t.Fatalf("television report = %+v, want covered", report)
+	}
+	if !strings.Contains(report.Detail, "nothing to add") {
+		t.Errorf("detail = %q, want the path sentence rather than the collection-type one", report.Detail)
+	}
+	// A covered root is not looked up on that server's filesystem: there is
+	// nothing left to decide.
+	if slices.Contains(p.paths, testTVLibraryPath) {
+		t.Errorf("asked about a path a library already covers: %v", p.paths)
+	}
+}
+
+// The probe carries the paths so the screen shows them read-only, and shows a
+// television one only when there is one.
+func TestProbeCarriesTheTelevisionPathOnlyWhenThereIsOne(t *testing.T) {
+	off, _ := setupServer(t, &fakeProvisioner{status: jellyfin.ServerStatus{Version: "10.10.7"}}, nil)
+	if _, body := probe(t, off); body.TVLibraryPath != "" {
+		t.Errorf("tv_library_path = %q with television off", body.TVLibraryPath)
+	}
+
+	on, _ := setupServerWithTV(t, &fakeProvisioner{status: jellyfin.ServerStatus{Version: "10.10.7"}})
+	if _, body := probe(t, on); body.TVLibraryPath != testTVLibraryPath {
+		t.Errorf("tv_library_path = %q, want %q", body.TVLibraryPath, testTVLibraryPath)
 	}
 }
 
