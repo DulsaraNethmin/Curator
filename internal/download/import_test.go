@@ -25,8 +25,9 @@ type fakeImporter struct {
 	err       error
 
 	// D19's delete path.
-	removed   []string
-	removeErr error
+	removed      []string
+	removedMedia []string
+	removeErr    error
 }
 
 type importCall struct {
@@ -40,8 +41,13 @@ func (f *fakeImporter) TryImport(_ context.Context, t torrent.Torrent, d store.D
 
 func (f *fakeImporter) Refresh(context.Context) { f.refreshes++ }
 
-func (f *fakeImporter) RemoveFromLibrary(path string) error {
+// The media type is recorded rather than ignored: the whole point of passing it
+// is that the importer picks a root with it, so a fake that dropped it would let
+// a delete asking about the wrong root pass here and orphan a show in
+// production.
+func (f *fakeImporter) RemoveFromLibrary(mediaType, path string) error {
 	f.removed = append(f.removed, path)
+	f.removedMedia = append(f.removedMedia, mediaType)
 	return f.removeErr
 }
 
