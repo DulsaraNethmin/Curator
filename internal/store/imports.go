@@ -124,11 +124,17 @@ func adoptTwin(ctx context.Context, tx *sql.Tx, wantedID, twinID int64) error {
 		return err
 	}
 
-	var wantedTMDB, twinTMDB *int64
-	if err := tx.QueryRowContext(ctx, `SELECT tmdb_id FROM movies WHERE id = ?`, wantedID).Scan(&wantedTMDB); err != nil {
+	// Read through currentMatch so each row's id comes from the column its own
+	// media_type owns. A show's lives in tmdb_tv_id and a film's in tmdb_id, and
+	// reading the wrong one here would carry NULL and silently leave the twin
+	// unmatched — for a show, permanently, because MoviesMissingMetadata's TV
+	// pass is the only thing that would look at it again.
+	_, wantedTMDB, err := currentMatch(ctx, tx, wantedID)
+	if err != nil {
 		return err
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT tmdb_id FROM movies WHERE id = ?`, twinID).Scan(&twinTMDB); err != nil {
+	twinMedia, twinTMDB, err := currentMatch(ctx, tx, twinID)
+	if err != nil {
 		return err
 	}
 
@@ -154,12 +160,17 @@ func adoptTwin(ctx context.Context, tx *sql.Tx, wantedID, twinID int64) error {
 	// then failing identically on every retry for ever. Leaving the twin
 	// unmatched instead costs nothing — MoviesMissingMetadata surfaces it and a
 	// human can look, which is exactly what D6 says a NULL tmdb_id is for.
+	//
+	// The probe and the write are both scoped to the twin's own id space, because
+	// a film and a show may legitimately hold the same number.
 	var third int64
-	err := tx.QueryRowContext(ctx,
-		`SELECT id FROM movies WHERE tmdb_id = ? AND id <> ?`, *wantedTMDB, twinID).Scan(&third)
+	err = tx.QueryRowContext(ctx,
+		fmt.Sprintf(`SELECT id FROM movies WHERE %s = ? AND id <> ?`, tmdbColumn(twinMedia)),
+		*wantedTMDB, twinID).Scan(&third)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		_, err = tx.ExecContext(ctx, `UPDATE movies SET tmdb_id = ? WHERE id = ?`, *wantedTMDB, twinID)
+		_, err = tx.ExecContext(ctx,
+			`UPDATE movies SET`+tmdbIDWrite+` WHERE id = ?`, *wantedTMDB, *wantedTMDB, twinID)
 		return err
 	case err != nil:
 		return err

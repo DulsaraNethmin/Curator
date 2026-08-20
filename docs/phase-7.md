@@ -193,6 +193,7 @@ Every row is stored, has one environment variable, and takes effect at the next 
 | Group | Key / variable | Kind | |
 |---|---|---|---|
 | Library | `library_movies` · `LIBRARY_MOVIES` | path | |
+| | `library_tv` · `LIBRARY_TV` | path | empty = television off (T88) |
 | | `tmdb_api_key` · `TMDB_API_KEY` | **secret** | |
 | Downloads | `torrent_backend` · `TORRENT_BACKEND` | enum | `embedded` \| `qbittorrent` |
 | | `downloads_dir` · `DOWNLOADS_DIR` | path | embedded only |

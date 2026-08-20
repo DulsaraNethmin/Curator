@@ -45,7 +45,7 @@ type TorrentClient interface {
 
 // Store is the persistence dispatch, polling and deletion need.
 type Store interface {
-	UpsertWantedMovie(ctx context.Context, title string, year int, tmdbID *int64) (store.Movie, error)
+	UpsertWanted(ctx context.Context, w store.Wanted) (store.Movie, error)
 	InsertDownload(ctx context.Context, d store.Download) (store.Download, error)
 	UpdateDownloadProgress(ctx context.Context, hash, state string, progress float64, reason string, completedAt *time.Time) error
 	GetDownloadByHash(ctx context.Context, hash string) (store.Download, error)
@@ -174,6 +174,13 @@ type ManualImporter interface {
 // from the caller: those the server already holds.
 type Request struct {
 	ReleaseID string
+
+	// MediaType says whether Title names a film or a show, and it is required —
+	// the store has no default. It decides which library root the import lands
+	// under and which of TMDB's two id spaces TMDBID belongs to, and getting it
+	// wrong is not a cosmetic mislabel: a show recorded as a film is deleted by
+	// the next scan for sitting outside LIBRARY_MOVIES.
+	MediaType string
 	Title     string
 	Year      int
 	TMDBID    *int64
@@ -332,7 +339,12 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 			"hash", hash, "err", addErr)
 	}
 
-	movie, err := s.store.UpsertWantedMovie(ctx, req.Title, req.Year, req.TMDBID)
+	movie, err := s.store.UpsertWanted(ctx, store.Wanted{
+		MediaType: req.MediaType,
+		Title:     req.Title,
+		Year:      req.Year,
+		TMDBID:    req.TMDBID,
+	})
 	if err != nil {
 		return store.Download{}, fmt.Errorf("dispatch %s: %w", req.ReleaseID, err)
 	}

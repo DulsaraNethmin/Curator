@@ -29,6 +29,7 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/config"
 	"github.com/DulsaraNethmin/curator/internal/jellyfin"
 	"github.com/DulsaraNethmin/curator/internal/settings"
+	"github.com/DulsaraNethmin/curator/internal/store"
 )
 
 // provisionTimeout bounds the whole sequence.
@@ -1049,8 +1050,14 @@ func (s *Server) checkKey(
 // reads /Items and still finds nothing, which is exactly the half of the check
 // that can fail — a library with nothing matched in it is a normal state on a
 // fresh install and must not skip the check.
+//
+// **Films only, and that is a correctness requirement rather than a preference.**
+// The prover downstream is jellyfin.FindMovie, which pins
+// IncludeItemTypes=Movie. Hand it a show and it asks that server for a *Movie*
+// carrying a *tv* id, gets nothing, and the Playback screen reports a perfectly
+// good key against a server "that has never seen this disk".
 func (s *Server) checkFilm(ctx context.Context) (tmdbID, year int, title string) {
-	movies, err := s.store.ListMovies(ctx)
+	movies, err := s.store.ListMovies(ctx, store.MediaTypeMovie)
 	if err != nil {
 		s.log.Info("could not read the library to pick a film to check the jellyfin key with", "err", err)
 		return 0, 0, ""

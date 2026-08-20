@@ -20,9 +20,9 @@ func TestMarkImportedRecordsTheMovieAndTheDownload(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	movie, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, movie.ID, importHash)
 
@@ -68,9 +68,9 @@ func TestWantedThenScanThenMarkImported(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	wanted, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	wanted, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, wanted.ID, importHash)
 
@@ -101,7 +101,7 @@ func TestWantedThenScanThenMarkImported(t *testing.T) {
 		t.Errorf("title = %q, want the folder's", got.Title)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -140,9 +140,9 @@ func TestMarkImportedCarriesTMDBIDOntoAnUnmatchedTwin(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	wanted, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, ptrInt64(299536))
+	wanted, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: ptrInt64(299536)})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, wanted.ID, importHash)
 	if _, _, err := s.UpsertMovieByPath(ctx, scanned(importPath)); err != nil {
@@ -162,9 +162,9 @@ func TestMarkImportedLeavesAMatchedTwinsTMDBIDAlone(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	wanted, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, ptrInt64(111))
+	wanted, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: ptrInt64(111)})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, wanted.ID, importHash)
 
@@ -191,7 +191,7 @@ func TestMarkImportedLeavesAMatchedTwinsTMDBIDAlone(t *testing.T) {
 // whose hardlink is already on disk — into a UNIQUE violation. It is currently
 // UNREACHABLE, and that is worth stating rather than faking: tmdb_id is UNIQUE,
 // so if the wanted row holds an id then by construction no other row can, and
-// there is no legal state in which a third row contests it. UpsertWantedMovie
+// there is no legal state in which a third row contests it. UpsertWanted
 // matches on tmdb_id and returns the existing row instead of inserting a rival,
 // and SetTMDBMetadata fails outright on a conflict.
 //
@@ -203,9 +203,9 @@ func TestATMDBIDCannotBeContested(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	wanted, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, ptrInt64(299536))
+	wanted, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: ptrInt64(299536)})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 
 	other, _, err := s.UpsertMovieByPath(ctx, scanned("/movies/Some Other Folder (2018)"))
@@ -218,9 +218,9 @@ func TestATMDBIDCannotBeContested(t *testing.T) {
 
 	// And the other direction: asking to download a film already matched returns
 	// that row rather than forking its identity.
-	again, err := s.UpsertWantedMovie(ctx, "Avengers Infinity War", 2018, ptrInt64(299536))
+	again, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers Infinity War", Year: 2018, TMDBID: ptrInt64(299536)})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	if again.ID != wanted.ID {
 		t.Errorf("a second dispatch produced row %d, want the existing %d", again.ID, wanted.ID)
@@ -235,9 +235,9 @@ func TestMarkImportedRepointsEveryDownloadAtTheTwin(t *testing.T) {
 
 	const secondHash = "9999888877776666555544443333222211110000"
 
-	wanted, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	wanted, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, wanted.ID, importHash)
 	dispatch(t, s, wanted.ID, secondHash)
@@ -276,9 +276,9 @@ func TestMarkImportedKeepsTheFirstImportedAt(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	movie, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, movie.ID, importHash)
 
@@ -344,9 +344,9 @@ func TestMarkImportedRollsBackTheWholeFoldWhenTheLastStepFails(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	wanted, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, ptrInt64(299536))
+	wanted, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: ptrInt64(299536)})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, wanted.ID, importHash)
 	twin, _, err := s.UpsertMovieByPath(ctx, scanned(importPath))
@@ -397,9 +397,9 @@ func TestForeignKeysRefuseADeleteBeforeTheRepoint(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	movie, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, movie.ID, importHash)
 
@@ -433,9 +433,9 @@ func TestDeleteMovieRemovesTheRowAndReportsItsDownloads(t *testing.T) {
 	ctx := context.Background()
 	const secondHash = "9999888877776666555544443333222211110000"
 
-	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	movie, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, movie.ID, importHash)
 	dispatch(t, s, movie.ID, secondHash)
@@ -465,7 +465,7 @@ func TestDeleteMovieRemovesTheRowAndReportsItsDownloads(t *testing.T) {
 			t.Errorf("download %s survived: %v", hash, err)
 		}
 	}
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -511,9 +511,9 @@ func TestDeleteMovieLeavesNoOrphanedDownloads(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	movie, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, movie.ID, importHash)
 
@@ -548,7 +548,7 @@ func TestLibraryByTMDBIDIndexesOnlyMatchedFilms(t *testing.T) {
 		t.Fatalf("second folder: %v", err)
 	}
 
-	byID, err := s.LibraryByTMDBID(ctx)
+	byID, err := s.LibraryByTMDBID(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}
@@ -576,22 +576,22 @@ func TestLibraryByTMDBIDIndexesOnlyMatchedFilms(t *testing.T) {
 
 // The reason Downloading is an EXISTS over downloads and not movies.status.
 //
-// store.StatusDownloading is declared and never written — UpsertWantedMovie
+// store.StatusDownloading is declared and never written — UpsertWanted
 // inserts 'wanted' and the importer writes 'imported' — so a card reading
 // movies.status would label a film whose torrent is at 60% as "wanted".
 func TestLibraryByTMDBIDReportsDownloadingFromTheDownloadNotTheStatus(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, ptrInt64(299536))
+	movie, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: ptrInt64(299536)})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, movie.ID, importHash)
 
 	// The download is in flight. movies.status still says 'wanted', which is the
 	// trap.
-	byID, err := s.LibraryByTMDBID(ctx)
+	byID, err := s.LibraryByTMDBID(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}
@@ -604,7 +604,7 @@ func TestLibraryByTMDBIDReportsDownloadingFromTheDownloadNotTheStatus(t *testing
 	if _, err := s.MarkImported(ctx, importHash, importPath, importSize, importedAt); err != nil {
 		t.Fatalf("MarkImported: %v", err)
 	}
-	byID, err = s.LibraryByTMDBID(ctx)
+	byID, err = s.LibraryByTMDBID(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}
@@ -622,16 +622,16 @@ func TestLibraryByTMDBIDIgnoresAFailedDownload(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	movie, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, ptrInt64(299536))
+	movie, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: ptrInt64(299536)})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	dispatch(t, s, movie.ID, importHash)
 	if err := s.UpdateDownloadProgress(ctx, importHash, DownloadFailed, 0.3, "", nil); err != nil {
 		t.Fatalf("UpdateDownloadProgress: %v", err)
 	}
 
-	byID, err := s.LibraryByTMDBID(ctx)
+	byID, err := s.LibraryByTMDBID(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestLibraryByTMDBIDIgnoresAFailedDownload(t *testing.T) {
 }
 
 func TestLibraryByTMDBIDEmptyIsAnEmptyMap(t *testing.T) {
-	byID, err := newTestStore(t).LibraryByTMDBID(context.Background())
+	byID, err := newTestStore(t).LibraryByTMDBID(context.Background(), MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("LibraryByTMDBID: %v", err)
 	}

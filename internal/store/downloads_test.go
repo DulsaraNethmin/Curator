@@ -28,20 +28,20 @@ func dispatchedDownload(movieID int64, hash string) Download {
 // seedWantedMovie is the movie a download hangs off, since movie_id is NOT NULL.
 func seedWantedMovie(t *testing.T, s *Store) Movie {
 	t.Helper()
-	m, err := s.UpsertWantedMovie(context.Background(), "Interstellar", 2014, nil)
+	m, err := s.UpsertWanted(context.Background(), Wanted{MediaType: MediaTypeMovie, Title: "Interstellar", Year: 2014, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	return m
 }
 
-func TestUpsertWantedMovieCreatesWantedRow(t *testing.T) {
+func TestUpsertWantedCreatesWantedRow(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	m, err := s.UpsertWantedMovie(ctx, "Interstellar", 2014, nil)
+	m, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Interstellar", Year: 2014, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	if m.Status != StatusWanted {
 		t.Errorf("status = %q, want %q", m.Status, StatusWanted)
@@ -76,15 +76,15 @@ func TestUpsertWantedMovieCreatesWantedRow(t *testing.T) {
 }
 
 // Re-downloading a film must not fork its identity into two rows.
-func TestUpsertWantedMovieTwiceYieldsOneRow(t *testing.T) {
+func TestUpsertWantedTwiceYieldsOneRow(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	first, err := s.UpsertWantedMovie(ctx, "Interstellar", 2014, nil)
+	first, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Interstellar", Year: 2014, TMDBID: nil})
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	second, err := s.UpsertWantedMovie(ctx, "Interstellar", 2014, nil)
+	second, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Interstellar", Year: 2014, TMDBID: nil})
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestUpsertWantedMovieTwiceYieldsOneRow(t *testing.T) {
 		t.Errorf("second upsert produced id %d, want the first's %d", second.ID, first.ID)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -107,11 +107,11 @@ func TestUpsertWantedMovieTwiceYieldsOneRow(t *testing.T) {
 
 // A tmdb_id is the film itself; a title is only how somebody spelled it. So a
 // second request carrying the same id finds the row even when the title differs.
-func TestUpsertWantedMovieMatchesOnTMDBIDBeforeTitle(t *testing.T) {
+func TestUpsertWantedMatchesOnTMDBIDBeforeTitle(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	first, err := s.UpsertWantedMovie(ctx, "Interstellar", 2014, ptrInt64(157336))
+	first, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Interstellar", Year: 2014, TMDBID: ptrInt64(157336)})
 	if err != nil {
 		t.Fatalf("first: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestUpsertWantedMovieMatchesOnTMDBIDBeforeTitle(t *testing.T) {
 	}
 
 	// Same film, different spelling and even a wrong year — the id decides.
-	second, err := s.UpsertWantedMovie(ctx, "Interstellar (IMAX)", 2015, ptrInt64(157336))
+	second, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Interstellar (IMAX)", Year: 2015, TMDBID: ptrInt64(157336)})
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestUpsertWantedMovieMatchesOnTMDBIDBeforeTitle(t *testing.T) {
 			second.Title, second.Year)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -151,9 +151,9 @@ func TestManyWantedMoviesCoexistWithNullUniqueColumns(t *testing.T) {
 	titles := []string{"Interstellar", "Dune - Part Two", "Sinners"}
 	ids := map[int64]bool{}
 	for i, title := range titles {
-		m, err := s.UpsertWantedMovie(ctx, title, 2014+i, nil)
+		m, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: title, Year: 2014 + i, TMDBID: nil})
 		if err != nil {
-			t.Fatalf("UpsertWantedMovie %s: %v", title, err)
+			t.Fatalf("UpsertWanted %s: %v", title, err)
 		}
 		if m.LibraryPath != nil || m.TMDBID != nil {
 			t.Errorf("%s: library_path = %v, tmdb_id = %v, want both nil", title, m.LibraryPath, m.TMDBID)
@@ -164,7 +164,7 @@ func TestManyWantedMoviesCoexistWithNullUniqueColumns(t *testing.T) {
 		t.Errorf("got %d distinct ids for %d wanted movies", len(ids), len(titles))
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -193,9 +193,9 @@ func TestWantedMovieDoesNotDisturbTheScanUpsert(t *testing.T) {
 	ctx := context.Background()
 	const path = "/movies/Avengers - Infinity War (2018)"
 
-	want, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	want, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 
 	scan, wasInsert, err := s.UpsertMovieByPath(ctx, scanned(path))
@@ -216,7 +216,7 @@ func TestWantedMovieDoesNotDisturbTheScanUpsert(t *testing.T) {
 		t.Errorf("rescan id = %d, want the scan's %d", rescan.ID, scan.ID)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestWantedMovieDoesNotDisturbTheScanUpsert(t *testing.T) {
 
 // The other order, which is the one that must not create a duplicate at all:
 // asking to download a film already in the library returns the library's row.
-func TestUpsertWantedMovieReturnsAnAlreadyImportedMovie(t *testing.T) {
+func TestUpsertWantedReturnsAnAlreadyImportedMovie(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	const path = "/movies/Avengers - Infinity War (2018)"
@@ -252,9 +252,9 @@ func TestUpsertWantedMovieReturnsAnAlreadyImportedMovie(t *testing.T) {
 		t.Fatalf("UpsertMovieByPath: %v", err)
 	}
 
-	got, err := s.UpsertWantedMovie(ctx, "Avengers - Infinity War", 2018, nil)
+	got, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Avengers - Infinity War", Year: 2018, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	if got.ID != imported.ID {
 		t.Errorf("id = %d, want the imported row's %d — downloading a film we have must not fork its identity",
@@ -268,7 +268,7 @@ func TestUpsertWantedMovieReturnsAnAlreadyImportedMovie(t *testing.T) {
 		t.Errorf("library_path = %v, want %q preserved", got.LibraryPath, path)
 	}
 
-	movies, err := s.ListMovies(ctx)
+	movies, err := s.ListMovies(ctx, MediaTypeMovie)
 	if err != nil {
 		t.Fatalf("ListMovies: %v", err)
 	}
@@ -277,10 +277,10 @@ func TestUpsertWantedMovieReturnsAnAlreadyImportedMovie(t *testing.T) {
 	}
 }
 
-func TestUpsertWantedMovieRejectsBlankTitle(t *testing.T) {
+func TestUpsertWantedRejectsBlankTitle(t *testing.T) {
 	s := newTestStore(t)
 
-	if _, err := s.UpsertWantedMovie(context.Background(), "   ", 2014, nil); err == nil {
+	if _, err := s.UpsertWanted(context.Background(), Wanted{MediaType: MediaTypeMovie, Title: "   ", Year: 2014, TMDBID: nil}); err == nil {
 		t.Error("blank title accepted; every such row would match every other blank-titled one")
 	}
 }
@@ -721,9 +721,9 @@ func TestListDownloadsCarriesCompletedAtPerRow(t *testing.T) {
 	ctx := context.Background()
 
 	running := seedWantedMovie(t, s)
-	finished, err := s.UpsertWantedMovie(ctx, "Dune - Part Two", 2024, ptrInt64(693134))
+	finished, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Dune - Part Two", Year: 2024, TMDBID: ptrInt64(693134)})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 
 	const otherHash = "1111111111111111111111111111111111111111"

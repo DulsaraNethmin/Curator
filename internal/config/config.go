@@ -17,8 +17,20 @@ type Config struct {
 	Port          int
 	DBPath        string
 	LibraryMovies string
-	TMDBAPIKey    string
-	LogLevel      slog.Level
+
+	// LibraryTV is where shows live, and **empty means television is off** — no
+	// Shows tab, no TV rails, and the TV routes answering 503 naming this
+	// variable. It has no default, unlike LibraryMovies, and that asymmetry is
+	// the whole opt-in: a default would point curator at a directory nobody asked
+	// it to write to, and phase 11 is additive to a product whose README says
+	// "movies only" rather than a replacement for it.
+	//
+	// It is the same posture as QBIT_USER and JELLYFIN_URL — unconfigured is a
+	// supported state, not a broken one.
+	LibraryTV string
+
+	TMDBAPIKey string
+	LogLevel   slog.Level
 
 	// LogBufferLines is how much of the process log is kept in memory for
 	// GET /api/logs and the Logs screen. It is a ring: the oldest line is
@@ -180,6 +192,15 @@ func (c *Config) DownloadsConfigured() bool {
 	}
 	return c.QBitURL != "" && c.QBitUser != ""
 }
+
+// TVConfigured reports whether curator has anywhere to put a television show.
+//
+// One place to ask, rather than `cfg.LibraryTV != ""` scattered through the
+// handlers and the UI's feature flags — the same shape as DownloadsConfigured
+// and JellyfinConfigured above. Every TV affordance hangs off this, so
+// television is genuinely absent when it is unset rather than present and
+// broken.
+func (c *Config) TVConfigured() bool { return c.LibraryTV != "" }
 
 // Defaults. LibraryMovies points at the fixture so `go run ./cmd/curator` does
 // something useful on a fresh clone, with no config file and no mounted library.
@@ -350,12 +371,14 @@ func Load(resolved map[string]string) (*Config, error) {
 	cfg := &Config{
 		DBPath:        env("DB_PATH", defaultDBPath),
 		LibraryMovies: r.get("LIBRARY_MOVIES", defaultLibraryMovies),
-		TMDBAPIKey:    r.get("TMDB_API_KEY", ""),
-		MinterURL:     r.get("MINTER_URL", defaultMinterURL),
-		QBitURL:       r.get("QBIT_URL", defaultQBitURL),
-		QBitUser:      r.get("QBIT_USER", ""),
-		QBitPass:      r.get("QBIT_PASS", ""),
-		QBitCategory:  r.get("QBIT_CATEGORY", defaultQBitCategory),
+		// No default: empty means television is off. See Config.LibraryTV.
+		LibraryTV:    r.get("LIBRARY_TV", ""),
+		TMDBAPIKey:   r.get("TMDB_API_KEY", ""),
+		MinterURL:    r.get("MINTER_URL", defaultMinterURL),
+		QBitURL:      r.get("QBIT_URL", defaultQBitURL),
+		QBitUser:     r.get("QBIT_USER", ""),
+		QBitPass:     r.get("QBIT_PASS", ""),
+		QBitCategory: r.get("QBIT_CATEGORY", defaultQBitCategory),
 
 		LogBufferLines: defaultLogBufferLines,
 

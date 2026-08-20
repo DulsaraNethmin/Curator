@@ -101,6 +101,9 @@ type Setting struct {
 // becoming a field nobody can save.
 var registry = []Setting{
 	{Env: "LIBRARY_MOVIES", Group: "library", Kind: KindPath},
+	// No default anywhere, and empty is meaningful: it is how television is off.
+	// See config.Config.LibraryTV.
+	{Env: "LIBRARY_TV", Group: "library", Kind: KindPath},
 	{Env: "TMDB_API_KEY", Group: "library", Kind: KindText, Secret: true},
 
 	{Env: "TORRENT_BACKEND", Group: "downloads", Kind: KindEnum,

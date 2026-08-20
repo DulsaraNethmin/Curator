@@ -17,7 +17,7 @@ func TestMoviesOnDiskExcludesWantedRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed imported: %v", err)
 	}
-	if _, err := s.UpsertWantedMovie(ctx, "Dune Part Three", 2026, nil); err != nil {
+	if _, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Dune Part Three", Year: 2026, TMDBID: nil}); err != nil {
 		t.Fatalf("seed wanted: %v", err)
 	}
 

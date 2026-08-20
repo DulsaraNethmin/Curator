@@ -38,7 +38,47 @@ func (s *Store) migrate(ctx context.Context) error {
 	// only kind of row whose own `year` — the folder's — can disagree with it.
 	// Nullable on purpose: NULL means the two agree, which is every row the scan
 	// matched, so this backfills to exactly the right answer with no backfill.
-	return s.addColumn(ctx, "movies", "tmdb_year", "INTEGER")
+	if err := s.addColumn(ctx, "movies", "tmdb_year", "INTEGER"); err != nil {
+		return err
+	}
+
+	// T88. A show's TMDB id, in its own column because TMDB's movie and tv id
+	// sequences overlap and `tmdb_id` is UNIQUE — store.tmdbColumn has the whole
+	// argument. Nullable, and NULL for every film, so it backfills to exactly the
+	// right answer with no backfill.
+	if err := s.addColumn(ctx, "movies", "tmdb_tv_id", "INTEGER"); err != nil {
+		return err
+	}
+	// The uniqueness `tmdb_id` gets from its column declaration, which a column
+	// added by ALTER TABLE cannot have. **It cannot live in schema.sql either**:
+	// store.go execs schema.sql BEFORE calling migrate, so on every existing
+	// database the index would be created against a column that does not exist
+	// yet and fail with "no such column" — on exactly the databases this
+	// mechanism exists to serve.
+	return s.addIndex(ctx, "movies_tmdb_tv_id", "movies(tmdb_tv_id)")
+}
+
+// addIndex creates a unique index if it is not already there.
+//
+// It asks the database nothing, unlike addColumn, because CREATE UNIQUE INDEX IF
+// NOT EXISTS is already idempotent by construction — which is the property the
+// doc comment above demands of every step, arrived at directly rather than
+// through a shape inspection.
+//
+// name and target are compile-time constants from the line above, interpolated
+// for the same reason addColumn interpolates: SQLite cannot bind an identifier.
+// They must never become anything a caller supplies.
+//
+// A UNIQUE index over a nullable column is the right instrument here: SQLite
+// treats NULLs as distinct, so every film — all of which have tmdb_tv_id NULL —
+// coexists happily, and only two rows claiming the SAME show are refused.
+func (s *Store) addIndex(ctx context.Context, name, target string) error {
+	if _, err := s.db.ExecContext(ctx,
+		fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s`, name, target),
+	); err != nil {
+		return fmt.Errorf("add index %s: %w", name, err)
+	}
+	return nil
 }
 
 // addColumn adds a column if the table does not already have one by that name.

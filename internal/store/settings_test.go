@@ -201,9 +201,9 @@ func servesAReason(t *testing.T, s *Store) {
 	t.Helper()
 	ctx := context.Background()
 
-	m, err := s.UpsertWantedMovie(ctx, "Interstellar", 2014, nil)
+	m, err := s.UpsertWanted(ctx, Wanted{MediaType: MediaTypeMovie, Title: "Interstellar", Year: 2014, TMDBID: nil})
 	if err != nil {
-		t.Fatalf("UpsertWantedMovie: %v", err)
+		t.Fatalf("UpsertWanted: %v", err)
 	}
 	hash := fmt.Sprintf("%040d", len(t.Name())+int(m.ID))
 	if _, err := s.InsertDownload(ctx, Download{
@@ -309,7 +309,7 @@ func servesATMDBYear(t *testing.T, s *Store) {
 
 	const path = "/movies/Some Home Video (2019)"
 	m, _, err := s.UpsertMovieByPath(ctx, ScannedMovie{
-		LibraryPath: path, Title: "Some Home Video", Year: 2019,
+		MediaType: MediaTypeMovie, LibraryPath: path, Title: "Some Home Video", Year: 2019,
 	})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -331,6 +331,148 @@ func servesATMDBYear(t *testing.T, s *Store) {
 	if matched.MatchYear() != 2008 {
 		t.Errorf("MatchYear() = %d, want TMDB's 2008", matched.MatchYear())
 	}
+}
+
+// T88's column, in both directions again — and its index, which is the first
+// thing the mechanism has grown that is not a column.
+func TestMigrationAddsTheTMDBTVIDColumnAndIndexToAnOlderDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "phase-10.db")
+
+	// The phase 10 movies table: everything 0.3.0 shipped with, tmdb_year
+	// included and tmdb_tv_id not. A film is in it, because the migration has to
+	// leave one alone.
+	raw, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `
+		CREATE TABLE movies (
+		  id           INTEGER PRIMARY KEY,
+		  tmdb_id      INTEGER UNIQUE,
+		  title        TEXT NOT NULL,
+		  year         INTEGER NOT NULL,
+		  tmdb_year    INTEGER,
+		  media_type   TEXT NOT NULL DEFAULT 'movie',
+		  overview     TEXT,
+		  poster_path  TEXT,
+		  status       TEXT NOT NULL,
+		  library_path TEXT UNIQUE,
+		  quality      TEXT,
+		  size_bytes   INTEGER,
+		  added_at     DATETIME NOT NULL,
+		  imported_at  DATETIME
+		);
+		INSERT INTO movies (tmdb_id, title, year, status, library_path, added_at)
+		VALUES (95396, 'Some Film', 2011, 'imported', '/movies/Some Film (2011)', '2026-08-16T00:00:00Z');
+	`); err != nil {
+		t.Fatalf("create the old table: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if !hasColumn(t, s, "movies", "tmdb_tv_id") {
+		t.Fatal("movies.tmdb_tv_id is missing after opening an older database")
+	}
+	if !hasIndex(t, s, "movies_tmdb_tv_id") {
+		t.Fatal("the movies_tmdb_tv_id index is missing after opening an older database")
+	}
+	// The row that predates the column reads back through scanMovie, which now
+	// selects one more column than it did — the half a pragma cannot tell you.
+	film, err := s.GetMovie(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetMovie on the pre-existing row: %v", err)
+	}
+	if film.TMDBTVID != nil {
+		t.Errorf("tmdb_tv_id = %v on a film that predates the column, want NULL", *film.TMDBTVID)
+	}
+	if film.TMDBID == nil || *film.TMDBID != 95396 {
+		t.Errorf("tmdb_id = %v, want the film's 95396 left exactly where it was", film.TMDBID)
+	}
+
+	// Every start applies it, so the second must change nothing rather than fail
+	// on a duplicate column or a duplicate index.
+	again, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open twice: %v", err)
+	}
+	defer again.Close()
+	if !hasColumn(t, again, "movies", "tmdb_tv_id") {
+		t.Fatal("movies.tmdb_tv_id vanished on the second open")
+	}
+}
+
+func TestAFreshDatabaseHasTheTMDBTVIDColumnAndIndex(t *testing.T) {
+	s := newTestStore(t)
+	if !hasColumn(t, s, "movies", "tmdb_tv_id") {
+		t.Fatal("movies.tmdb_tv_id is missing from a fresh database")
+	}
+	if !hasIndex(t, s, "movies_tmdb_tv_id") {
+		t.Fatal("the movies_tmdb_tv_id index is missing from a fresh database")
+	}
+}
+
+// The two halves of what a UNIQUE index over a NULLABLE column buys, and the
+// reason a show's TMDB id could not simply go in tmdb_id.
+//
+// SQLite treats NULLs as distinct, so every film in the library — all of which
+// have tmdb_tv_id NULL — coexists under a UNIQUE index without noticing it. Only
+// two rows claiming the SAME show are refused. And a film and a show may hold the
+// same NUMBER, which is the whole point: Severance is tv id 95396 and some film
+// holds movie id 95396, and both have to be in one library.
+func TestTheTVIDIndexSeparatesTheTwoIDSpaces(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	insert := func(t *testing.T, title, mediaType, path string, movieID, tvID *int64) error {
+		t.Helper()
+		_, err := s.db.ExecContext(ctx, `
+			INSERT INTO movies (tmdb_id, tmdb_tv_id, title, year, media_type, status, library_path, added_at)
+			VALUES (?, ?, ?, 2022, ?, 'imported', ?, '2026-08-20T00:00:00Z')`,
+			movieID, tvID, title, mediaType, path)
+		return err
+	}
+
+	// Two films with no tv id at all. NULLs are distinct, so the index is silent.
+	if err := insert(t, "One Film", MediaTypeMovie, "/movies/One Film (2022)", ptrInt64(11), nil); err != nil {
+		t.Fatalf("first film: %v", err)
+	}
+	if err := insert(t, "Another Film", MediaTypeMovie, "/movies/Another Film (2022)", ptrInt64(12), nil); err != nil {
+		t.Fatalf("a second film with a NULL tmdb_tv_id was refused: %v", err)
+	}
+
+	// The collision that made two columns necessary: the film holds movie id
+	// 95396 and the show holds tv id 95396. One column could not have both.
+	if err := insert(t, "Coincidence", MediaTypeMovie, "/movies/Coincidence (2022)", ptrInt64(95396), nil); err != nil {
+		t.Fatalf("the film half of the collision: %v", err)
+	}
+	if err := insert(t, "Severance", MediaTypeTV, "/tv/Severance (2022)", nil, ptrInt64(95396)); err != nil {
+		t.Fatalf("a show whose tv id equals a film's movie id was refused: %v — "+
+			"this is exactly what tmdb_tv_id exists to allow", err)
+	}
+
+	// And the thing the index is actually for.
+	if err := insert(t, "Severance Again", MediaTypeTV, "/tv/Severance Again (2022)", nil, ptrInt64(95396)); err == nil {
+		t.Fatal("two rows claimed the same show and the index allowed it")
+	}
+}
+
+func hasIndex(t *testing.T, s *Store, name string) bool {
+	t.Helper()
+	var found int
+	if err := s.db.QueryRowContext(context.Background(),
+		`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, name,
+	).Scan(&found); err != nil {
+		t.Fatalf("sqlite_master: %v", err)
+	}
+	return found > 0
 }
 
 func hasColumn(t *testing.T, s *Store, table, column string) bool {

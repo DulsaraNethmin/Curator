@@ -75,6 +75,7 @@ type fakeStore struct {
 
 	movie      store.Movie
 	movieErr   error
+	wanted     []store.Wanted
 	inserted   store.Download
 	insertErr  error
 	byHash     map[string]store.Download
@@ -100,9 +101,13 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{byHash: map[string]store.Download{}, movie: store.Movie{ID: 7}}
 }
 
-func (f *fakeStore) UpsertWantedMovie(_ context.Context, title string, year int, tmdbID *int64) (store.Movie, error) {
+func (f *fakeStore) UpsertWanted(_ context.Context, w store.Wanted) (store.Movie, error) {
 	f.calls = append(f.calls, "upsert-movie")
 	f.writeCount++
+	// Recorded so a test can assert what the dispatcher asked for. The real store
+	// refuses an empty media type, so a fake that dropped it would let a dispatch
+	// that forgot to set one pass here and fail in production.
+	f.wanted = append(f.wanted, w)
 	return f.movie, f.movieErr
 }
 

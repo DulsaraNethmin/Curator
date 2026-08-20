@@ -70,9 +70,26 @@ FROM downloads`
 // why, so it is applied on both the write and the read side.
 func normaliseHash(hash string) string { return strings.ToUpper(hash) }
 
-// UpsertWantedMovie records a film curator does not have yet, so a download has a
-// movie_id to point at, and returns the existing row when it already knows the
-// film. Re-downloading a film must not fork its identity into two rows.
+// Wanted is a title curator has been asked to fetch and does not have yet.
+//
+// A struct rather than four positional arguments because MediaType and Title are
+// both strings and adjacent, and a caller that swapped them would compile, insert
+// a row whose media type is a film's name, and only be noticed when the scan
+// refused to prune it. The fields are named at every call site instead.
+type Wanted struct {
+	// MediaType is required. There is no zero value meaning "film": dispatching
+	// a show through a default would create a row labelled `movie` pointing at a
+	// path under the TV root, and the next scan would delete it for being outside
+	// LIBRARY_MOVIES — taking its downloads rows with it.
+	MediaType string
+	Title     string
+	Year      int
+	TMDBID    *int64
+}
+
+// UpsertWanted records a title curator does not have yet, so a download has a
+// movie_id to point at, and returns the existing row when it already knows it.
+// Re-downloading must not fork one title's identity into two rows.
 //
 // The new row has status 'wanted' and library_path NULL, because the film is not
 // on disk — that is the entire reason it is being downloaded. This works because
@@ -82,17 +99,21 @@ func normaliseHash(hash string) string { return strings.ToUpper(hash) }
 // "fix" the schema by making either column NOT NULL or by inventing a
 // placeholder path — the placeholder is what would actually collide.
 //
-// Identity is matched on tmdb_id when the caller has one, because that is the
-// film itself rather than how somebody spelled it, and on (title, year)
+// Identity is matched on the TMDB id when the caller has one, because that is
+// the title itself rather than how somebody spelled it, and on (title, year)
 // otherwise. There is deliberately no fallback from one to the other: writing a
-// tmdb_id onto a row matched by title would be TMDB matching done here, and
+// TMDB id onto a row matched by title would be TMDB matching done here, and
 // SetTMDBMetadata is where that belongs, UNIQUE violation and all.
 //
 // An existing row is returned untouched. A film already imported off disk stays
 // imported — asking to download it does not un-import the copy that is playing.
-func (s *Store) UpsertWantedMovie(ctx context.Context, title string, year int, tmdbID *int64) (Movie, error) {
+func (s *Store) UpsertWanted(ctx context.Context, w Wanted) (Movie, error) {
+	title, year, tmdbID := w.Title, w.Year, w.TMDBID
 	if strings.TrimSpace(title) == "" {
 		return Movie{}, errors.New("upsert wanted movie: title is empty")
+	}
+	if !validMediaType(w.MediaType) {
+		return Movie{}, fmt.Errorf("upsert wanted movie %s (%d): %w", title, year, badMediaType(w.MediaType))
 	}
 
 	fail := func(err error) (Movie, error) {
@@ -107,24 +128,34 @@ func (s *Store) UpsertWantedMovie(ctx context.Context, title string, year int, t
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
+	// **Both probes are scoped to this media type, and the first one would be
+	// actively dangerous without it.** TMDB's movie and tv id sequences overlap,
+	// so an unscoped `WHERE tmdb_id = ?` for Severance's tv id 95396 returns the
+	// FILM that holds movie id 95396 — and this function's contract is to return
+	// an existing row untouched, so the season pack would be attached to that
+	// film with no error anywhere. The (title, year) probe is the milder version
+	// of the same thing: a film and a show can share both.
 	var id int64
 	if tmdbID != nil {
-		err = tx.QueryRowContext(ctx, `SELECT id FROM movies WHERE tmdb_id = ?`, *tmdbID).Scan(&id)
+		err = tx.QueryRowContext(ctx, fmt.Sprintf(
+			`SELECT id FROM movies WHERE media_type = ? AND %s = ?`, tmdbColumn(w.MediaType)),
+			w.MediaType, *tmdbID).Scan(&id)
 	} else {
 		// (title, year) is not unique in the schema, so pick the oldest match and
 		// stay deterministic rather than depending on scan order.
 		err = tx.QueryRowContext(ctx,
-			`SELECT id FROM movies WHERE title = ? AND year = ? ORDER BY id LIMIT 1`, title, year).Scan(&id)
+			`SELECT id FROM movies WHERE media_type = ? AND title = ? AND year = ? ORDER BY id LIMIT 1`,
+			w.MediaType, title, year).Scan(&id)
 	}
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// library_path is left out of the column list rather than passed as NULL,
 		// so the intent reads as "this film has no path yet" and not as a value
 		// somebody forgot to fill in.
-		res, insErr := tx.ExecContext(ctx, `
-			INSERT INTO movies (tmdb_id, title, year, media_type, status, added_at)
-			VALUES (?, ?, ?, ?, ?, ?)`,
-			tmdbID, title, year, MediaTypeMovie, StatusWanted, formatTime(s.now()))
+		res, insErr := tx.ExecContext(ctx, fmt.Sprintf(`
+			INSERT INTO movies (%s, title, year, media_type, status, added_at)
+			VALUES (?, ?, ?, ?, ?, ?)`, tmdbColumn(w.MediaType)),
+			tmdbID, title, year, w.MediaType, StatusWanted, formatTime(s.now()))
 		if insErr != nil {
 			return fail(insErr)
 		}
@@ -161,7 +192,7 @@ func (s *Store) UpsertWantedMovie(ctx context.Context, title string, year int, t
 //
 // movie_id is NOT NULL REFERENCES movies(id) and foreign keys are on, so a
 // download for a movie that does not exist fails here. That is the point of the
-// reference: UpsertWantedMovie runs first.
+// reference: UpsertWanted runs first.
 func (s *Store) InsertDownload(ctx context.Context, d Download) (Download, error) {
 	hash := normaliseHash(d.TorrentHash)
 	if hash == "" {

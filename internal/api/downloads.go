@@ -85,6 +85,11 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	saved, err := s.dispatcher.Dispatch(r.Context(), download.Request{
+		// Stated rather than defaulted, even though it is the only value this
+		// endpoint can currently produce. download.Request.MediaType is required
+		// and the store refuses an empty one, so this line is what a TV dispatch
+		// will change — not a default somewhere that would have to be found.
+		MediaType: store.MediaTypeMovie,
 		ReleaseID: strings.TrimSpace(body.ReleaseID),
 		Title:     strings.TrimSpace(body.Title),
 		Year:      body.Year,
@@ -126,7 +131,7 @@ func (s *Server) alreadyHave(w http.ResponseWriter, r *http.Request, tmdbID *int
 		return false
 	}
 
-	library, err := s.store.LibraryByTMDBID(r.Context())
+	library, err := s.store.LibraryByTMDBID(r.Context(), store.MediaTypeMovie)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return true

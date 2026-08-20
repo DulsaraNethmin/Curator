@@ -100,7 +100,7 @@ func (f *streamFixture) film(folder, file string) int64 {
 func (f *streamFixture) row(title, dir string) int64 {
 	f.t.Helper()
 	saved, _, err := f.store.UpsertMovieByPath(context.Background(), store.ScannedMovie{
-		LibraryPath: dir, Title: title, Year: 2014, Status: "imported",
+		MediaType: store.MediaTypeMovie, LibraryPath: dir, Title: title, Year: 2014, Status: "imported",
 	})
 	if err != nil {
 		f.t.Fatalf("upsert %s: %v", dir, err)
