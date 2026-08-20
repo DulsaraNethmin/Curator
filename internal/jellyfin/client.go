@@ -9,8 +9,9 @@
 // There are no per-item refreshes, no user or session endpoints and no playback
 // control, for the same reason internal/qbit cannot delete or pause a torrent:
 // a method that does not exist cannot be called by mistake against a media
-// server the household is watching. FindMovie is the one lookup T45 needed and
-// it is read-only; if a later phase needs more, it can add exactly what it
+// server the household is watching. FindMovie is the lookup T45 needed and
+// FindSeries is the same query for the other media type phase 11 added; both
+// are read-only, and if a later phase needs more, it can add exactly what it
 // needs and no more.
 //
 // Writing exists, and it is confined to one type. Provisioner, in provision.go,
@@ -185,12 +186,17 @@ func snippet(body []byte) string {
 
 // --- the one lookup, and the links it is for --------------------------------
 
-// ErrNotFound reports that Jellyfin answered and does not have this film.
+// ErrNotFound reports that Jellyfin answered and does not have this film or
+// this show.
 //
 // Separate from every transport failure for the same reason ErrUnauthorized is:
 // the caller does the same thing with it either way — falls back to a search
 // link — but only one of the two is worth a line in the log.
-var ErrNotFound = errors.New("jellyfin has no movie with this tmdb id")
+//
+// One sentinel for both lookups, because every caller does the same thing with
+// it. The wording says "item" rather than "movie" now that a show can be the
+// thing that is missing.
+var ErrNotFound = errors.New("jellyfin has no item with this tmdb id")
 
 // maxItemsBody caps the lookup's response.
 //
@@ -201,9 +207,21 @@ var ErrNotFound = errors.New("jellyfin has no movie with this tmdb id")
 // the search link, which is the same thing it does for every other miss.
 const maxItemsBody = 4 << 20
 
-// Item is a film as Jellyfin holds it: enough to build a link to it and
-// nothing else. Widening this is how the narrowness rule above gets lost one
-// convenient field at a time.
+// The two item types this package looks up, spelled as Jellyfin's own
+// IncludeItemTypes values.
+//
+// Series and not Episode: a show's page in Jellyfin is the series, which is
+// also the row curator holds and the thing a TMDB tv id names. Asking for
+// episodes would answer hundreds of items that all carry the series' provider
+// ids and none of which is the page anybody wants to open.
+const (
+	itemTypeMovie  = "Movie"
+	itemTypeSeries = "Series"
+)
+
+// Item is a film or a show as Jellyfin holds it: enough to build a link to it
+// and nothing else. Widening this is how the narrowness rule above gets lost
+// one convenient field at a time.
 type Item struct {
 	ID       string
 	ServerID string
@@ -245,10 +263,57 @@ const providerTMDB = "Tmdb"
 func (c *Client) FindMovie(ctx context.Context, tmdbID, year int) (Item, error) {
 	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
 	defer cancel()
+	return c.findItem(ctx, itemTypeMovie, tmdbID, year)
+}
+
+// FindSeries returns the Jellyfin item for a show, found by its TMDB **tv** id.
+//
+// It is FindMovie with one parameter changed, and that parameter is not a
+// detail: `IncludeItemTypes` is the only thing separating the two id spaces.
+// TMDB numbers films and shows independently, so 1399 is a film *and* a show —
+// asking for a Movie with a tv id can therefore land on an unrelated film with
+// the same number rather than merely miss. Every other rule here is D32's and
+// is unchanged: the match is client-side and case-insensitive on
+// ProviderIds.Tmdb, because Jellyfin silently ignores both Path and
+// AnyProviderIdEquals, and no userId is sent, because a user-scoped library
+// shrinks.
+//
+// **The year narrows, and then a miss asks again without it.** For a film D32
+// checked all 18 on the real server and every ProductionYear equalled TMDB's
+// release year, which is what makes the narrowing free there. Nothing
+// equivalent has been measured for a show, and a show has more than one year to
+// be wrong about — Jellyfin's Series.ProductionYear is the FIRST AIR year,
+// while a folder on disk may be named for the season somebody has. A wrong
+// narrowing would be exactly the failure this method exists to remove: a
+// permanent miss, falling back to a search link, with nothing anywhere saying
+// so. One extra request on a miss is the cheap end of that trade, and it is
+// inside the one lookupTimeout rather than a second one.
+func (c *Client) FindSeries(ctx context.Context, tmdbID, year int) (Item, error) {
+	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
+
+	item, err := c.findItem(ctx, itemTypeSeries, tmdbID, year)
+	if year > 0 && errors.Is(err, ErrNotFound) {
+		return c.findItem(ctx, itemTypeSeries, tmdbID, 0)
+	}
+	return item, err
+}
+
+// findItem is the one query behind both lookups.
+//
+// itemType is Jellyfin's own IncludeItemTypes value, and the error messages are
+// derived from it rather than passed beside it: two strings that have to agree
+// are two strings that can stop agreeing, and this one is what a reader greps
+// for when a link is missing.
+//
+// It sets no deadline of its own. FindSeries makes up to two of these calls and
+// a page is waiting on the pair, not on each.
+func (c *Client) findItem(ctx context.Context, itemType string, tmdbID, year int) (Item, error) {
+	what := "jellyfin find " + strings.ToLower(itemType)
 
 	query := url.Values{
 		"Recursive":        {"true"},
-		"IncludeItemTypes": {"Movie"},
+		"IncludeItemTypes": {itemType},
 		// ProviderIds is the whole point of the request; the images are the
 		// bulk of an item and nothing here draws one.
 		"Fields":       {"ProviderIds"},
@@ -264,14 +329,14 @@ func (c *Client) FindMovie(ctx context.Context, tmdbID, year int) (Item, error) 
 	endpoint := c.baseURL + pathItems + "?" + query.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return Item{}, fmt.Errorf("jellyfin find movie: build request: %w", err)
+		return Item{}, fmt.Errorf("%s: build request: %w", what, err)
 	}
 	req.Header.Set(tokenHeader, c.apiKey)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return Item{}, fmt.Errorf("jellyfin find movie: calling jellyfin at %s: %w", c.baseURL, err)
+		return Item{}, fmt.Errorf("%s: calling jellyfin at %s: %w", what, c.baseURL, err)
 	}
 	defer resp.Body.Close()
 
@@ -279,17 +344,17 @@ func (c *Client) FindMovie(ctx context.Context, tmdbID, year int) (Item, error) 
 	case http.StatusOK:
 	case http.StatusUnauthorized, http.StatusForbidden:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return Item{}, fmt.Errorf("jellyfin find movie: jellyfin answered %d %s (%s): %w",
-			resp.StatusCode, http.StatusText(resp.StatusCode), snippet(body), ErrUnauthorized)
+		return Item{}, fmt.Errorf("%s: jellyfin answered %d %s (%s): %w",
+			what, resp.StatusCode, http.StatusText(resp.StatusCode), snippet(body), ErrUnauthorized)
 	default:
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return Item{}, fmt.Errorf("jellyfin find movie: jellyfin answered %d %s: %s",
-			resp.StatusCode, http.StatusText(resp.StatusCode), snippet(body))
+		return Item{}, fmt.Errorf("%s: jellyfin answered %d %s: %s",
+			what, resp.StatusCode, http.StatusText(resp.StatusCode), snippet(body))
 	}
 
 	var decoded itemsResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxItemsBody)).Decode(&decoded); err != nil {
-		return Item{}, fmt.Errorf("jellyfin find movie: decoding the item list: %w", err)
+		return Item{}, fmt.Errorf("%s: decoding the item list: %w", what, err)
 	}
 
 	want := strconv.Itoa(tmdbID)
