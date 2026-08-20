@@ -58,8 +58,8 @@ type recordingIndexer struct {
 
 func (r *recordingIndexer) Name() string { return r.name }
 
-func (r *recordingIndexer) SearchMovie(_ context.Context, title string, _ int) ([]Release, error) {
-	r.saw = append(r.saw, title)
+func (r *recordingIndexer) Search(_ context.Context, q Query) ([]Release, error) {
+	r.saw = append(r.saw, q.Title)
 	return []Release{{
 		Title:   "Avengers Endgame 2019 1080p WEBRip",
 		Magnet:  "magnet:?xt=urn:btih:414A6F933C48FC7543A9CDB42C854B5457C5BCC7",
@@ -75,8 +75,8 @@ func TestAggregatorQueriesIndexersWithTheNormalisedTitle(t *testing.T) {
 	aggregator := NewAggregator([]Indexer{ix}, 5*time.Second, time.Hour)
 
 	const canonical = "Avengers: Endgame"
-	if _, err := aggregator.SearchMovie(context.Background(), canonical, 2019); err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+	if _, err := aggregator.Search(context.Background(), Query{Title: canonical, Year: 2019}); err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 
 	if len(ix.saw) != 1 {
@@ -98,8 +98,8 @@ func TestAggregatorLeavesAnOrdinaryTitleAlone(t *testing.T) {
 	ix := &recordingIndexer{name: "fake"}
 	aggregator := NewAggregator([]Indexer{ix}, 5*time.Second, time.Hour)
 
-	if _, err := aggregator.SearchMovie(context.Background(), "Spider-Man", 2002); err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+	if _, err := aggregator.Search(context.Background(), Query{Title: "Spider-Man", Year: 2002}); err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 	if ix.saw[0] != "Spider-Man" {
 		t.Errorf("the indexer was asked %q, want %q — the hyphen is real", ix.saw[0], "Spider-Man")

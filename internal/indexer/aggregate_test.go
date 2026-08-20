@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,12 +22,18 @@ type aggStub struct {
 	searches atomic.Int32
 	resolves atomic.Int32
 	magnet   string
+
+	mu  sync.Mutex
+	saw []Query
 }
 
 func (s *aggStub) Name() string { return s.name }
 
-func (s *aggStub) SearchMovie(ctx context.Context, title string, year int) ([]Release, error) {
+func (s *aggStub) Search(ctx context.Context, q Query) ([]Release, error) {
 	s.searches.Add(1)
+	s.mu.Lock()
+	s.saw = append(s.saw, q)
+	s.mu.Unlock()
 	if s.delay > 0 {
 		select {
 		case <-time.After(s.delay):
@@ -38,6 +45,14 @@ func (s *aggStub) SearchMovie(ctx context.Context, title string, year int) ([]Re
 		return nil, s.err
 	}
 	return s.releases, nil
+}
+
+// queries returns every Query this stub was handed, so a test can prove what
+// reached the indexer rather than what the aggregator was asked for.
+func (s *aggStub) queries() []Query {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]Query(nil), s.saw...)
 }
 
 // aggResolvingStub also implements MagnetResolver, standing in for 1337x — the
@@ -76,9 +91,9 @@ func TestAggregatorMergesEveryIndexer(t *testing.T) {
 		&aggStub{name: "1337x", releases: []Release{aggRelease("1337x", "C", 30, aggMagnet("c"))}},
 	)
 
-	got, err := a.SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := a.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if len(got.Releases) != 3 {
 		t.Fatalf("releases = %d, want 3", len(got.Releases))
@@ -93,6 +108,66 @@ func TestAggregatorMergesEveryIndexer(t *testing.T) {
 	}
 }
 
+// The whole Query reaches the indexers, not just the title. The media type and
+// the season are what a source discriminates on — TPB's cat= parameter, 1337x's
+// keyword string — and neither can be recovered from a title however it is
+// spelled, which is why the interface takes a Query at all.
+func TestAggregatorPassesTheWholeQueryDown(t *testing.T) {
+	ix := &aggStub{name: "tpb"}
+	a := newAggTest(t, 2*time.Second, ix)
+
+	if _, err := a.Search(context.Background(),
+		Query{Title: "Severance: The Show", Year: 2022, Media: MediaTV, Season: 2}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	got := ix.queries()
+	if len(got) != 1 {
+		t.Fatalf("the indexer was called %d times, want 1", len(got))
+	}
+	// The title is normalised on the way down (D20) and everything else is
+	// handed over as it was asked for.
+	want := Query{Title: "Severance The Show", Year: 2022, Media: MediaTV, Season: 2}
+	if got[0] != want {
+		t.Errorf("the indexer was asked %+v, want %+v", got[0], want)
+	}
+}
+
+// The blank media type is resolved once, at the top, so the capability check,
+// the cache key and the indexer all read the same word for the default.
+func TestAggregatorResolvesTheDefaultMediaTypeOnce(t *testing.T) {
+	ix := &aggStub{name: "tpb"}
+	if _, err := newAggTest(t, 2*time.Second, ix).
+		Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := ix.queries()[0].Media; got != MediaMovie {
+		t.Errorf("the indexer was asked for media %q, want %q", got, MediaMovie)
+	}
+}
+
+// D10: an id is a property of the release, not of the search that found it. The
+// same magnet found by a film search and by a television search is one release
+// and must stamp one id — which is why the media type is deliberately NOT part
+// of releaseID, however inviting that looks once Query has a Media field.
+func TestReleaseIDIsTheSameWhicheverMediaFoundIt(t *testing.T) {
+	release := aggRelease("tpb", "Severance - Season 1 - Mp4 x264 AC3 1080p", 844, aggMagnet("a"))
+
+	film, err := newAggTest(t, 2*time.Second, &aggStub{name: "tpb", releases: []Release{release}}).
+		Search(context.Background(), Query{Title: "Severance", Year: 2022})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	tv, err := newAggTest(t, 2*time.Second, &aggStub{name: "tpb", releases: []Release{release}}).
+		Search(context.Background(), Query{Title: "Severance", Year: 2022, Media: MediaTV, Season: 1})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if film.Releases[0].ID != tv.Releases[0].ID {
+		t.Errorf("one release stamped two ids, %q as a film and %q as television — a magnet is a magnet",
+			film.Releases[0].ID, tv.Releases[0].ID)
+	}
+}
+
 // The whole point of not using errgroup.WithContext: one indexer failing must not
 // cancel its siblings, or a downed minter would silently empty a good search.
 func TestAggregatorOneFailureDoesNotCancelTheOthers(t *testing.T) {
@@ -100,9 +175,9 @@ func TestAggregatorOneFailureDoesNotCancelTheOthers(t *testing.T) {
 	tpb := &aggStub{name: "tpb", releases: []Release{aggRelease("tpb", "B", 20, aggMagnet("b"))}}
 	x := &aggStub{name: "1337x", err: errors.New("calling minter: connection refused")}
 
-	got, err := newAggTest(t, 2*time.Second, yts, tpb, x).SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := newAggTest(t, 2*time.Second, yts, tpb, x).Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie returned an error for one failing indexer: %v", err)
+		t.Fatalf("Search returned an error for one failing indexer: %v", err)
 	}
 	if len(got.Releases) != 2 {
 		t.Fatalf("releases = %d, want the 2 from the healthy indexers", len(got.Releases))
@@ -136,12 +211,12 @@ func TestAggregatorAllFailingIsStillASuccess(t *testing.T) {
 		&aggStub{name: "yts", err: boom},
 		&aggStub{name: "tpb", err: boom},
 		&aggStub{name: "1337x", err: boom},
-	).SearchMovie(context.Background(), "Interstellar", 2014)
+	).Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 
 	// The request succeeded; the sources failed. A fatal error here would be a lie
 	// about whose fault it is.
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if len(got.Releases) != 0 {
 		t.Errorf("releases = %d, want 0", len(got.Releases))
@@ -162,14 +237,14 @@ func TestAggregatorAllFailingIsStillASuccess(t *testing.T) {
 // otherwise, and one of them is fixed by a pasted line.
 func TestAggregatorUnreachableCompanionReportsUnconfigured(t *testing.T) {
 	yts := &aggStub{name: "yts", releases: []Release{aggRelease("yts", "A", 10, aggMagnet("a"))}}
-	// Wrapped the way X1337.SearchMovie wraps it, so this test fails if that
+	// Wrapped the way X1337.Search wraps it, so this test fails if that
 	// wrapping ever stops carrying the sentinel through.
 	x := &aggStub{name: "1337x", err: fmt.Errorf("1337x search %q: %w", "interstellar 2014",
 		unreachable{errors.New("calling minter at http://minter:8191 (is it running?): connection refused")})}
 
-	got, err := newAggTest(t, 2*time.Second, yts, x).SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := newAggTest(t, 2*time.Second, yts, x).Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 
 	// The healthy indexer's releases still come back. An unconfigured sibling
@@ -202,9 +277,9 @@ func TestAggregatorUnreachableCompanionReportsUnconfigured(t *testing.T) {
 func TestAggregatorOrdinaryFailureIsNotUnconfigured(t *testing.T) {
 	x := &aggStub{name: "1337x", err: errors.New("1337x search: minter returned 500: browser did not start")}
 
-	got, err := newAggTest(t, 2*time.Second, x).SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := newAggTest(t, 2*time.Second, x).Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if o := got.Outcomes[0]; o.OK || o.Unconfigured {
 		t.Errorf("outcome = %+v, want ok=false and unconfigured=false", o)
@@ -217,9 +292,9 @@ func TestAggregatorOrdinaryFailureIsNotUnconfigured(t *testing.T) {
 func TestAggregatorNoResultsIsNotAFailure(t *testing.T) {
 	got, err := newAggTest(t, 2*time.Second,
 		&aggStub{name: "1337x", releases: nil},
-	).SearchMovie(context.Background(), "Interstellar", 2014)
+	).Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if o := got.Outcomes[0]; !o.OK || o.Count != 0 || o.Unconfigured || o.Error != "" {
 		t.Errorf("outcome = %+v, want ok=true, count=0, unconfigured=false and no error", o)
@@ -233,11 +308,11 @@ func TestAggregatorStragglerIsOmittedNotWaitedFor(t *testing.T) {
 	fast := &aggStub{name: "yts", releases: []Release{aggRelease("yts", "fast", 10, aggMagnet("a"))}}
 
 	start := time.Now()
-	got, err := newAggTest(t, timeout, fast, slow).SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := newAggTest(t, timeout, fast, slow).Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	elapsed := time.Since(start)
 
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if elapsed > time.Second {
 		t.Errorf("search took %v, want it to return near the %v deadline rather than waiting out the straggler",
@@ -263,7 +338,7 @@ type aggDeafStub struct {
 
 func (s *aggDeafStub) Name() string { return s.name }
 
-func (s *aggDeafStub) SearchMovie(context.Context, string, int) ([]Release, error) {
+func (s *aggDeafStub) Search(context.Context, Query) ([]Release, error) {
 	time.Sleep(s.delay)
 	return nil, nil
 }
@@ -274,11 +349,11 @@ func TestAggregatorDoesNotWaitForAnIndexerThatIgnoresCancellation(t *testing.T) 
 
 	start := time.Now()
 	got, err := newAggTest(t, timeout, fast, &aggDeafStub{name: "1337x", delay: 3 * time.Second}).
-		SearchMovie(context.Background(), "Interstellar", 2014)
+		Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	elapsed := time.Since(start)
 
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if elapsed > time.Second {
 		t.Fatalf("search took %v, want it to return near the %v deadline", elapsed, timeout)
@@ -306,8 +381,8 @@ func TestAggregatorIDsAreStableAndDistinct(t *testing.T) {
 			aggRelease("yts", "B", 20, aggMagnet("b")),
 		}})
 	}
-	first, _ := mk().SearchMovie(context.Background(), "Interstellar", 2014)
-	second, _ := mk().SearchMovie(context.Background(), "Interstellar", 2014)
+	first, _ := mk().Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
+	second, _ := mk().Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 
 	if len(first.Releases) != 2 {
 		t.Fatalf("releases = %d, want 2", len(first.Releases))
@@ -347,9 +422,9 @@ func TestAggregatorDedupesOnInfoHash(t *testing.T) {
 	got, err := newAggTest(t, 2*time.Second,
 		&aggStub{name: "yts", releases: []Release{aggRelease("yts", "Interstellar.1080p", 100, shared)}},
 		&aggStub{name: "tpb", releases: []Release{aggRelease("tpb", "Interstellar.1080p", 500, shared)}},
-	).SearchMovie(context.Background(), "Interstellar", 2014)
+	).Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 
 	if len(got.Releases) != 1 {
@@ -376,9 +451,9 @@ func TestAggregatorDedupKeepsTheWinnersOwner(t *testing.T) {
 	tpb := &aggStub{name: "tpb", releases: []Release{aggRelease("tpb", "dupe", 500, shared)}}
 	a := newAggTest(t, 2*time.Second, yts, tpb)
 
-	got, err := a.SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := a.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if len(got.Releases) != 1 {
 		t.Fatalf("releases = %d, want 1", len(got.Releases))
@@ -405,9 +480,9 @@ func TestAggregatorHashlessReleasesDoNotCollapse(t *testing.T) {
 	got, err := newAggTest(t, 2*time.Second, &aggStub{name: "1337x", releases: []Release{
 		{Title: "Interstellar.1080p.A", Indexer: "1337x", detailPath: "/torrent/1/a/", Seeders: 5},
 		{Title: "Interstellar.1080p.B", Indexer: "1337x", detailPath: "/torrent/2/b/", Seeders: 4},
-	}}).SearchMovie(context.Background(), "Interstellar", 2014)
+	}}).Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if len(got.Releases) != 2 {
 		t.Fatalf("releases = %d, want 2 — hashless releases must pass through untouched", len(got.Releases))
@@ -427,9 +502,9 @@ func TestAggregatorRanksBySeedersThenQualityThenName(t *testing.T) {
 		rel("tie b", "1080p", 50, "3"),
 		rel("tie a", "1080p", 50, "4"),
 		rel("tie better quality", "2160p", 50, "5"),
-	}}).SearchMovie(context.Background(), "Interstellar", 2014)
+	}}).Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 
 	want := []string{"popular 1080p", "tie better quality", "tie a", "tie b", "lonely 4k"}
@@ -459,9 +534,9 @@ func TestAggregatorResolveMagnetIsLazy(t *testing.T) {
 	}}
 	a := newAggTest(t, 2*time.Second, yts, x)
 
-	got, err := a.SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := a.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if x.resolves.Load() != 0 {
 		t.Fatalf("search resolved %d magnets, want 0 — resolution must wait for a pick", x.resolves.Load())
@@ -512,9 +587,9 @@ func TestAggregatorResolvesThroughTheCache(t *testing.T) {
 	}}
 	a := newAggTest(t, 2*time.Second, NewCache(x, time.Hour))
 
-	got, err := a.SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := a.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if len(got.Releases) != 1 {
 		t.Fatalf("releases = %d, want 1", len(got.Releases))
@@ -536,8 +611,8 @@ func TestAggregatorResolvesThroughTheCache(t *testing.T) {
 	}
 
 	// And the cache is doing its job underneath: the second search launches nothing.
-	if _, err := a.SearchMovie(context.Background(), "Interstellar", 2014); err != nil {
-		t.Fatalf("second SearchMovie: %v", err)
+	if _, err := a.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+		t.Fatalf("second Search: %v", err)
 	}
 	if x.searches.Load() != 1 {
 		t.Errorf("searches = %d, want 1 — the repeat search should have been a cache hit", x.searches.Load())
@@ -553,9 +628,9 @@ func TestAggregatorReleaseByID(t *testing.T) {
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 	a.now = func() time.Time { return now }
 
-	got, err := a.SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := a.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	id := got.Releases[0].ID
 
@@ -595,9 +670,9 @@ func TestAggregatorExpiredIDIsTheSentinel(t *testing.T) {
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 	a.now = func() time.Time { return now }
 
-	got, err := a.SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := a.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	id := got.Releases[0].ID
 
@@ -618,14 +693,14 @@ func TestAggregatorPrunesExpiredIDsOnSearch(t *testing.T) {
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
 	a.now = func() time.Time { return now }
 
-	if _, err := a.SearchMovie(context.Background(), "Interstellar", 2014); err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+	if _, err := a.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 	now = now.Add(2 * time.Hour)
 
 	stub.releases = []Release{aggRelease("yts", "B", 10, aggMagnet("b"))}
-	if _, err := a.SearchMovie(context.Background(), "Dune", 2021); err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+	if _, err := a.Search(context.Background(), Query{Title: "Dune", Year: 2021}); err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 
 	a.mu.Lock()
@@ -645,8 +720,8 @@ func TestAggregatorConcurrentSearchesAreSafe(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			if _, err := a.SearchMovie(context.Background(), "Interstellar", 2014); err != nil {
-				t.Errorf("SearchMovie: %v", err)
+			if _, err := a.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+				t.Errorf("Search: %v", err)
 			}
 		}()
 	}

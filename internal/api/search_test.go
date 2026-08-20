@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
+	"github.com/DulsaraNethmin/curator/internal/store"
 )
 
 // fakeSearcher stands in for the aggregator. It records what it was asked so a
@@ -22,13 +23,15 @@ type fakeSearcher struct {
 	magnets   map[string]string
 	magnetErr error
 
+	gotQuery indexer.Query
 	gotTitle string
 	gotYear  int
 	gotID    string
 }
 
-func (f *fakeSearcher) SearchMovie(_ context.Context, title string, year int) (indexer.SearchResult, error) {
-	f.gotTitle, f.gotYear = title, year
+func (f *fakeSearcher) Search(_ context.Context, q indexer.Query) (indexer.SearchResult, error) {
+	f.gotQuery = q
+	f.gotTitle, f.gotYear = q.Title, q.Year
 	if f.err != nil {
 		return indexer.SearchResult{}, f.err
 	}
@@ -96,6 +99,20 @@ func decodeError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int) s
 	return body["error"]
 }
 
+// internal/indexer spells the two media types out itself rather than importing
+// internal/store, which would drag the SQLite driver into a package that
+// searches torrent sites. This is the cheap half of that import: the two
+// spellings have to agree, and nothing in either package would notice if they
+// drifted. This is the one place that imports both.
+func TestTheIndexersMediaTypesAreTheStoresMediaTypes(t *testing.T) {
+	if indexer.MediaMovie != store.MediaTypeMovie {
+		t.Errorf("indexer.MediaMovie = %q, store.MediaTypeMovie = %q", indexer.MediaMovie, store.MediaTypeMovie)
+	}
+	if indexer.MediaTV != store.MediaTypeTV {
+		t.Errorf("indexer.MediaTV = %q, store.MediaTypeTV = %q", indexer.MediaTV, store.MediaTypeTV)
+	}
+}
+
 func TestSearchReturnsReleasesAndIndexerOutcomes(t *testing.T) {
 	fake := &fakeSearcher{result: indexer.SearchResult{
 		Releases: []indexer.Found{
@@ -116,6 +133,16 @@ func TestSearchReturnsReleasesAndIndexerOutcomes(t *testing.T) {
 
 	if fake.gotTitle != "Interstellar" || fake.gotYear != 2014 {
 		t.Errorf("searched for %q/%d, want Interstellar/2014", fake.gotTitle, fake.gotYear)
+	}
+	// This route is the film one. A television search reaches the indexers
+	// through a query of its own, not by this handler learning a second media
+	// type — and a blank media type here would be a film by default anyway,
+	// which is exactly the kind of default worth spelling out.
+	if fake.gotQuery.Media != indexer.MediaMovie {
+		t.Errorf("searched media %q, want %q", fake.gotQuery.Media, indexer.MediaMovie)
+	}
+	if fake.gotQuery.Season != 0 {
+		t.Errorf("searched season %d, want 0 — a film has none", fake.gotQuery.Season)
 	}
 	if got.Title != "Interstellar" || got.Year != 2014 {
 		t.Errorf("echoed %q/%d", got.Title, got.Year)

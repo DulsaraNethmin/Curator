@@ -25,6 +25,23 @@ const (
 	// set: every row spent on a TV episode is a movie release that never arrives.
 	tpbMovieCategories = "201,202,207,209,211"
 
+	// tpbTVCategories are The Pirate Bay's television categories: 205 TV shows,
+	// 208 HD TV shows. This is the whole of the media discriminator at TPB —
+	// there is nothing in a title that can stand in for it, which is why the
+	// interface takes a Query.
+	//
+	// Measured 2026-08-20: q=severance&cat=205,208 answers 100 rows, and both
+	// shapes a television search must cover are in them — the season pack
+	// "Severance - Season 1 - Mp4 x264 AC3 1080p" at 844 seeders alongside the
+	// single episode "Severance S02E05 Trojans Horse 1080p ATVP WEB-DL DDP5 1 H
+	// 264-NTb" at 381.
+	//
+	// The 100-row cap inverts here and gets sharper. For a film the competition
+	// is other cuts of the same film; for a show a season pack competes with
+	// every single episode of every season, and a long-running series can spend
+	// the whole page on episodes.
+	tpbTVCategories = "205,208"
+
 	// tpbMaxResponse bounds the body we will read. A real search is around 30 KB
 	// (measured: 29 KB for 100 rows), so this is three orders of magnitude of
 	// headroom and exists only so a hung or hostile endpoint cannot make the
@@ -79,26 +96,47 @@ func NewTPB(c *http.Client) *TPB {
 // Name implements Indexer.
 func (t *TPB) Name() string { return tpbIndexerName }
 
-// SearchMovie implements Indexer. Releases come back with their magnets already
+// Search implements Indexer. Releases come back with their magnets already
 // built — apibay hands over the info hash, so there is nothing to resolve later.
-func (t *TPB) SearchMovie(ctx context.Context, title string, year int) ([]Release, error) {
-	rows, err := t.search(ctx, title)
+func (t *TPB) Search(ctx context.Context, q Query) ([]Release, error) {
+	rows, err := t.search(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	return tpbToReleases(rows, year), nil
+	return tpbToReleases(rows, q.searchYear()), nil
+}
+
+// tpbCategories restricts a search to the categories of one media type.
+func tpbCategories(q Query) string {
+	if q.IsTV() {
+		return tpbTVCategories
+	}
+	return tpbMovieCategories
 }
 
 // search runs one q.php query and returns its rows.
 //
-// The year is deliberately not part of the query string. apibay matches keywords
-// against the release name, so adding the year would silently exclude every
-// release whose name omits it — exactly the ambiguous rows that are worth
-// keeping. Narrowing happens in tpbToReleases, where "ambiguous" can mean "keep".
-func (t *TPB) search(ctx context.Context, title string) ([]tpbRow, error) {
+// Neither the year nor the season is part of the query string, and both are the
+// same measurement twice: apibay matches keywords against the release name, so
+// anything added to the query silently excludes every release whose name spells
+// it differently. Measured 2026-08-20 against the live API:
+//
+//	q=severance                 100 rows, packs and episodes, cat 205,208
+//	q=severance s02               8 rows, all "Severance.S02.*" — and the
+//	                              727-seeder "Severance - Season 2 - Mp4 x264
+//	                              AC3 1080p" is not among them
+//	q=severance season 2          4 rows, a different four
+//
+// A season in the query costs the best season pack this show has, because "S02"
+// and "Season 2" are two spellings of one thing and apibay matches the letters.
+// So the query stays the bare title and the season is read back off each name
+// instead (parseSeasonEpisode), which is the same posture the year already had:
+// narrowing happens where "ambiguous" can mean "keep".
+func (t *TPB) search(ctx context.Context, query Query) ([]tpbRow, error) {
+	title := query.Title
 	q := url.Values{}
 	q.Set("q", title)
-	q.Set("cat", tpbMovieCategories)
+	q.Set("cat", tpbCategories(query))
 	target := t.site + "/q.php?" + q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -181,6 +219,10 @@ func tpbToReleases(rows []tpbRow, year int) []Release {
 			Magnet:  tpbMagnet(r.InfoHash, name),
 			Indexer: tpbIndexerName,
 		}
+		// Read off the name, unconditionally: apibay's category says a row is
+		// television but never which season, and a film's name simply states
+		// neither. See parseSeasonEpisode.
+		rel.Season, rel.Episode = parseSeasonEpisode(name)
 		// A field that will not convert yields a zero and the row survives. Zero
 		// seeders sorts last, which is the honest answer; a vanished release is
 		// not information at all.

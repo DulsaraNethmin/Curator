@@ -32,10 +32,10 @@ func NewX1337(m *Minter) *X1337 {
 // Name implements Indexer.
 func (x *X1337) Name() string { return indexerName }
 
-// SearchMovie implements Indexer. The returned releases have no Magnet — call
+// Search implements Indexer. The returned releases have no Magnet — call
 // ResolveMagnet for the one that gets picked.
-func (x *X1337) SearchMovie(ctx context.Context, title string, year int) ([]Release, error) {
-	q := searchQuery(title, year)
+func (x *X1337) Search(ctx context.Context, query Query) ([]Release, error) {
+	q := searchQuery(query)
 	page, err := x.minter.Fetch(ctx, fmt.Sprintf("%s/search/%s/1/", x.site, url.PathEscape(q)))
 	if err != nil {
 		return nil, fmt.Errorf("1337x search %q: %w", q, err)
@@ -46,7 +46,7 @@ func (x *X1337) SearchMovie(ctx context.Context, title string, year int) ([]Rele
 	}
 	// Zero rows is a legitimate "no hits", but it is also what a challenge page or
 	// a markup change looks like. A caller that cares can check page.Solved.
-	return toReleases(rows, year), nil
+	return toReleases(rows, query.searchYear()), nil
 }
 
 // searchQuery builds the keyword string 1337x is searched with.
@@ -57,11 +57,24 @@ func (x *X1337) SearchMovie(ctx context.Context, title string, year int) ([]Rele
 // returning a 2020 DJ mix and a FitGirl game repack. It is kept in its own
 // function so that if searches start coming back empty, this is the one line to
 // suspect.
-func searchQuery(title string, year int) string {
-	if year > 0 {
-		return fmt.Sprintf("%s %d", title, year)
+//
+// A television query narrows by SEASON instead, and never by year. "S02" is the
+// token a television release name carries — a show's first-air year is in
+// essentially none of them — so "Severance S02" is the keyword string with a
+// chance of matching, and "Severance 2019" is one with none. Query.searchYear
+// holds the whole of that argument.
+func searchQuery(q Query) string {
+	if q.IsTV() {
+		if q.Season > 0 {
+			// Two digits, which is how a release names a season: S02, not S2.
+			return fmt.Sprintf("%s S%02d", q.Title, q.Season)
+		}
+		return q.Title
 	}
-	return title
+	if year := q.searchYear(); year > 0 {
+		return fmt.Sprintf("%s %d", q.Title, year)
+	}
+	return q.Title
 }
 
 // ResolveMagnet implements MagnetResolver by fetching the release's detail page.
@@ -146,6 +159,9 @@ func toReleases(rows []row, year int) []Release {
 			Indexer:    indexerName,
 			detailPath: r.Href,
 		}
+		// Read off the name for the same reason TPB does it: the row says which
+		// season and episode it is, and nothing else in the page does.
+		rel.Season, rel.Episode = parseSeasonEpisode(r.Name)
 		if n, err := parseSeeders(r.Seeders); err == nil {
 			rel.Seeders = n
 		}

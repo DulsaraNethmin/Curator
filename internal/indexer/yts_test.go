@@ -67,14 +67,14 @@ func newYTSStubFunc(t *testing.T, h http.HandlerFunc) *ytsStub {
 	return stub
 }
 
-// TestYTSSearchMovie is the main parse: a recorded two-movie response becomes one
+// TestYTSSearch is the main parse: a recorded two-movie response becomes one
 // Release per torrent, with quality, size, seeders and a magnet on every one.
-func TestYTSSearchMovie(t *testing.T) {
+func TestYTSSearch(t *testing.T) {
 	stub := newYTSStub(t, ytsFixtureInterstellar)
 
-	releases, err := stub.indexer.SearchMovie(context.Background(), "Interstellar", 2014)
+	releases, err := stub.indexer.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 
 	// Two movies carrying two and three torrents. Five releases, not two: the
@@ -140,9 +140,9 @@ func TestYTSSearchMovie(t *testing.T) {
 func TestYTSMagnetsAreUsable(t *testing.T) {
 	stub := newYTSStub(t, ytsFixtureDunePart)
 
-	releases, err := stub.indexer.SearchMovie(context.Background(), "Dune Part", 0)
+	releases, err := stub.indexer.Search(context.Background(), Query{Title: "Dune Part"})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if len(releases) == 0 {
 		t.Fatal("no releases to check")
@@ -174,9 +174,9 @@ func TestYTSMagnetsAreUsable(t *testing.T) {
 	}
 }
 
-// TestYTSSearchMovieYearFilter: one response holds Part One (2021) and Part Two
+// TestYTSSearchYearFilter: one response holds Part One (2021) and Part Two
 // (2024), so the filter has to discriminate rather than just pass or drop the lot.
-func TestYTSSearchMovieYearFilter(t *testing.T) {
+func TestYTSSearchYearFilter(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		year      int
@@ -190,9 +190,9 @@ func TestYTSSearchMovieYearFilter(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stub := newYTSStub(t, ytsFixtureDunePart)
-			releases, err := stub.indexer.SearchMovie(context.Background(), "Dune Part", tt.year)
+			releases, err := stub.indexer.Search(context.Background(), Query{Title: "Dune Part", Year: tt.year})
 			if err != nil {
-				t.Fatalf("SearchMovie: %v", err)
+				t.Fatalf("Search: %v", err)
 			}
 			if len(releases) != tt.wantCount {
 				t.Fatalf("year %d kept %d releases, want %d", tt.year, len(releases), tt.wantCount)
@@ -220,9 +220,9 @@ func TestYTSSearchMovieYearFilter(t *testing.T) {
 // parseQuality would flatten it to QualityUnknown.
 func TestYTSQualityComesFromTheAPI(t *testing.T) {
 	stub := newYTSStub(t, ytsFixtureDunePart)
-	releases, err := stub.indexer.SearchMovie(context.Background(), "Dune Part", 2021)
+	releases, err := stub.indexer.Search(context.Background(), Query{Title: "Dune Part", Year: 2021})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 
 	var found bool
@@ -248,9 +248,9 @@ func TestYTSQualityComesFromTheAPI(t *testing.T) {
 // render as the same line twice.
 func TestYTSReleaseTitleDistinguishesTorrents(t *testing.T) {
 	stub := newYTSStub(t, ytsFixtureDunePart)
-	releases, err := stub.indexer.SearchMovie(context.Background(), "Dune Part", 0)
+	releases, err := stub.indexer.Search(context.Background(), Query{Title: "Dune Part"})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 
 	seen := make(map[string]int, len(releases))
@@ -273,14 +273,14 @@ func TestYTSReleaseTitleDistinguishesTorrents(t *testing.T) {
 	}
 }
 
-// TestYTSSearchMovieNoResults: "nothing found" is a normal outcome. Both real
+// TestYTSSearchNoResults: "nothing found" is a normal outcome. Both real
 // shapes of it are covered — including the one where YTS claims a movie_count of
 // 1 and then sends no movies key at all.
-func TestYTSSearchMovieNoResults(t *testing.T) {
+func TestYTSSearchNoResults(t *testing.T) {
 	for _, fixture := range []string{ytsFixtureNoResults, ytsFixtureCountOnly} {
 		t.Run(fixture, func(t *testing.T) {
 			stub := newYTSStub(t, fixture)
-			releases, err := stub.indexer.SearchMovie(context.Background(), "zzzznotamovieqqq", 0)
+			releases, err := stub.indexer.Search(context.Background(), Query{Title: "zzzznotamovieqqq"})
 			if err != nil {
 				t.Fatalf("an empty result set must not be an error: %v", err)
 			}
@@ -291,10 +291,10 @@ func TestYTSSearchMovieNoResults(t *testing.T) {
 	}
 }
 
-// TestYTSSearchMovieErrors: every failure has to name YTS, because a search runs
+// TestYTSSearchErrors: every failure has to name YTS, because a search runs
 // three indexers concurrently and the per-indexer error block in the API response
 // is the only place an operator finds out which one broke.
-func TestYTSSearchMovieErrors(t *testing.T) {
+func TestYTSSearchErrors(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		handler http.HandlerFunc
@@ -340,7 +340,7 @@ func TestYTSSearchMovieErrors(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			stub := newYTSStubFunc(t, tt.handler)
-			releases, err := stub.indexer.SearchMovie(context.Background(), "Interstellar", 2014)
+			releases, err := stub.indexer.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 			if err == nil {
 				t.Fatalf("got %d releases, want an error", len(releases))
 			}
@@ -357,9 +357,9 @@ func TestYTSSearchMovieErrors(t *testing.T) {
 	}
 }
 
-func TestYTSSearchMovieEmptyTitle(t *testing.T) {
+func TestYTSSearchEmptyTitle(t *testing.T) {
 	stub := newYTSStub(t, ytsFixtureInterstellar)
-	if _, err := stub.indexer.SearchMovie(context.Background(), "   ", 2014); err == nil {
+	if _, err := stub.indexer.Search(context.Background(), Query{Title: "   ", Year: 2014}); err == nil {
 		t.Fatal("an empty title must be an error, not a search for everything")
 	}
 	if len(stub.requests) != 0 {
@@ -490,7 +490,7 @@ func TestYTSLiveSearchInterstellar(t *testing.T) {
 
 	dnsWorks := liveDNSWorks(ctx, ytsControlHost)
 
-	releases, err := NewYTS(client).SearchMovie(ctx, "Interstellar", 2014)
+	releases, err := NewYTS(client).Search(ctx, Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
 		// Only a transport failure or a refused caller is "no network". A decode
 		// failure or a status YTS should not be returning is a real regression

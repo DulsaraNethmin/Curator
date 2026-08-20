@@ -121,13 +121,13 @@ func NewAggregator(indexers []Indexer, timeout, ttl time.Duration) *Aggregator {
 	}
 }
 
-// SearchMovie searches every indexer concurrently and returns the merged, ranked
+// Search searches every indexer concurrently and returns the merged, ranked
 // releases with a per-indexer outcome for each.
 //
 // The error return is for the caller's own context being cancelled. An indexer
 // failing — even all of them — is not an error: it is reported in Outcomes, and
 // the search still succeeded.
-func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (SearchResult, error) {
+func (a *Aggregator) Search(ctx context.Context, q Query) (SearchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
@@ -136,12 +136,20 @@ func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (S
 	// result it would have returned, silently.
 	//
 	// Here rather than inside x1337.searchQuery, which is the narrower place:
-	// indexer.Cache wraps 1337x and keys on the title it is HANDED, so
+	// indexer.Cache wraps 1337x and keys on the query it is HANDED, so
 	// normalising below the cache leaves "avengers: endgame" and "avengers
 	// endgame" as two entries for one identical minter fetch, and each path pays
 	// its own ~9 s browser launch. Above the cache, the key is the string that
 	// was actually queried.
-	query := NormaliseQuery(title)
+	//
+	// The season deliberately stays in the Query rather than being folded into
+	// the title here: each indexer spells it differently, and one of them
+	// (TPB, measured) is better off not spelling it at all.
+	q.Title = NormaliseQuery(q.Title)
+
+	// The default resolved once, so that the capability check, the cache key and
+	// the indexers themselves all see the same word for it.
+	q.Media = q.mediaType()
 
 	// Results land in per-indexer slots rather than an append-shared slice so that
 	// a straggler still running after the deadline has somewhere defined to write.
@@ -161,7 +169,7 @@ func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (S
 	var g errgroup.Group
 	for i, ix := range a.indexers {
 		g.Go(func() error {
-			releases, err := ix.SearchMovie(ctx, query, year)
+			releases, err := ix.Search(ctx, q)
 			mu.Lock()
 			defer mu.Unlock()
 			slots[i] = slot{reported: true, releases: releases, err: err}

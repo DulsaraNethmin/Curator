@@ -15,7 +15,7 @@ import (
 // taken as a concrete type, like Store, Scanner and Matcher, so the handlers can
 // be exercised against fakes instead of three live indexers and a browser.
 type Searcher interface {
-	SearchMovie(ctx context.Context, title string, year int) (indexer.SearchResult, error)
+	Search(ctx context.Context, q indexer.Query) (indexer.SearchResult, error)
 	ResolveMagnet(ctx context.Context, id string) (string, error)
 }
 
@@ -90,7 +90,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.searcher.SearchMovie(r.Context(), title, year)
+	// Films, spelled out rather than left to the zero value: this handler is the
+	// film one, and a television search reaches the indexers through a query of
+	// its own rather than by this route learning a second media type.
+	result, err := s.searcher.Search(r.Context(), indexer.Query{
+		Title: title,
+		Year:  year,
+		Media: indexer.MediaMovie,
+	})
 	if err != nil {
 		// Only the caller's own context failing gets here: an indexer failing —
 		// even all of them — comes back as a reported outcome, not an error.
