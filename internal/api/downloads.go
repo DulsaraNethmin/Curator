@@ -57,6 +57,26 @@ type dispatchRequest struct {
 	Title     string `json:"title"`
 	Year      int    `json:"year"`
 	TMDBID    *int64 `json:"tmdb_id"`
+
+	// MediaType says whether this is a film or a show, and an absent one is a
+	// film: every request written before phase 11 was one, and a client that
+	// has not been told about television must keep meaning what it meant.
+	//
+	// TMDBID is read in ITS id space, not in the other one — TMDB numbers films
+	// and shows independently, and 95396 is both Severance and a film.
+	MediaType string `json:"media_type"`
+
+	// Season is the season this grab is for, and 0 means the release is not
+	// season-scoped — a complete-series pack, or a film.
+	//
+	// **It is checked here and does not reach download.Request**, which has no
+	// season field. That is not an omission to fix by adding one: the importer
+	// files episodes by what each FILE says (library.ParseEpisode), so a season
+	// declared at dispatch time could only ever disagree with the pack that
+	// actually arrives. What it is good for is the record — this is the number
+	// the person believed they were grabbing, it goes in the log, and /api/logs
+	// is a screen.
+	Season int `json:"season"`
 }
 
 func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
@@ -80,16 +100,35 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.alreadyHave(w, r, body.TMDBID) {
+	mediaType, err := parseMedia(body.MediaType)
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if mediaType == store.MediaTypeTV && s.televisionOff(w) {
+		// Refused before anything is resolved or added, and it names the
+		// variable: with no LIBRARY_TV there is nowhere for the episodes to be
+		// filed, so the honest answer is 503 rather than a download that
+		// completes and then cannot be imported (D40).
+		return
+	}
+	if err := validateSeason(body.Season, mediaType); err != nil {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+
+	if s.alreadyHave(w, r, mediaType, body.TMDBID) {
 		return
 	}
 
 	saved, err := s.dispatcher.Dispatch(r.Context(), download.Request{
-		// Stated rather than defaulted, even though it is the only value this
-		// endpoint can currently produce. download.Request.MediaType is required
-		// and the store refuses an empty one, so this line is what a TV dispatch
-		// will change — not a default somewhere that would have to be found.
-		MediaType: store.MediaTypeMovie,
+		// The line T88 left stated rather than defaulted, so that this task had
+		// one place to change instead of a default to hunt for. It decides which
+		// library root the import lands under and which of TMDB's two id spaces
+		// TMDBID belongs to; getting it wrong is not a cosmetic mislabel, since
+		// a show recorded as a film is deleted by the next scan for sitting
+		// outside LIBRARY_MOVIES.
+		MediaType: mediaType,
 		ReleaseID: strings.TrimSpace(body.ReleaseID),
 		Title:     strings.TrimSpace(body.Title),
 		Year:      body.Year,
@@ -98,6 +137,14 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.failDispatch(w, err)
 		return
+	}
+
+	if mediaType == store.MediaTypeTV {
+		// The season the person believed they were grabbing, recorded where a
+		// human looks. It is the only place the number survives — see
+		// dispatchRequest.Season for why it is not passed downstream.
+		s.log.Info("dispatched a television release", "title", saved.ReleaseName,
+			"season", body.Season, "hash", saved.TorrentHash)
 	}
 
 	s.respond(w, http.StatusCreated, saved)
@@ -126,8 +173,23 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 // for it. With no TMDB id there is no reliable identity for a film, and matching
 // on title and year would be TMDB matching done in the wrong place — the same
 // line UpsertWantedMovie already draws.
-func (s *Server) alreadyHave(w http.ResponseWriter, r *http.Request, tmdbID *int64) bool {
-	if tmdbID == nil {
+//
+// **Television is never refused here, and that is the accumulation D48 is built
+// on rather than an omission.** A show is never finished: season 2 arrives six
+// months after season 1 and lands on the same row, which is exactly what
+// MarkImported's twin reconciliation exists to do — one row per show, N
+// downloads pointing at it. So "curator already has this" is true of the show
+// and says nothing at all about the season being asked for, and refusing on it
+// would make a second season impossible to grab through the API.
+//
+// The consequence is that the query below is only ever the FILM id space, which
+// is now stated by the media type rather than assumed. Left as it was, a
+// television dispatch would have been looked up among films — and TMDB's two id
+// sequences overlap, so Severance's tv id 95396 would have found the film
+// holding movie id 95396 and refused the grab with a sentence naming a film the
+// user never asked about.
+func (s *Server) alreadyHave(w http.ResponseWriter, r *http.Request, mediaType string, tmdbID *int64) bool {
+	if tmdbID == nil || mediaType != store.MediaTypeMovie {
 		return false
 	}
 

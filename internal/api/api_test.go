@@ -90,9 +90,15 @@ func (f *fakeStore) MoviesOnDisk(context.Context) ([]store.OnDisk, error) {
 			continue
 		}
 		out = append(out, store.OnDisk{
-			ID:          row.ID,
-			Title:       row.Title,
-			Year:        row.Year,
+			ID:    row.ID,
+			Title: row.Title,
+			Year:  row.Year,
+			// On the row and never a filter, exactly as the real query has it
+			// since T88: this list is what a prune may CONSIDER, so a row the
+			// caller cannot see is a row it cannot keep either. A fake that
+			// dropped the media type would let a prune that deletes every show
+			// pass every test here.
+			MediaType:   row.MediaType,
 			LibraryPath: *row.LibraryPath,
 			Downloading: f.downloading[row.ID],
 		})
@@ -122,16 +128,26 @@ func (f *fakeStore) DeleteMovie(_ context.Context, id int64) (store.Deleted, err
 	return store.Deleted{Movie: *row}, nil
 }
 
-// seedOnDisk records a row the way an earlier scan would have, so a test can put
-// a stale row in front of the pruner.
+// seedOnDisk records a film row the way an earlier scan would have, so a test
+// can put a stale row in front of the pruner.
 func (f *fakeStore) seedOnDisk(path, title string, year int) *store.Movie {
+	return f.seed(store.MediaTypeMovie, path, title, year)
+}
+
+// seedShowOnDisk is seedOnDisk for the other media type — a row under
+// LIBRARY_TV, which is the row a movie scan used to delete.
+func (f *fakeStore) seedShowOnDisk(path, title string, year int) *store.Movie {
+	return f.seed(store.MediaTypeTV, path, title, year)
+}
+
+func (f *fakeStore) seed(mediaType, path, title string, year int) *store.Movie {
 	f.nextID++
 	p := path
 	row := &store.Movie{
 		ID:          f.nextID,
 		Title:       title,
 		Year:        year,
-		MediaType:   store.MediaTypeMovie,
+		MediaType:   mediaType,
 		Status:      store.StatusImported,
 		LibraryPath: &p,
 		AddedAt:     time.Now().UTC(),
@@ -201,6 +217,11 @@ func (f *fakeStore) UpsertMovieByPath(_ context.Context, m store.ScannedMovie) (
 		existing.Year = m.Year
 		existing.SizeBytes = m.SizeBytes
 		existing.Status = m.Status
+		// REWRITTEN on every pass, exactly as the real UpsertMovieByPath does
+		// it. That rewrite is why ScannedMovie.MediaType is required, and a
+		// fake that ignored the field would hide a scan that relabels a show
+		// as a film — the failure T88 called a loaded gun.
+		existing.MediaType = m.MediaType
 		return *existing, false, nil
 	}
 	f.nextID++
@@ -213,7 +234,7 @@ func (f *fakeStore) UpsertMovieByPath(_ context.Context, m store.ScannedMovie) (
 		ID:          f.nextID,
 		Title:       m.Title,
 		Year:        m.Year,
-		MediaType:   store.MediaTypeMovie,
+		MediaType:   m.MediaType,
 		Status:      status,
 		LibraryPath: &path,
 		SizeBytes:   m.SizeBytes,
@@ -234,7 +255,15 @@ func (f *fakeStore) SetTMDBMetadata(_ context.Context, id int64, match store.TMD
 		return store.ErrNotFound
 	}
 	tmdbID := match.TMDBID
-	row.TMDBID = &tmdbID
+	// **The ROW decides the column**, not the caller — the real store writes
+	// through a CASE over media_type so there is no argument by which a tv id
+	// could land in tmdb_id (D48). A fake that always wrote tmdb_id would make
+	// a scan that matched a show as a film look like a pass.
+	if row.MediaType == store.MediaTypeTV {
+		row.TMDBTVID = &tmdbID
+	} else {
+		row.TMDBID = &tmdbID
+	}
 	row.Overview = match.Overview
 	row.PosterPath = match.PosterPath
 	if match.Title != nil {

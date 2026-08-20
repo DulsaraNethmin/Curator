@@ -174,16 +174,30 @@ func run() error {
 	// One client behind two interfaces: Matcher is phase 1's scan-time lookup and
 	// Browser is the catalogue the browsing screens read. Both stay nil
 	// interfaces when there is no key — not interfaces holding a nil pointer.
+	// showMatcher is the third face of the same client, and it is a third
+	// interface rather than a method on Matcher so that a show can never be
+	// looked up against /search/movie — where Fargo, Watchmen, Hannibal,
+	// Westworld, Dune and Snowpiercer all match a film (docs/decisions.md D48).
 	var (
-		matcher api.Matcher
-		browser api.Browser
+		matcher     api.Matcher
+		browser     api.Browser
+		showMatcher api.ShowMatcher
 	)
 	if cfg.TMDBAPIKey == "" {
 		log.Warn("TMDB_API_KEY is unset: the library will scan but nothing will be matched, " +
 			"Discover is unavailable, and Search falls back to release names")
 	} else {
 		client := tmdb.New(cfg.TMDBAPIKey, nil)
-		matcher, browser = client, client
+		matcher, browser, showMatcher = client, client, client
+	}
+
+	// Television, which is off unless LIBRARY_TV says otherwise. Info rather
+	// than Warn, unlike the unconfigured integrations above: this is the state
+	// every install starts in and the one the README promises, not something
+	// half-configured (docs/decisions.md D48).
+	if !cfg.TVConfigured() {
+		log.Info("LIBRARY_TV is unset: television is off — no TV root is scanned, " +
+			"and the show routes answer 503 naming the variable")
 	}
 
 	// One HTTP client, shared by the indexers that speak plain JSON. minter gets
@@ -441,6 +455,20 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	apiSrv := api.New(db, api.ScannerFunc(library.Scan), matcher, cfg.LibraryMovies, log).
+		// Television, in one attach because the three parts are one feature:
+		// an empty Root is television off, and it is the only switch — the
+		// scanner and the matcher below are inert without it.
+		WithTV(api.TV{
+			Root: cfg.LibraryTV,
+			// The zero FeatureOpts, and production MUST pass it: the 50 MiB
+			// floor and the sample/extras skip are what keep a release's
+			// sample.mkv out of a season, and the options exist so a test can
+			// lower the floor rather than write 50 MiB (internal/library).
+			Scanner: api.ShowScannerFunc(func(root string) ([]library.Show, []library.Skipped, error) {
+				return library.ScanShows(root, library.FeatureOpts{})
+			}),
+			Matcher: showMatcher,
+		}).
 		WithSearch(aggregator).
 		WithDownloads(downloads).
 		WithSettings(view).

@@ -27,9 +27,30 @@ type fakeBrowser struct {
 	trendingErr error
 	popularErr  error
 
+	// Television's four answer from their OWN fields, and that is the point of
+	// them. A fake that served the film rails to a TV request would let a
+	// handler that forgot to switch endpoints pass every test here and then ask
+	// TMDB's /search/movie for a show in production — which is the exact defect
+	// D48's contamination sweep exists to prevent, one layer up.
+	showSearch   []tmdb.Match
+	showDetails  *tmdb.Details
+	showTrending []tmdb.Match
+	showPopular  []tmdb.Match
+
+	showSearchErr   error
+	showDetailsErr  error
+	showTrendingErr error
+	showPopularErr  error
+
 	gotQuery string
 	gotYear  int
 	gotID    int
+
+	// What television was actually asked, recorded separately so a test can
+	// assert the show endpoints were reached rather than the film ones.
+	gotShowQuery string
+	gotShowYear  int
+	gotShowID    int
 }
 
 func (f *fakeBrowser) SearchMovies(_ context.Context, query string, year int) ([]tmdb.Match, error) {
@@ -51,6 +72,39 @@ func (f *fakeBrowser) Trending(context.Context) ([]tmdb.Match, error) {
 
 func (f *fakeBrowser) Popular(context.Context) ([]tmdb.Match, error) {
 	return f.popular, f.popularErr
+}
+
+func (f *fakeBrowser) SearchShows(_ context.Context, query string, year int) ([]tmdb.Match, error) {
+	f.gotShowQuery, f.gotShowYear = query, year
+	return f.showSearch, f.showSearchErr
+}
+
+func (f *fakeBrowser) Show(_ context.Context, id int) (*tmdb.Details, error) {
+	f.gotShowID = id
+	if f.showDetailsErr != nil {
+		return nil, f.showDetailsErr
+	}
+	return f.showDetails, nil
+}
+
+func (f *fakeBrowser) TrendingShows(context.Context) ([]tmdb.Match, error) {
+	return f.showTrending, f.showTrendingErr
+}
+
+func (f *fakeBrowser) PopularShows(context.Context) ([]tmdb.Match, error) {
+	return f.showPopular, f.showPopularErr
+}
+
+// severance is television's endgame(): the fixture every show test in this
+// package builds on. 95396 is Severance's real TMDB **tv** id, and it is the
+// same number a film could hold as a **movie** id — which is the collision
+// tmdb_tv_id exists for, and the reason these tests use it rather than a
+// number chosen to be safe.
+func severance() tmdb.Match {
+	return tmdb.Match{
+		TMDBID: 95396, Title: "Severance", Year: 2022,
+		Overview: "Mark leads a team of office workers…", PosterPath: "/severance.jpg",
+	}
 }
 
 func endgame() tmdb.Match {
@@ -318,15 +372,32 @@ type fakeMediaServer struct {
 	item jellyfin.Item
 	err  error
 
+	// The show half answers from its own fields for the reason MediaServer's
+	// own comment gives: asking Jellyfin for a Movie with a tv id can LAND on
+	// an unrelated film rather than merely miss. A fake that returned `item` to
+	// both would hide exactly that.
+	series    jellyfin.Item
+	seriesErr error
+
 	gotTMDBID int
 	gotYear   int
 	calls     int
+
+	gotSeriesTMDBID int
+	gotSeriesYear   int
+	seriesCalls     int
 }
 
 func (f *fakeMediaServer) FindMovie(_ context.Context, tmdbID, year int) (jellyfin.Item, error) {
 	f.calls++
 	f.gotTMDBID, f.gotYear = tmdbID, year
 	return f.item, f.err
+}
+
+func (f *fakeMediaServer) FindSeries(_ context.Context, tmdbID, year int) (jellyfin.Item, error) {
+	f.seriesCalls++
+	f.gotSeriesTMDBID, f.gotSeriesYear = tmdbID, year
+	return f.series, f.seriesErr
 }
 
 // importedEndgame is the fixture for these: the film is on disk, which is the

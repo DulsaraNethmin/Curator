@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,11 +82,72 @@ func (f ScannerFunc) Scan(root string) ([]library.Movie, []library.Skipped, erro
 	return f(root)
 }
 
+// ShowScanner is Scanner for the other media type: it walks LIBRARY_TV and
+// reports the folders that hold at least one episode, and the folders that do
+// not and why.
+//
+// A second interface rather than a second method on Scanner, for Browser's
+// reason: Scanner is phase 1's and every phase 1 fake implements it, and a
+// television method on it would force each of them to grow one for a feature
+// they do not test. The Skipped half is the SAME type, deliberately — the prune
+// joins both roots' skips in one pass, and two skip types would be two joins.
+type ShowScanner interface {
+	ScanShows(root string) ([]library.Show, []library.Skipped, error)
+}
+
+// ShowScannerFunc adapts a plain function to ShowScanner. library.ScanShows
+// takes a FeatureOpts as well as a root, so cmd/curator closes over the zero
+// value — which production must pass, exactly as it must to library.ScanWith.
+type ShowScannerFunc func(root string) ([]library.Show, []library.Skipped, error)
+
+// ScanShows calls f.
+func (f ShowScannerFunc) ScanShows(root string) ([]library.Show, []library.Skipped, error) {
+	return f(root)
+}
+
 // Matcher resolves a folder title and year to TMDB metadata. A nil Matcher is a
 // supported state, not a broken one: with no API key configured the library still
 // scans and everything is reported unmatched.
 type Matcher interface {
 	SearchMovie(ctx context.Context, title string, year int) (*tmdb.Match, error)
+}
+
+// ShowMatcher is Matcher for television, and it is a separate interface for a
+// reason that has already cost this project a paragraph in three documents:
+// a show's row must never be looked up against TMDB's /search/movie. Fargo,
+// Watchmen, Hannibal, Westworld, Dune and Snowpiercer all match a FILM there,
+// and SetTMDBMetadata overwrites unconditionally — so the show would acquire a
+// film's id, overview and poster with no error and no log, on every scan
+// (docs/decisions.md D48).
+//
+// Two interfaces make that a compile-time property rather than a rule to
+// remember: there is no way to hand the television pass a client that only
+// knows how to search films.
+type ShowMatcher interface {
+	SearchShow(ctx context.Context, title string, year int) (*tmdb.Match, error)
+}
+
+// TV is television's half of the server's dependencies, attached with WithTV.
+//
+// It is a struct rather than three With* calls because the three are one
+// feature and are switched on together — the shape JellyfinSetup, IndexerSetup
+// and VPNSetup already have in this package.
+type TV struct {
+	// Root is LIBRARY_TV, and **empty means television is off**: no shows are
+	// scanned, no TV rows are pruned, and every television route answers 503
+	// naming the variable (docs/decisions.md D40, D48). There is no default,
+	// deliberately — see config.Config.LibraryTV.
+	Root string
+
+	// Scanner walks Root. Set beside it by cmd/curator; a Root with no scanner
+	// could only be a wiring mistake, and tvConfigured reads that pair as off
+	// because the alternative is a scan that nil-panics on the request that
+	// walks the library.
+	Scanner ShowScanner
+
+	// Matcher is nil when TMDB_API_KEY is unset, exactly as Matcher is, and it
+	// means shows are recorded and reported unmatched rather than guessed at.
+	Matcher ShowMatcher
 }
 
 // Server holds the dependencies the handlers close over.
@@ -169,6 +231,46 @@ type Server struct {
 	// stream.go so that it is per-Server and not per-process; see passedOver
 	// for why the line is deduplicated at all.
 	streamWarned sync.Map
+
+	// tv is television, attached with WithTV. The zero value is television off,
+	// which is what every install that has not set LIBRARY_TV runs, and it is
+	// the state phase 11 keeps working exactly as it did before.
+	tv TV
+}
+
+// WithTV attaches television and returns the server.
+func (s *Server) WithTV(tv TV) *Server {
+	s.tv = tv
+	return s
+}
+
+// tvConfigured reports whether this curator does television at all.
+//
+// One place to ask, mirroring config.TVConfigured, so that the scan, the
+// routes and the refusal cannot come to different conclusions about whether a
+// TV root exists.
+func (s *Server) tvConfigured() bool {
+	return strings.TrimSpace(s.tv.Root) != "" && s.tv.Scanner != nil
+}
+
+// errTVUnconfigured is the television-is-off state, phrased exactly as
+// errTMDBUnconfigured is: it names the variable, because that is the whole
+// remedy (docs/decisions.md D40).
+var errTVUnconfigured = errors.New("television is not configured: set LIBRARY_TV")
+
+// televisionOff answers the request itself when television is off, and reports
+// whether it did.
+//
+// 503 and not 404: the route exists, the request was fine, and this install has
+// simply not turned television on — the same posture an unset QBIT_USER and an
+// unset TMDB_API_KEY already have. A 404 would read as "curator cannot do
+// this", which is the one thing it is not.
+func (s *Server) televisionOff(w http.ResponseWriter) bool {
+	if s.tvConfigured() {
+		return false
+	}
+	s.fail(w, http.StatusServiceUnavailable, errTVUnconfigured)
+	return true
 }
 
 // New builds a Server. matcher may be nil; log may be nil, in which case the
@@ -181,10 +283,18 @@ func New(st Store, sc Scanner, matcher Matcher, libraryRoot string, log *slog.Lo
 }
 
 // Register mounts the API routes on mux. /healthz belongs to main, not here.
+//
+// The two television routes are mounted whether or not television is
+// configured, and that is the point rather than an oversight: they answer 503
+// naming LIBRARY_TV, and a route that did not exist would answer 404 — which
+// says "curator cannot do this" instead of "you have not turned this on"
+// (docs/decisions.md D40).
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/scan", s.handleScan)
 	mux.HandleFunc("GET /api/movies", s.handleListMovies)
 	mux.HandleFunc("GET /api/movies/{id}", s.handleGetMovie)
+	mux.HandleFunc("GET /api/shows", s.handleListShows)
+	mux.HandleFunc("GET /api/shows/{id}", s.handleGetShow)
 }
 
 // scanResponse is what POST /api/scan reports.
@@ -203,23 +313,70 @@ type scanResponse struct {
 	Matched   int `json:"matched"`
 	Unmatched int `json:"unmatched"`
 
-	Empty   int `json:"empty"`   // folders on disk with no film in them
+	Empty int `json:"empty"` // folders on disk with no film in them
+
+	// Removed and Missing count BOTH media types, and they are not split the
+	// way the four above are. There is ONE prune over both roots (see prune),
+	// so a second pair of counters would imply two passes that could disagree —
+	// and the two numbers a reader acts on are "how many rows went" and "how
+	// many could not be accounted for", not which root they came from. The log
+	// carries the media type on every line for the reader who needs it.
 	Removed int `json:"removed"` // rows dropped — the folders were left where they are
 	Missing int `json:"missing"` // rows kept because this scan could not account for them
+
+	// Television, counted separately so that every key above keeps exactly the
+	// meaning it had before phase 11 — a screen reading `scanned` gets films,
+	// as it always did. All four are zero when LIBRARY_TV is unset, which is
+	// the honest report of a root that was never walked.
+	Shows          int `json:"shows"`           // folders that hold at least one episode
+	ShowsAdded     int `json:"shows_added"`     // of those, rows that did not exist before
+	ShowsMatched   int `json:"shows_matched"`   // shows this pass resolved against TMDB's tv ids
+	ShowsUnmatched int `json:"shows_unmatched"` // shows still carrying no tmdb_tv_id
+	ShowsEmpty     int `json:"shows_empty"`     // folders under LIBRARY_TV with no episode in them
+	Episodes       int `json:"episodes"`        // distinct episodes across every show found
 }
 
-// handleScan walks the library, upserts every folder that holds a film, removes
-// the rows that no longer describe one, then tries to match whatever still has no
-// tmdb_id.
+// mediaWalk is what one scan learned about one media type's root.
 //
-// The order is not arbitrary. The upsert runs first so the pruner reads a database
+// It is the whole input to the prune, and it is built ONLY for a root this scan
+// actually walked. A media type absent from the map is a media type this scan
+// has no finding about — which is a reason to keep every row under it and never
+// a reason to delete one.
+type mediaWalk struct {
+	// root is the directory this media type's rows must live under. Kept per
+	// media type because the containment question is asked per row: a show is
+	// not outside the library for sitting outside LIBRARY_MOVIES.
+	root string
+
+	recorded map[string]bool // folders that hold a film, or at least one episode
+	noMedia  map[string]bool // folders read successfully with nothing in them
+}
+
+// handleScan walks the library, upserts every folder that holds a film or an
+// episode, removes the rows that no longer describe one, then tries to match
+// whatever still has no TMDB id.
+//
+// The order is not arbitrary. The upserts run first so the pruner reads a database
 // that already knows about everything found this run; the prune runs before the
 // TMDB pass so no lookup is ever spent on a row that is about to go.
+//
+// **Both roots are walked in ONE pass and pruned ONCE**, and that is the whole
+// design rather than an implementation detail. Two scoped prunes is the tempting
+// shape and it loses the television library: `prune`'s switch puts the
+// containment check before the "did this scan find it" check, so a show row met
+// by a movie-only prune is not merely unfound — it is affirmatively deleted for
+// sitting outside LIBRARY_MOVIES, taking its downloads with it through the
+// foreign key (docs/decisions.md D48, and phase-11.md's first trap).
 //
 // Synchronous by design: 29 folders and a handful of TMDB calls. A background job
 // would be more code and less honest about when the work has actually finished.
 func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// One entry per root this scan actually walked. Television is absent from
+	// it when LIBRARY_TV is unset, which is what leaves every TV row in the
+	// prune's "kept" arm.
+	walks := make(map[string]mediaWalk, 2)
 
 	found, skipped, err := s.scanner.Scan(s.libraryRoot)
 	if err != nil {
@@ -236,6 +393,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 			out.Empty++
 		}
 	}
+	films := mediaWalk{root: s.libraryRoot, recorded: map[string]bool{}, noMedia: noMediaKeys(skipped)}
 	for _, m := range found {
 		size := m.SizeBytes
 		_, inserted, err := s.store.UpsertMovieByPath(ctx, store.ScannedMovie{
@@ -260,9 +418,24 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		if inserted {
 			out.Added++
 		}
+		addPathKey(films.recorded, m.LibraryPath)
+	}
+	walks[store.MediaTypeMovie] = films
+
+	if s.tvConfigured() {
+		if err := s.scanShows(ctx, walks, &out); err != nil {
+			// A television root that cannot be read stops the WHOLE scan, films
+			// included, and that is deliberate: there is one prune over both
+			// roots, so letting the film half proceed would run it with the
+			// television half's findings missing — which is the movie-only
+			// prune this design exists to avoid. D33's rule is that a root that
+			// cannot be read prunes nothing, and here that is both of them.
+			s.fail(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 
-	if err := s.prune(ctx, found, skipped, &out); err != nil {
+	if err := s.prune(ctx, walks, &out); err != nil {
 		// Same reasoning as the upsert above: a failing write means the database
 		// is not usable, and a 200 carrying a partial cleanup would report a
 		// success that did not happen.
@@ -270,21 +443,101 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	missing, err := s.store.MoviesMissingMetadata(ctx, store.MediaTypeMovie)
-	if err != nil {
+	if out.Matched, out.Unmatched, err = s.matchPass(ctx, store.MediaTypeMovie); err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
+	}
+	if s.tvConfigured() {
+		if out.ShowsMatched, out.ShowsUnmatched, err = s.matchPass(ctx, store.MediaTypeTV); err != nil {
+			s.fail(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	// The disk is the source of truth and metadata is an enrichment, so a missing
 	// key is reported, not fatal: everything on disk is already recorded by now.
+	message := "scan complete"
 	if s.matcher == nil {
-		out.Unmatched = len(missing)
-		s.log.Info("scan complete without metadata: no TMDB key configured",
-			"scanned", out.Scanned, "added", out.Added, "unmatched", out.Unmatched,
-			"empty", out.Empty, "removed", out.Removed, "missing", out.Missing)
-		s.respond(w, http.StatusOK, out)
-		return
+		message = "scan complete without metadata: no TMDB key configured"
+	}
+	s.log.Info(message, "scanned", out.Scanned, "added", out.Added,
+		"matched", out.Matched, "unmatched", out.Unmatched,
+		"empty", out.Empty, "removed", out.Removed, "missing", out.Missing,
+		"shows", out.Shows, "shows_added", out.ShowsAdded, "episodes", out.Episodes)
+	s.respond(w, http.StatusOK, out)
+}
+
+// scanShows is handleScan's television half: walk LIBRARY_TV, record every
+// folder that holds at least one episode, and hand the prune what it found.
+//
+// Split out rather than inlined because the two halves are the same four steps
+// over two different types, and interleaving them in one function is how the
+// media type on a ScannedMovie gets copied from the line above it.
+func (s *Server) scanShows(ctx context.Context, walks map[string]mediaWalk, out *scanResponse) error {
+	shows, skipped, err := s.tv.Scanner.ScanShows(s.tv.Root)
+	if err != nil {
+		return fmt.Errorf("scan television library: %w", err)
+	}
+
+	out.Shows = len(shows)
+	for _, sk := range skipped {
+		if sk.NoMedia {
+			out.ShowsEmpty++
+		}
+	}
+
+	walk := mediaWalk{root: s.tv.Root, recorded: map[string]bool{}, noMedia: noMediaKeys(skipped)}
+	for _, show := range shows {
+		size := show.SizeBytes
+		_, inserted, err := s.store.UpsertMovieByPath(ctx, store.ScannedMovie{
+			// The line the whole media-type argument is about. It is stated
+			// here for the same reason MediaTypeMovie is stated above: this
+			// field REWRITES media_type on every pass, so an omission would
+			// relabel every show as a film — and the prune would then delete
+			// each of them for sitting outside LIBRARY_MOVIES.
+			MediaType:   store.MediaTypeTV,
+			LibraryPath: show.LibraryPath,
+			Title:       show.Title,
+			Year:        show.Year,
+			Status:      show.Status,
+			// The SUMMED size of the episodes on disk, which is what
+			// library.ScanShows already computed. It is the scan that owns this
+			// column for television: the importer writes one file's size per
+			// import, so season 2 would otherwise report season 2's bytes.
+			SizeBytes: &size,
+		})
+		if err != nil {
+			return err
+		}
+		if inserted {
+			out.ShowsAdded++
+		}
+		out.Episodes += show.Episodes
+		addPathKey(walk.recorded, show.LibraryPath)
+	}
+	walks[store.MediaTypeTV] = walk
+	return nil
+}
+
+// matchPass looks up every row of one media type that still has no TMDB id, and
+// reports how many it matched and how many it left alone.
+//
+// The media type decides which of TMDB's two searches is used, and there is no
+// path by which a show reaches /search/movie: the television lookup is a
+// different interface entirely (ShowMatcher), so the wrong one is a compile
+// error rather than six shows quietly acquiring films' posters.
+func (s *Server) matchPass(ctx context.Context, mediaType string) (matched, unmatched int, err error) {
+	missing, err := s.store.MoviesMissingMetadata(ctx, mediaType)
+	if err != nil {
+		return 0, 0, err
+	}
+	if len(missing) == 0 {
+		return 0, 0, nil
+	}
+	if !s.canMatch(mediaType) {
+		// No key for this media type: everything on disk is already recorded,
+		// and the rows are reported unmatched rather than guessed at.
+		return 0, len(missing), nil
 	}
 
 	for _, m := range missing {
@@ -297,25 +550,54 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		// disk always has a year; a row wanted from a yearless search does not.
 		if m.Year <= 0 {
 			s.log.Warn("not matched: no year, and TMDB would guess without one",
-				"title", m.Title, "movie_id", m.ID)
-			out.Unmatched++
+				"title", m.Title, "movie_id", m.ID, "media_type", mediaType)
+			unmatched++
 			continue
 		}
 
 		if err := s.match(ctx, m); err != nil {
-			// One failure must not abort the scan. The row keeps tmdb_id NULL and
-			// is surfaced by the unmatched count.
-			s.log.Warn("tmdb match failed", "title", m.Title, "year", m.Year, "err", err)
-			out.Unmatched++
+			// One failure must not abort the scan. The row keeps its TMDB id
+			// NULL and is surfaced by the unmatched count.
+			s.log.Warn("tmdb match failed", "title", m.Title, "year", m.Year,
+				"media_type", mediaType, "err", err)
+			unmatched++
 			continue
 		}
-		out.Matched++
+		matched++
 	}
+	return matched, unmatched, nil
+}
 
-	s.log.Info("scan complete", "scanned", out.Scanned, "added", out.Added,
-		"matched", out.Matched, "unmatched", out.Unmatched,
-		"empty", out.Empty, "removed", out.Removed, "missing", out.Missing)
-	s.respond(w, http.StatusOK, out)
+// canMatch reports whether there is a TMDB client for this media type.
+func (s *Server) canMatch(mediaType string) bool {
+	if mediaType == store.MediaTypeTV {
+		return s.tv.Matcher != nil
+	}
+	return s.matcher != nil
+}
+
+// noMediaKeys is the set of folders a scan READ and found nothing in.
+//
+// The NoMedia bool rather than the sentence, because it is the one skip that
+// removes a row and a caller deciding that on a prose match is one reworded
+// message away from deleting the wrong thing (docs/decisions.md D33).
+func noMediaKeys(skipped []library.Skipped) map[string]bool {
+	keys := make(map[string]bool, len(skipped))
+	for _, sk := range skipped {
+		if !sk.NoMedia {
+			continue
+		}
+		addPathKey(keys, sk.Path)
+	}
+	return keys
+}
+
+// addPathKey records a path in its comparable form, and records nothing when it
+// will not resolve.
+func addPathKey(set map[string]bool, path string) {
+	if key, ok := pathKey(path); ok {
+		set[key] = true
+	}
 }
 
 // prune removes the rows this scan proved no longer describe a film, and counts
@@ -337,7 +619,15 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 // The deletion is store.DeleteMovie: rows only, downloads then movies for the
 // foreign key, and no disk and no torrent client. Emphatically not the download
 // service's method of the same name.
-func (s *Server) prune(ctx context.Context, found []library.Movie, skipped []library.Skipped, out *scanResponse) error {
+//
+// **It runs once, over both media types, and `outside` is computed against the
+// root that owns each row.** store.MoviesOnDisk deliberately returns films and
+// shows together with the media type on the ROW rather than a filter on the
+// query, because this list is what a prune may consider — and a row filtered
+// out of it is a row that cannot be kept either. A row whose root this scan did
+// not walk falls through to kept, which is the same asymmetry as everything
+// else here: only a positive finding removes anything.
+func (s *Server) prune(ctx context.Context, walks map[string]mediaWalk, out *scanResponse) error {
 	rows, err := s.store.MoviesOnDisk(ctx)
 	if err != nil {
 		return err
@@ -346,24 +636,11 @@ func (s *Server) prune(ctx context.Context, found []library.Movie, skipped []lib
 		return nil
 	}
 
-	// Both sides of the join go through filepath.Abs, because "./library/X" and
-	// "library/X" are one folder and joining on the raw strings would call the
-	// second absent — flagging a row for a film that is right there.
-	recorded := make(map[string]bool, len(found))
-	for _, m := range found {
-		if key, ok := pathKey(m.LibraryPath); ok {
-			recorded[key] = true
-		}
-	}
-	noMedia := make(map[string]bool, len(skipped))
-	for _, sk := range skipped {
-		if !sk.NoMedia {
-			continue
-		}
-		if key, ok := pathKey(sk.Path); ok {
-			noMedia[key] = true
-		}
-	}
+	// Rows kept because nothing walked their root, counted per media type and
+	// logged once at the end. One line per show per scan would be the shape a
+	// movies-only prune produced for ever, and /api/logs is a screen (D18) —
+	// the fact is about the ROOT, so it is stated once about the root.
+	unwalked := map[string]int{}
 
 	for _, row := range rows {
 		// Checked before anything else, so it overrides every reason to delete.
@@ -372,8 +649,11 @@ func (s *Server) prune(ctx context.Context, found []library.Movie, skipped []lib
 			continue
 		}
 
+		// Both sides of the join go through filepath.Abs, because "./library/X"
+		// and "library/X" are one folder and joining on the raw strings would
+		// call the second absent — flagging a row for a film that is right there.
 		key, ok := pathKey(row.LibraryPath)
-		outside := library.AssertInside(s.libraryRoot, row.LibraryPath) != nil
+		walk, walked := walks[row.MediaType]
 
 		var reason string
 		switch {
@@ -383,17 +663,28 @@ func (s *Server) prune(ctx context.Context, found []library.Movie, skipped []lib
 				"movie_id", row.ID, "title", row.Title, "library_path", row.LibraryPath)
 			out.Missing++
 			continue
-		case outside:
-			reason = "its library_path is outside LIBRARY_MOVIES, so it can never be served"
-		case recorded[key]:
+		case !walked:
+			// **Before the containment check, and that order is load-bearing.**
+			// With LIBRARY_TV unset there is no television root to be inside of,
+			// and library.AssertInside("", path) resolves the empty root to the
+			// working directory — so asking it here would find every show
+			// "outside" and delete the television library on the first movie
+			// scan. A root nobody walked produces no finding at all.
+			unwalked[row.MediaType]++
+			out.Missing++
 			continue
-		case noMedia[key]:
-			reason = "there is no film in that folder"
+		case library.AssertInside(walk.root, row.LibraryPath) != nil:
+			reason = "its library_path is outside " + rootVariable(row.MediaType) + ", so it can never be served"
+		case walk.recorded[key]:
+			continue
+		case walk.noMedia[key]:
+			reason = emptyFolderReason(row.MediaType)
 		default:
 			// Absent, unreadable, or a name that no longer parses. The folder may
 			// still hold the film, so the row stays and says so in the log.
 			s.log.Warn("scan: keeping a row this scan could not account for",
-				"movie_id", row.ID, "title", row.Title, "library_path", row.LibraryPath)
+				"movie_id", row.ID, "title", row.Title, "library_path", row.LibraryPath,
+				"media_type", row.MediaType)
 			out.Missing++
 			continue
 		}
@@ -405,10 +696,42 @@ func (s *Server) prune(ctx context.Context, found []library.Movie, skipped []lib
 		// vanishes silently" has to be true there as well as in the response.
 		s.log.Info("scan: removed a row, and left the folder on disk",
 			"movie_id", row.ID, "title", row.Title, "year", row.Year,
-			"library_path", row.LibraryPath, "why", reason)
+			"media_type", row.MediaType, "library_path", row.LibraryPath, "why", reason)
 		out.Removed++
 	}
+
+	for mediaType, count := range unwalked {
+		s.log.Info("scan: rows kept without being considered, because nothing walked their library root",
+			"media_type", mediaType, "rows", count, "why", unwalkedReason(mediaType))
+	}
 	return nil
+}
+
+// rootVariable names the environment variable that owns a media type's root. It
+// is what a removal's reason quotes, because the variable is the remedy.
+func rootVariable(mediaType string) string {
+	if mediaType == store.MediaTypeTV {
+		return "LIBRARY_TV"
+	}
+	return "LIBRARY_MOVIES"
+}
+
+// emptyFolderReason is the sentence for a folder that was read and holds
+// nothing. The two media types are two different emptinesses — a film or an
+// episode — and saying which is what makes the line actionable.
+func emptyFolderReason(mediaType string) string {
+	if mediaType == store.MediaTypeTV {
+		return "there is no episode in that folder"
+	}
+	return "there is no film in that folder"
+}
+
+// unwalkedReason says why a media type's root produced no findings at all.
+func unwalkedReason(mediaType string) string {
+	if mediaType == store.MediaTypeTV {
+		return "LIBRARY_TV is unset, so television is off and nothing under it was scanned"
+	}
+	return "curator does not know that media type, so it has no root to scan"
 }
 
 // pathKey is the comparable form of a library path. It reports false when the
@@ -426,14 +749,19 @@ func pathKey(path string) (string, bool) {
 // deliberately distinct from a lookup that failed.
 var errNoMatch = errors.New("no tmdb match")
 
-// match looks one movie up and records what came back.
+// match looks one row up and records what came back.
 //
 // The stored title stays the one parsed off disk. TMDB's canonical title would
 // undo the very substitution that identifies the folder — "Avengers - Infinity
 // War" becoming "Avengers: Infinity War" — and library_path, not title, is the
-// row's identity. The UI can show either once tmdb_id is known.
+// row's identity. The UI can show either once the TMDB id is known.
+//
+// **The row decides which search runs, and which column the answer lands in.**
+// The lookup is chosen from m.MediaType here, and store.SetTMDBMetadata writes
+// through a CASE over the row's own media_type — so there is no argument by
+// which a caller could put a tv id in the movie column (D48).
 func (s *Server) match(ctx context.Context, m store.Movie) error {
-	found, err := s.matcher.SearchMovie(ctx, m.Title, m.Year)
+	found, err := s.lookup(ctx, m.MediaType, m.Title, m.Year)
 	if err != nil {
 		return err
 	}
@@ -449,10 +777,26 @@ func (s *Server) match(ctx context.Context, m store.Movie) error {
 		match.PosterPath = &found.PosterPath
 	}
 
-	// tmdb_id is UNIQUE, so two folders resolving to one TMDB entry collide here.
-	// That is the correct outcome — the second is left unmatched and visible
-	// rather than silently merged — and it must not stop the rest of the scan.
+	// Both TMDB id columns are UNIQUE, so two folders resolving to one entry
+	// collide here. That is the correct outcome — the second is left unmatched
+	// and visible rather than silently merged — and it must not stop the rest
+	// of the scan.
 	return s.store.SetTMDBMetadata(ctx, m.ID, match)
+}
+
+// lookup is the TMDB search for one media type.
+//
+// A show goes to /search/tv and a film to /search/movie, and the two are
+// reached through two different interfaces so that the wrong one cannot be
+// passed. That is not ceremony: a show searched as a film matches Fargo,
+// Watchmen, Hannibal, Westworld, Dune and Snowpiercer, and the write that
+// followed would overwrite the row with a film's identity, silently, on every
+// scan (docs/decisions.md D48).
+func (s *Server) lookup(ctx context.Context, mediaType, title string, year int) (*tmdb.Match, error) {
+	if mediaType == store.MediaTypeTV {
+		return s.tv.Matcher.SearchShow(ctx, title, year)
+	}
+	return s.matcher.SearchMovie(ctx, title, year)
 }
 
 func (s *Server) handleListMovies(w http.ResponseWriter, r *http.Request) {
@@ -483,10 +827,79 @@ func (s *Server) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
+	// A show is not a film, whether or not television is configured on this
+	// install — so this is a 404 and never the 503 the /api/shows routes
+	// answer. Tested for a POSITIVE television finding rather than "not a
+	// movie", which is the same asymmetry the prune is built on: a row whose
+	// media type says nothing is served as what this route serves.
+	if movie.MediaType == store.MediaTypeTV {
+		s.fail(w, http.StatusNotFound, fmt.Errorf("no movie with id %d", id))
+		return
+	}
 
 	body := movieBody{Movie: movie}
-	body.JellyfinURL = s.jellyfinLinkFor(
-		r.Context(), movie.TMDBID, movie.MatchYear(), movie.Title, movie.Status == store.StatusImported)
+	body.JellyfinURL = s.jellyfinLinkFor(r.Context(), store.MediaTypeMovie,
+		movie.TMDBID, movie.MatchYear(), movie.Title, movie.Status == store.StatusImported)
+	s.respond(w, http.StatusOK, body)
+}
+
+// handleListShows is handleListMovies for the other media type, and it is a
+// second handler rather than a ?media= on the first.
+//
+// The two lists are two screens with two URLs — /library/ toggles between them
+// (T95) — and a query parameter that changed what a route returns would make
+// "which one am I looking at" a question about a string rather than about a
+// path. It also keeps GET /api/movies exactly what it has always been: films.
+func (s *Server) handleListShows(w http.ResponseWriter, r *http.Request) {
+	if s.televisionOff(w) {
+		return
+	}
+
+	shows, err := s.store.ListMovies(r.Context(), store.MediaTypeTV)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	if shows == nil {
+		shows = []store.Movie{} // an empty library is [], never null
+	}
+	s.respond(w, http.StatusOK, shows)
+}
+
+func (s *Server) handleGetShow(w http.ResponseWriter, r *http.Request) {
+	if s.televisionOff(w) {
+		return
+	}
+
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, fmt.Errorf("id %q: not a number", r.PathValue("id")))
+		return
+	}
+
+	show, err := s.store.GetMovie(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			s.fail(w, http.StatusNotFound, fmt.Errorf("no show with id %d", id))
+			return
+		}
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	if show.MediaType != store.MediaTypeTV {
+		// A film's id, on the television route. 404 rather than a redirect to
+		// /api/movies/{id}: the two id spaces are one table, and a route that
+		// quietly served the other kind is how a screen ends up drawing a film
+		// as a show.
+		s.fail(w, http.StatusNotFound, fmt.Errorf("no show with id %d", id))
+		return
+	}
+
+	body := movieBody{Movie: show}
+	// TMDBTVID, not TMDBID: a show's id lives in its own column because TMDB's
+	// two id sequences overlap, and Jellyfin is asked for a Series with it.
+	body.JellyfinURL = s.jellyfinLinkFor(r.Context(), store.MediaTypeTV,
+		show.TMDBTVID, show.MatchYear(), show.Title, show.Status == store.StatusImported)
 	s.respond(w, http.StatusOK, body)
 }
 
