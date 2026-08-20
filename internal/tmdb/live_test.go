@@ -159,3 +159,124 @@ func TestLiveBrowse(t *testing.T) {
 		}
 	})
 }
+
+// The television methods against the real API, under exactly the contract the
+// two above use: -short skips, no key skips, no network skips, a REJECTED key
+// fails, and a bad status fails — so a wrong endpoint path cannot sit there
+// green. The gating is copied deliberately rather than reinvented; a live test
+// with a rule of its own is what T76 existed to remove on the indexer side.
+//
+// This is the only thing that can catch the television half's real risk. Every
+// other TV test proves we parse a recording correctly, and the recordings in
+// testdata/ were written to TMDB's documented shape rather than captured from a
+// key nobody in CI has. If /search/tv ever stopped sending `name`, this is
+// where it would show — the fixture tests would go on passing forever.
+func TestLiveTV(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live TMDB check in -short mode")
+	}
+	key := liveAPIKey(t)
+	if key == "" {
+		t.Skip("no TMDB_API_KEY in the environment or ../../.env; skipping live check")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := New(key, nil)
+
+	t.Run("SearchShow", func(t *testing.T) {
+		got, err := client.SearchShow(ctx, "Breaking Bad", 2008)
+		switch {
+		case errors.Is(err, ErrUnauthorized):
+			t.Fatalf("TMDB rejected the key: %v", err)
+		case err != nil:
+			t.Skipf("live TMDB unreachable: %v", err)
+		}
+		if got == nil {
+			t.Fatal("live search for Breaking Bad (2008) found nothing")
+		}
+		if got.TMDBID != 1396 {
+			t.Fatalf("TMDBID = %d, want 1396 (%q, %d)", got.TMDBID, got.Title, got.Year)
+		}
+		// Title from `name` and Year from `first_air_date`. An empty title here
+		// is the exact failure the mapping exists to prevent, and it is what a
+		// movie-shaped decode of a TV payload produces.
+		if got.Title != "Breaking Bad" {
+			t.Errorf("Title = %q — `name` did not map", got.Title)
+		}
+		if got.Year != 2008 {
+			t.Errorf("Year = %d — `first_air_date` did not map", got.Year)
+		}
+		t.Logf("live show: id=%d title=%q year=%d poster=%s", got.TMDBID, got.Title, got.Year, got.PosterPath)
+	})
+
+	t.Run("Show", func(t *testing.T) {
+		got, err := client.Show(ctx, 1396)
+		switch {
+		case errors.Is(err, ErrUnauthorized):
+			t.Fatalf("TMDB rejected the key: %v", err)
+		case err != nil:
+			t.Skipf("live TMDB unreachable: %v", err)
+		}
+		if got.Title != "Breaking Bad" || got.NumberOfSeasons == 0 || got.NumberOfEpisodes == 0 || len(got.Genres) == 0 {
+			t.Errorf("live show details look wrong: %+v", got)
+		}
+		if got.FirstAirDate == "" || got.LastAirDate == "" {
+			t.Errorf("air dates missing: first=%q last=%q", got.FirstAirDate, got.LastAirDate)
+		}
+		// Counts are not asserted exactly: TMDB revises them, and a test that
+		// fails because a special was added is a test nobody trusts.
+		t.Logf("live: %s (%d), %d seasons, %d episodes, %d min/ep, %v",
+			got.Title, got.Year, got.NumberOfSeasons, got.NumberOfEpisodes, got.EpisodeRuntime, got.Genres)
+	})
+
+	t.Run("NotFound", func(t *testing.T) {
+		_, err := client.Show(ctx, 999999999)
+		if err != nil && !errors.Is(err, ErrNotFound) && !strings.Contains(err.Error(), "unexpected status") {
+			t.Skipf("live TMDB unreachable: %v", err)
+		}
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("err = %v, want ErrNotFound for an id TMDB does not have", err)
+		}
+	})
+
+	t.Run("SearchShows", func(t *testing.T) {
+		got, err := client.SearchShows(ctx, "the office", 0)
+		if err != nil {
+			t.Skipf("live TMDB unreachable: %v", err)
+		}
+		if len(got) == 0 {
+			t.Fatal("live search for the office found nothing")
+		}
+		// Several distinct shows share this name; the point is that a human
+		// picks, which is only possible if every card carries a year.
+		for i, m := range got {
+			if m.Title == "" {
+				t.Fatalf("result %d has no title — `name` did not map: %+v", i, m)
+			}
+		}
+		t.Logf("live: %d results, first is %q (%d)", len(got), got[0].Title, got[0].Year)
+	})
+
+	t.Run("TrendingAndPopularShows", func(t *testing.T) {
+		for name, call := range map[string]func() ([]Match, error){
+			"TrendingShows": func() ([]Match, error) { return client.TrendingShows(ctx) },
+			"PopularShows":  func() ([]Match, error) { return client.PopularShows(ctx) },
+		} {
+			got, err := call()
+			if err != nil {
+				t.Skipf("live TMDB unreachable: %v", err)
+			}
+			if len(got) == 0 {
+				t.Errorf("%s returned nothing", name)
+				continue
+			}
+			// An unmapped page is 20 cards with empty titles, not an error —
+			// which is why this asserts the content rather than the count.
+			if got[0].Title == "" || got[0].TMDBID == 0 {
+				t.Errorf("%s: first card is unmapped: %+v", name, got[0])
+			}
+			t.Logf("live %s: %d, first is %q (%d)", name, len(got), got[0].Title, got[0].Year)
+		}
+	})
+}
