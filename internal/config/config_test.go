@@ -14,6 +14,32 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/qbit"
 )
 
+// Setting LIBRARY_TV is what turns television on, from the environment or from
+// the settings store — the same precedence every other path follows.
+func TestLibraryTVTurnsTelevisionOn(t *testing.T) {
+	t.Setenv("LIBRARY_TV", "/media/tv")
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LibraryTV != "/media/tv" {
+		t.Errorf("LibraryTV = %q, want /media/tv", cfg.LibraryTV)
+	}
+	if !cfg.TVConfigured() {
+		t.Error("TVConfigured() is false with LIBRARY_TV set")
+	}
+
+	// And from the store, which is how the settings screen sets it.
+	t.Setenv("LIBRARY_TV", "")
+	stored, err := Load(map[string]string{"library_tv": "/data/shows"})
+	if err != nil {
+		t.Fatalf("Load from settings: %v", err)
+	}
+	if stored.LibraryTV != "/data/shows" {
+		t.Errorf("LibraryTV = %q, want /data/shows", stored.LibraryTV)
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	// Cleared explicitly so the test still means something in a shell that has
 	// sourced .env — where QBIT_USER really is set, and where an inherited value
@@ -35,6 +61,21 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.LibraryMovies != defaultLibraryMovies {
 		t.Errorf("LibraryMovies = %q, want %q", cfg.LibraryMovies, defaultLibraryMovies)
+	}
+	// LibraryTV has NO default, and that asymmetry with LibraryMovies is the
+	// opt-in rather than an oversight: television is off until somebody says
+	// where it goes. A default here would point curator at a directory nobody
+	// asked it to write to.
+	t.Setenv("LIBRARY_TV", "")
+	offByDefault, err := Load(nil)
+	if err != nil {
+		t.Fatalf("Load with LIBRARY_TV cleared: %v", err)
+	}
+	if offByDefault.LibraryTV != "" {
+		t.Errorf("LibraryTV = %q, want empty — television is opt-in", offByDefault.LibraryTV)
+	}
+	if offByDefault.TVConfigured() {
+		t.Error("TVConfigured() is true with no LIBRARY_TV set")
 	}
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel = %v, want info", cfg.LogLevel)

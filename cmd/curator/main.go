@@ -763,6 +763,7 @@ func settingsView(cfg *config.Config, matcher api.Matcher, torrents download.Tor
 		Integrations: integrations,
 		Paths: map[string]string{
 			"library_movies":      cfg.LibraryMovies,
+			"library_tv":          cfg.LibraryTV,
 			"downloads_dir":       cfg.DownloadsDir,
 			"downloads_path":      cfg.DownloadsPath,
 			"qbit_downloads_path": cfg.QBitDownloadsPath,
@@ -797,6 +798,7 @@ func effective(cfg *config.Config) map[string]string {
 		"updater_token":    cfg.UpdaterToken,
 
 		"library_movies": cfg.LibraryMovies,
+		"library_tv":     cfg.LibraryTV,
 		"tmdb_api_key":   cfg.TMDBAPIKey,
 
 		"torrent_backend":        cfg.TorrentBackend,
