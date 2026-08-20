@@ -534,3 +534,312 @@ func TestNoNetworkLeavesTrackersAlone(t *testing.T) {
 		t.Errorf("trackers = %v, want them untouched", got)
 	}
 }
+
+// TestTheClientHoldsNoDialerOrListenerButTheTunnels is the RUNTIME half of the
+// kill switch, and it is deliberately not a second reading of the config.
+//
+// TestTheEngineOpensNoSocketOutsideTheTunnel asserts what the client was ASKED
+// for. This asserts what it ended up HOLDING, which is a different claim and the
+// one the guarantee actually rests on: bindConfig takes every capability away
+// and attachNetwork hands each one back pointed at the tunnel
+// (network.go:220-232). An edit that adds a second listener, or that leaves the
+// client one of its own, passes the config test and fails this one.
+//
+// The dialer half is not assertable here and the omission is deliberate rather
+// than forgotten — anacrolix keeps `cl.dialers` unexported and offers no
+// accessor — so it is proved by what the client can do instead:
+// TestDownloadThroughANetwork for the positive, and
+// TestATunnelLostMidDownloadFailsRatherThanFallsBack for the negative, which is
+// the one that would catch a fallback.
+func TestTheClientHoldsNoDialerOrListenerButTheTunnels(t *testing.T) {
+	network := &bound{host: "127.0.0.1"}
+	e := start(t, Config{DataDir: t.TempDir(), Category: "curator", Network: network})
+
+	addrs := e.client.ListenAddrs()
+	if len(addrs) != 1 {
+		t.Fatalf("the client holds %d listeners, want exactly one: %v", len(addrs), addrs)
+	}
+
+	// Compared against the socket itself rather than against a shape. A
+	// listener on a plausible-looking address is not the claim; the claim is
+	// that it is the one the tunnel opened.
+	binding := e.Binding()
+	if binding == nil {
+		t.Fatal("no binding for an engine that was given a network")
+	}
+	if addrs[0].String() != binding.String() {
+		t.Errorf("the client listens on %s and the tunnel's socket is %s — a listener the tunnel "+
+			"did not open is a way into this process from outside the tunnel", addrs[0], binding)
+	}
+	if handed := network.handedOut(); !slices.Contains(handed, addrs[0].String()) {
+		t.Errorf("the client listens on %s, which the Network never handed out (it gave %v)",
+			addrs[0], handed)
+	}
+
+	// The port the client would advertise to a peer is the tunnel's, because it
+	// is read off the same listener. Zero would mean it advertises none at all.
+	_, port, err := net.SplitHostPort(binding.String())
+	if err != nil {
+		t.Fatalf("the tunnel's socket address %q has no port: %v", binding, err)
+	}
+	if got := fmt.Sprint(e.client.LocalPort()); got != port {
+		t.Errorf("the client advertises port %s and the tunnel's socket is on %s", got, port)
+	}
+
+	// The DHT is MOVED, not switched off, and the difference is worth its own
+	// assertion. NoDHT stops the client building one of its own; attachNetwork
+	// then builds one on the tunnel's socket. Zero here would mean cold-start
+	// peer discovery had been disabled rather than bound, which D47 explicitly
+	// declines to do, and nothing else in the suite would notice.
+	if servers := e.client.DhtServers(); len(servers) != 1 {
+		t.Errorf("the client holds %d DHT servers, want exactly the one on the tunnel's socket", len(servers))
+	}
+}
+
+var errTunnelGone = errors.New("vpn: the tunnel went down under a running download")
+
+// closable is a tunnel that can be taken away while a download is running.
+//
+// The seam is the PacketConn and not the Conn, and that is not a detail:
+// listenTunnel wraps whatever ListenPacket hands out in a utp.Socket, and every
+// peer byte crosses that (network.go:29-46). DialContext carries trackers and
+// webseeds and no payload at all, so a fake that only closed dials would take
+// nothing away from a download in flight.
+type closable struct {
+	// stopAfter is how many bytes may cross before reads freeze, and it is what
+	// makes "mid-download" a fact rather than a race against loopback: the
+	// transfer is already stopped when the test is told it started, so it
+	// cannot quietly finish in between.
+	stopAfter int
+
+	mu       sync.Mutex
+	closed   bool
+	frozen   bool
+	read     int
+	handedTo []string
+
+	moved chan struct{} // closed once stopAfter bytes have crossed
+	done  chan struct{} // closed by Close
+}
+
+func newClosable(stopAfter int) *closable {
+	return &closable{stopAfter: stopAfter, moved: make(chan struct{}), done: make(chan struct{})}
+}
+
+func (c *closable) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	select {
+	case <-c.done:
+		return nil, errTunnelGone
+	default:
+	}
+	return (&net.Dialer{}).DialContext(ctx, network, address)
+}
+
+// Nothing in this test resolves anything: the fixture magnets carry no trackers
+// and a hermetic engine bootstraps nowhere. Answering would hide a regression
+// that started asking.
+func (c *closable) LookupHost(context.Context, string) ([]string, error) {
+	return nil, errTunnelGone
+}
+
+func (c *closable) ListenPacket(_ context.Context, network, address string) (net.PacketConn, error) {
+	select {
+	case <-c.done:
+		return nil, errTunnelGone
+	default:
+	}
+	pc, err := net.ListenPacket(network, address)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.handedTo = append(c.handedTo, pc.LocalAddr().String())
+	c.mu.Unlock()
+	return &carried{PacketConn: pc, tunnel: c}, nil
+}
+
+func (c *closable) handedOut() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.handedTo)
+}
+
+// carry records what crossed and freezes the tunnel at the threshold, both
+// inside one locked section so the freeze is in force before anybody is told
+// about it.
+func (c *closable) carry(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.read += n
+	if !c.frozen && c.read >= c.stopAfter {
+		c.frozen = true
+		close(c.moved)
+	}
+}
+
+func (c *closable) held() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.frozen
+}
+
+// Close is what a tunnel going down looks like from inside this process.
+// Idempotent because the test closes it and the cleanup closes it again.
+func (c *closable) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.closed = true
+	close(c.done)
+}
+
+// carried is the PacketConn every peer byte crosses.
+type carried struct {
+	net.PacketConn
+	tunnel *closable
+}
+
+func (c *carried) ReadFrom(p []byte) (int, net.Addr, error) {
+	select {
+	case <-c.tunnel.done:
+		return 0, nil, errTunnelGone
+	default:
+	}
+	if c.tunnel.held() {
+		// Not a short read and not an error yet. A tunnel that has stopped
+		// carrying delivers nothing and says nothing, which is precisely what
+		// makes it dangerous: there is no event for anacrolix to react to. The
+		// wait ends when the tunnel is closed, and then it is a refusal.
+		<-c.tunnel.done
+		return 0, nil, errTunnelGone
+	}
+	n, addr, err := c.PacketConn.ReadFrom(p)
+	c.tunnel.carry(n)
+	return n, addr, err
+}
+
+func (c *carried) WriteTo(p []byte, addr net.Addr) (int, error) {
+	select {
+	case <-c.tunnel.done:
+		return 0, errTunnelGone
+	default:
+	}
+	return c.PacketConn.WriteTo(p, addr)
+}
+
+// TestATunnelLostMidDownloadFailsRatherThanFallsBack is the in-process half of
+// the acceptance test D27 has owed since phase 6, and it is measured in BYTES.
+//
+// Everything else about the kill switch is a reading of a config field or of a
+// dependency's source. This takes the tunnel away underneath a transfer that is
+// already moving and asks the only question that matters: does anything still
+// arrive. A fallback dialer, a listener the client kept for itself, or a
+// retry that reaches the host stack all show up here as bytes after the close,
+// and nowhere else in this package.
+//
+// It is not the live run — that is one laptop, one endpoint, once. This is the
+// same claim on every commit, and it needs no tunnel, no sudo and no network
+// beyond loopback.
+func TestATunnelLostMidDownloadFailsRatherThanFallsBack(t *testing.T) {
+	seeder, mi, ih := seed(t)
+
+	// A fifth of the payload: unambiguously running, unambiguously unfinished.
+	network := newClosable(payloadSize / 5)
+	leecher := start(t, Config{DataDir: t.TempDir(), Category: "curator", Network: network})
+	// Registered AFTER start, so it runs BEFORE the engine's own cleanup:
+	// cleanups are LIFO, and a reader frozen at the threshold has to be
+	// released before anything waits on it to close.
+	t.Cleanup(network.Close)
+
+	if err := leecher.AddMagnet(context.Background(), magnetFor(t, mi, ih), "curator"); err != nil {
+		t.Fatalf("AddMagnet: %v", err)
+	}
+	lt, ok := leecher.client.Torrent(ih)
+	if !ok {
+		t.Fatal("the torrent is not in the client after AddMagnet")
+	}
+	lt.AddClientPeer(seeder.client)
+
+	select {
+	case <-network.moved:
+	case <-time.After(60 * time.Second):
+		// Two entirely different failures arrive here, and telling them apart
+		// is most of what this test is for, so they are named rather than left
+		// to whoever reads the dump. Bytes completing while nothing crosses the
+		// tunnel is not a slow download: it is the leak, taking another route.
+		// Measured by reintroducing `cc.DisableTCP = false` — the whole 1 MB
+		// arrived over TCP with the tunnel carrying nothing at all.
+		if done := lt.BytesCompleted(); done > 0 {
+			t.Fatalf("%d bytes completed while NOTHING crossed the tunnel — the client found another "+
+				"way out, which is the fallback this test exists to catch\n  %s",
+				done, swarmState(leecher, ih.HexString()))
+		}
+		t.Fatalf("no payload crossed the tunnel in 60s and nothing completed either, so there was "+
+			"never a download to interrupt\n  %s", swarmState(leecher, ih.HexString()))
+	}
+
+	before := stillFor(t, lt, 500*time.Millisecond)
+	if before == 0 {
+		t.Fatalf("the tunnel froze with no piece completed, so nothing was moving to stop\n  %s",
+			swarmState(leecher, ih.HexString()))
+	}
+	if before >= lt.Length() {
+		t.Fatalf("the whole payload arrived before the tunnel froze (%d of %d bytes): stopAfter is too high "+
+			"for this to be mid-download", before, lt.Length())
+	}
+	handedBefore := network.handedOut()
+
+	network.Close()
+
+	// Nothing arrives after this. Not more slowly, not by another route:
+	// nothing. Checked repeatedly rather than once at the end, so a failure
+	// reports the moment it moved instead of a total.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := lt.BytesCompleted(); got != before {
+			t.Fatalf("%d bytes completed after the tunnel went down (%d, was %d) — something carried them, "+
+				"and the only socket this engine was ever given is gone", got-before, got, before)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := lt.BytesCompleted(); got >= lt.Length() {
+		t.Fatalf("the download completed with no tunnel: %d of %d bytes", got, lt.Length())
+	}
+
+	// And it did not replace the socket it lost. Inside this process the
+	// Network is the only thing that opens one, so this is the whole of the
+	// claim here; the OS-level version of it is
+	// TestTheEngineOpensNoSocketTheNetworkDidNotHandIt's, which is Linux-gated
+	// and reads /proc/self/fd.
+	if handed := network.handedOut(); len(handed) != len(handedBefore) {
+		t.Errorf("the engine took %d more sockets after the tunnel went down: %v, was %v",
+			len(handed)-len(handedBefore), handed, handedBefore)
+	}
+	if addr := leecher.Binding(); addr == nil || !slices.Contains(handedBefore, addr.String()) {
+		t.Errorf("Binding = %v, which is not among the sockets the tunnel handed out (%v)", addr, handedBefore)
+	}
+}
+
+// stillFor returns the completed-byte count once it has stopped changing for
+// quiet, so that a reading taken just after the freeze is not racing the last
+// datagram that was already in flight when it came down.
+func stillFor(t *testing.T, lt *anacrolix.Torrent, quiet time.Duration) int64 {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	last := lt.BytesCompleted()
+	settled := time.Now()
+	for time.Now().Before(deadline) {
+		time.Sleep(25 * time.Millisecond)
+		if got := lt.BytesCompleted(); got != last {
+			last, settled = got, time.Now()
+			continue
+		}
+		if time.Since(settled) >= quiet {
+			return last
+		}
+	}
+	t.Fatalf("the download never stopped moving after the tunnel froze; last read %d bytes", last)
+	return last
+}

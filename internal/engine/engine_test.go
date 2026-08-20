@@ -54,6 +54,20 @@ func quiet() *slog.Logger {
 // seed writes a payload, builds its metainfo, and starts an engine serving it.
 func seed(t *testing.T) (*Engine, *metainfo.MetaInfo, metainfo.Hash) {
 	t.Helper()
+	dataDir, mi, ih := fixture(t)
+
+	engine := start(t, Config{DataDir: dataDir, Category: "curator", Log: quiet()})
+	if _, err := engine.client.AddTorrent(mi); err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	return engine, mi, ih
+}
+
+// fixture is seed without the engine: a payload on disk and the metainfo that
+// describes it, for a test that wants a real magnet and deliberately does not
+// want a second client in the process opening sockets of its own.
+func fixture(t *testing.T) (string, *metainfo.MetaInfo, metainfo.Hash) {
+	t.Helper()
 
 	dataDir := t.TempDir()
 	dir := filepath.Join(dataDir, payloadName)
@@ -79,12 +93,7 @@ func seed(t *testing.T) (*Engine, *metainfo.MetaInfo, metainfo.Hash) {
 		t.Fatalf("bencoding the info dict: %v", err)
 	}
 	mi := &metainfo.MetaInfo{InfoBytes: infoBytes}
-
-	engine := start(t, Config{DataDir: dataDir, Category: "curator", Log: quiet()})
-	if _, err := engine.client.AddTorrent(mi); err != nil {
-		t.Fatalf("seeding: %v", err)
-	}
-	return engine, mi, mi.HashInfoBytes()
+	return dataDir, mi, mi.HashInfoBytes()
 }
 
 // start builds an engine confined to loopback and closes it with the test. The
