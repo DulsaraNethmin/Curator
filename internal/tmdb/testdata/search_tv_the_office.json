@@ -1,0 +1,87 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "adult": false,
+      "backdrop_path": "/mLyW3UTgi2lsMdtueYODcfAB9Ku.jpg",
+      "genre_ids": [
+        35
+      ],
+      "id": 2316,
+      "origin_country": [
+        "US"
+      ],
+      "original_language": "en",
+      "original_name": "The Office",
+      "overview": "The everyday lives of office employees in the Scranton, Pennsylvania branch of the fictional Dunder Mifflin Paper Company.",
+      "popularity": 411.6903,
+      "poster_path": "/7DJKHzAi83BmQrWLrYYOqcoKfhR.jpg",
+      "first_air_date": "2005-03-24",
+      "name": "The Office",
+      "vote_average": 8.6,
+      "vote_count": 4123
+    },
+    {
+      "adult": false,
+      "backdrop_path": "/gGgIcOWkJLDzHGaKKWTIsSHZlqE.jpg",
+      "genre_ids": [
+        35
+      ],
+      "id": 2426,
+      "origin_country": [
+        "GB"
+      ],
+      "original_language": "en",
+      "original_name": "The Office",
+      "overview": "The story of an office that faces closure when the company decides to downsize its branches. A documentary film crew follow staff and the manager David Brent as they continue their daily lives.",
+      "popularity": 82.0031,
+      "poster_path": "/oNIt6mRzMS2gJZJcNKlBpBaMkTd.jpg",
+      "first_air_date": "2001-07-09",
+      "name": "The Office",
+      "vote_average": 7.7,
+      "vote_count": 682
+    },
+    {
+      "adult": false,
+      "backdrop_path": null,
+      "genre_ids": [
+        35
+      ],
+      "id": 122127,
+      "origin_country": [
+        "IN"
+      ],
+      "original_language": "hi",
+      "original_name": "The Office",
+      "overview": "An Indian adaptation of the British sitcom of the same name.",
+      "popularity": 12.4408,
+      "poster_path": "/oBmqmDPPHnPFVjnEQZ0d7YMzPmR.jpg",
+      "first_air_date": "2019-06-28",
+      "name": "The Office",
+      "vote_average": 6.4,
+      "vote_count": 31
+    },
+    {
+      "adult": false,
+      "backdrop_path": null,
+      "genre_ids": [
+        35
+      ],
+      "id": 220054,
+      "origin_country": [
+        "AU"
+      ],
+      "original_language": "en",
+      "original_name": "The Office",
+      "overview": "Hannah Howard is the middle manager of Flinley Craddick, whose staff are like family.",
+      "popularity": 21.1187,
+      "poster_path": "/6EFvBfCJZbHfvLQNhCNZTCTC0Lz.jpg",
+      "first_air_date": "2024-10-18",
+      "name": "The Office",
+      "vote_average": 6.1,
+      "vote_count": 47
+    }
+  ],
+  "total_pages": 1,
+  "total_results": 4
+}

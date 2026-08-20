@@ -32,11 +32,21 @@ type fixtureServer struct {
 // client searched for something the test did not expect.
 func newFixtureServer(t *testing.T, byQuery map[string]string) *fixtureServer {
 	t.Helper()
+	return newSearchServer(t, "/search/movie", byQuery)
+}
+
+// newSearchServer is newFixtureServer with the path spelled out, because
+// /search/tv answers a differently shaped payload at the same envelope and its
+// tests need the identical query-recording machinery. Asserting the path is
+// half the point: it is what catches a TV method sent to the movie endpoint,
+// which would otherwise decode to a page of empty names rather than fail.
+func newSearchServer(t *testing.T, path string, byQuery map[string]string) *fixtureServer {
+	t.Helper()
 
 	fs := &fixtureServer{}
 	fs.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/search/movie" {
-			t.Errorf("unexpected path %q", r.URL.Path)
+		if r.URL.Path != path {
+			t.Errorf("unexpected path %q, want %q", r.URL.Path, path)
 			http.NotFound(w, r)
 			return
 		}

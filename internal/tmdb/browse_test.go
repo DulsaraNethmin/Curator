@@ -42,8 +42,11 @@ func browseClient(t *testing.T, byPath map[string]string) *Client {
 //
 // The query string carries api_key=, and *url.Error stringifies the whole URL,
 // so a transport failure prints the key into the logs unless it is scrubbed.
-// Five endpoints is five chances to forget. This is table-driven over every
-// exported method so a sixth cannot quietly skip it.
+// Every endpoint is another chance to forget, and T89 doubled the count by
+// adding the television half. This is table-driven over every exported method
+// so the next one cannot quietly skip it: an endpoint missing from this table
+// is an endpoint that can leak the key, and nothing else in the suite would
+// catch it.
 func TestEveryEndpointScrubsTheAPIKey(t *testing.T) {
 	const key = "super-secret-key"
 
@@ -75,6 +78,14 @@ func TestEveryEndpointScrubsTheAPIKey(t *testing.T) {
 		},
 		"Popular": func(ctx context.Context) error {
 			_, err := client.Popular(ctx)
+			return err
+		},
+		"SearchShow": func(ctx context.Context) error {
+			_, err := client.SearchShow(ctx, "Breaking Bad", 2008)
+			return err
+		},
+		"SearchShows": func(ctx context.Context) error {
+			_, err := client.SearchShows(ctx, "the office", 0)
 			return err
 		},
 	}
@@ -248,6 +259,8 @@ func TestBrowseReportsARejectedKey(t *testing.T) {
 		"Movie":        second(client.Movie(ctx, 299534)),
 		"Trending":     second(client.Trending(ctx)),
 		"Popular":      second(client.Popular(ctx)),
+		"SearchShow":   second(client.SearchShow(ctx, "Breaking Bad", 2008)),
+		"SearchShows":  second(client.SearchShows(ctx, "the office", 0)),
 	} {
 		if !errors.Is(err, ErrUnauthorized) {
 			t.Errorf("%s: err = %v, want ErrUnauthorized", name, err)
