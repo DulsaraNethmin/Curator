@@ -1,0 +1,70 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "adult": false,
+      "backdrop_path": "/jHFtoW7WQjCKZpG9Sw8auP61LMH.jpg",
+      "genre_ids": [
+        18
+      ],
+      "id": 1416,
+      "origin_country": [
+        "US"
+      ],
+      "original_language": "en",
+      "original_name": "Grey's Anatomy",
+      "overview": "Follows the personal and professional lives of a group of doctors at Seattle's Grey Sloan Memorial Hospital.",
+      "popularity": 1382.0155,
+      "poster_path": "/cVCilNiwqLbHhrpvxjkTFPzTNyv.jpg",
+      "first_air_date": "2005-03-27",
+      "name": "Grey's Anatomy",
+      "vote_average": 8.234,
+      "vote_count": 10871
+    },
+    {
+      "adult": false,
+      "backdrop_path": null,
+      "genre_ids": [
+        16,
+        35
+      ],
+      "id": 1434,
+      "origin_country": [
+        "US"
+      ],
+      "original_language": "en",
+      "original_name": "Family Guy",
+      "overview": "Sick, twisted, politically incorrect and Freakin' Sweet animated series featuring the adventures of the dysfunctional Griffin family.",
+      "popularity": 1121.4739,
+      "poster_path": "/eWWCRjBfLyePh2tfZdvNcIvKSJe.jpg",
+      "first_air_date": "1999-01-31",
+      "name": "Family Guy",
+      "vote_average": 7.4,
+      "vote_count": 4635
+    },
+    {
+      "adult": false,
+      "backdrop_path": "/6MZjJfsK5V1wgUZ8CQZVQ8j2FYr.jpg",
+      "genre_ids": [
+        10751,
+        16,
+        35
+      ],
+      "id": 456,
+      "origin_country": [
+        "US"
+      ],
+      "original_language": "en",
+      "original_name": "The Simpsons",
+      "overview": "Set in Springfield, the average American town, the show focuses on the antics and everyday adventures of the Simpson family.",
+      "popularity": 987.3311,
+      "poster_path": "/2GDMLnU9NoiwHkAfaK2Vwo1i9qz.jpg",
+      "first_air_date": "1989-12-17",
+      "name": "The Simpsons",
+      "vote_average": 8.021,
+      "vote_count": 9834
+    }
+  ],
+  "total_pages": 9026,
+  "total_results": 180506
+}

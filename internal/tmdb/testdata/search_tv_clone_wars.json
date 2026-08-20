@@ -1,0 +1,29 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "adult": false,
+      "backdrop_path": "/bLNZjKkzhcqNaVGgtaSFUmdINbG.jpg",
+      "genre_ids": [
+        16,
+        10759,
+        10765
+      ],
+      "id": 4194,
+      "origin_country": [
+        "US"
+      ],
+      "original_language": "en",
+      "original_name": "Star Wars: The Clone Wars",
+      "overview": "Yoda, Obi-Wan Kenobi, Anakin Skywalker, Mace Windu and other Jedi Knights lead the Grand Army of the Republic against the droid army of the Separatists.",
+      "popularity": 131.4519,
+      "poster_path": "/e1nWfnnCVqxS2LeTO3dwGyAsG2V.jpg",
+      "first_air_date": "2008-10-03",
+      "name": "Star Wars: The Clone Wars",
+      "vote_average": 8.352,
+      "vote_count": 2571
+    }
+  ],
+  "total_pages": 1,
+  "total_results": 1
+}
