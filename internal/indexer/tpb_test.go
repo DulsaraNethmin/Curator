@@ -137,14 +137,14 @@ func TestTPBNumbersArriveAsStrings(t *testing.T) {
 	}
 }
 
-// TestTPBSearchMovie drives the whole path against the recorded response.
-func TestTPBSearchMovie(t *testing.T) {
+// TestTPBSearch drives the whole path against the recorded response.
+func TestTPBSearch(t *testing.T) {
 	var asked []*url.URL
 	tpb := newTPBTestServer(t, tpbFixture(t, tpbFixtureSearch), &asked)
 
-	releases, err := tpb.SearchMovie(context.Background(), "Interstellar", 2014)
+	releases, err := tpb.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if tpb.Name() != "tpb" {
 		t.Errorf("Name = %q, want tpb", tpb.Name())
@@ -209,12 +209,12 @@ func TestTPBSearchMovie(t *testing.T) {
 	}
 }
 
-// TestTPBSearchMovieWithoutYear: no year means no year filter.
-func TestTPBSearchMovieWithoutYear(t *testing.T) {
+// TestTPBSearchWithoutYear: no year means no year filter.
+func TestTPBSearchWithoutYear(t *testing.T) {
 	tpb := newTPBTestServer(t, tpbFixture(t, tpbFixtureSearch), nil)
-	releases, err := tpb.SearchMovie(context.Background(), "Interstellar", 0)
+	releases, err := tpb.Search(context.Background(), Query{Title: "Interstellar"})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if len(releases) != tpbFixtureRows {
 		t.Fatalf("got %d releases, want all %d when no year is given", len(releases), tpbFixtureRows)
@@ -223,6 +223,139 @@ func TestTPBSearchMovieWithoutYear(t *testing.T) {
 		if r.Year != 0 {
 			t.Errorf("release %q got year %d; with nothing searched for there is nothing to claim", r.Title, r.Year)
 			break
+		}
+	}
+}
+
+// The television fixture is a verbatim apibay response captured 2026-08-20:
+//
+//	curl 'https://apibay.org/q.php?q=severance&cat=205,208'
+//
+// It is 100 rows — apibay's page cap, hit by one show — and it carries both
+// shapes a television search has to survive at once: season packs and single
+// episodes, with 98 rows in category 208 and 2 in 205.
+const (
+	tpbFixtureTVSearch = "testdata/tpb-search-severance-tv.json"
+	tpbFixtureTVRows   = 100
+
+	// The two rows whose NAME states a year: "Severance 2022 S02E02 MULTI 1080p
+	// WEB H264-HiggsBoson" and "Severance 2022 Seasons 1 and 2 Complete 1080p
+	// WEB x264 [i_c]". They are the only rows in the whole page that the year
+	// filter can act on at all, which is the measurement Query.searchYear rests
+	// on: 98 of 100 television releases say nothing about a year, and the two
+	// that do state their own rather than the show's.
+	tpbFixtureTVYearNamed = 2
+)
+
+// The media type is not expressible in a title, and this is where that stops
+// being an argument and becomes a URL: cat= is the whole discriminator.
+func TestTPBTelevisionAsksTheTelevisionCategories(t *testing.T) {
+	var asked []*url.URL
+	tpb := newTPBTestServer(t, tpbFixture(t, tpbFixtureTVSearch), &asked)
+
+	releases, err := tpb.Search(context.Background(),
+		Query{Title: "Severance", Year: 2022, Media: MediaTV, Season: 2})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(asked) != 1 {
+		t.Fatalf("made %d requests, want 1", len(asked))
+	}
+	if cat := asked[0].Query().Get("cat"); cat != tpbTVCategories {
+		t.Errorf("query cat = %q, want %q — a television search in the movie categories finds films", cat, tpbTVCategories)
+	}
+	// The season stays out of the query string, and that is measured rather than
+	// tidy: on 2026-08-20 q=severance answered 100 rows, q="severance s02"
+	// answered 8, and the 727-seeder "Severance - Season 2 - Mp4 x264 AC3 1080p"
+	// was in the first set and not the second.
+	if q := asked[0].Query().Get("q"); q != "Severance" {
+		t.Errorf("query q = %q, want the bare title: apibay matches the letters, and \"S02\" and \"Season 2\" are two spellings of one thing", q)
+	}
+	if len(releases) != tpbFixtureTVRows {
+		t.Fatalf("got %d releases, want all %d rows of the page", len(releases), tpbFixtureTVRows)
+	}
+
+	// And a film search still asks for films, from the same code path.
+	var askedFilm []*url.URL
+	film := newTPBTestServer(t, tpbFixture(t, tpbFixtureSearch), &askedFilm)
+	if _, err := film.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if cat := askedFilm[0].Query().Get("cat"); cat != tpbMovieCategories {
+		t.Errorf("film query cat = %q, want %q", cat, tpbMovieCategories)
+	}
+}
+
+// The year trap, on the real page. A show's year is its first-air year and an
+// episode's name carries its own, so running the film year filter over a
+// television search drops rows for stating the truth — and the filter can never
+// confirm one, because a show's first-air year is in essentially no release
+// name. 98 of these 100 rows have no year at all.
+func TestTPBTelevisionIgnoresTheYear(t *testing.T) {
+	tpb := newTPBTestServer(t, tpbFixture(t, tpbFixtureTVSearch), nil)
+
+	// A television query carrying a year the fixture disagrees with keeps every
+	// row, because the year never reaches the filter.
+	tv, err := tpb.Search(context.Background(), Query{Title: "Severance", Year: 1999, Media: MediaTV})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(tv) != tpbFixtureTVRows {
+		t.Fatalf("television search returned %d releases, want all %d — the year filter ran", len(tv), tpbFixtureTVRows)
+	}
+	for _, r := range tv {
+		if r.Year != 0 {
+			t.Errorf("release %q got year %d; a television release is stamped with no year, because the show's is not the episode's", r.Title, r.Year)
+			break
+		}
+	}
+
+	// The same page asked for as a FILM with the same year: the two rows that
+	// name 2022 are dropped. That difference is the whole reason the media type
+	// has to reach this far down.
+	film, err := tpb.Search(context.Background(), Query{Title: "Severance", Year: 1999})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if want := tpbFixtureTVRows - tpbFixtureTVYearNamed; len(film) != want {
+		t.Errorf("film search returned %d releases, want %d — the year filter is what television must not run", len(film), want)
+	}
+}
+
+// Season and episode are read back off the name, which is the only place either
+// is stated: apibay's category says "television" and never which season.
+func TestTPBParsesSeasonAndEpisodeFromTheName(t *testing.T) {
+	tpb := newTPBTestServer(t, tpbFixture(t, tpbFixtureTVSearch), nil)
+	releases, err := tpb.Search(context.Background(), Query{Title: "Severance", Media: MediaTV})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+
+	pack := tpbFind(t, releases, "Severance - Season 1 - Mp4 x264 AC3 1080p")
+	if pack.Season != 1 || pack.Episode != 0 {
+		t.Errorf("season pack = season %d episode %d, want 1 and 0", pack.Season, pack.Episode)
+	}
+	if pack.Seeders != 844 {
+		t.Errorf("season pack seeders = %d, want 844", pack.Seeders)
+	}
+
+	episode := tpbFind(t, releases, "Severance S02E05 Trojans Horse 1080p ATVP WEB-DL DDP5 1 H 264-NTb")
+	if episode.Season != 2 || episode.Episode != 5 {
+		t.Errorf("episode = season %d episode %d, want 2 and 5", episode.Season, episode.Episode)
+	}
+	if episode.Seeders != 381 {
+		t.Errorf("episode seeders = %d, want 381", episode.Seeders)
+	}
+
+	// A film states neither, and the parse must not invent one for it.
+	films := newTPBTestServer(t, tpbFixture(t, tpbFixtureSearch), nil)
+	movies, err := films.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	for _, r := range movies {
+		if r.Season != 0 || r.Episode != 0 {
+			t.Errorf("film release %q parsed as season %d episode %d", r.Title, r.Season, r.Episode)
 		}
 	}
 }
@@ -244,9 +377,9 @@ func TestTPBEmptySearchYieldsNoReleases(t *testing.T) {
 	}
 
 	tpb := newTPBTestServer(t, body, nil)
-	releases, err := tpb.SearchMovie(context.Background(), "zzqqxxnosuchmoviezz9999", 2014)
+	releases, err := tpb.Search(context.Background(), Query{Title: "zzqqxxnosuchmoviezz9999", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v — nothing found is a normal outcome, not an error", err)
+		t.Fatalf("Search: %v — nothing found is a normal outcome, not an error", err)
 	}
 	if len(releases) != 0 {
 		t.Fatalf("got %d releases from a search with no matches: %+v", len(releases), releases)
@@ -254,8 +387,8 @@ func TestTPBEmptySearchYieldsNoReleases(t *testing.T) {
 
 	// The same with no year, so the sentinel is not being removed by the year
 	// filter happening to disagree with it.
-	if releases, err = tpb.SearchMovie(context.Background(), "zzqqxxnosuchmoviezz9999", 0); err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+	if releases, err = tpb.Search(context.Background(), Query{Title: "zzqqxxnosuchmoviezz9999"}); err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 	if len(releases) != 0 {
 		t.Fatalf("got %d releases with no year filter: %+v", len(releases), releases)
@@ -306,9 +439,9 @@ func TestTPBSentinelRejectedByHashNotName(t *testing.T) {
 // must stay 1080p. The fixture has five of them.
 func TestTPBQualityComesFromPortedParser(t *testing.T) {
 	tpb := newTPBTestServer(t, tpbFixture(t, tpbFixtureSearch), nil)
-	releases, err := tpb.SearchMovie(context.Background(), "Interstellar", 2014)
+	releases, err := tpb.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 
 	traps := 0
@@ -336,9 +469,9 @@ func TestTPBQualityComesFromPortedParser(t *testing.T) {
 // behind it — and that row goes.
 func TestTPBKeepsRowsWithUnconvertibleNumbers(t *testing.T) {
 	tpb := newTPBTestServer(t, tpbFixture(t, tpbFixtureMalformed), nil)
-	releases, err := tpb.SearchMovie(context.Background(), "Interstellar", 2014)
+	releases, err := tpb.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if len(releases) != 3 {
 		t.Fatalf("got %d releases, want 3 (two of the five fixture rows have unusable hashes): %+v", len(releases), releases)
@@ -470,7 +603,7 @@ func TestTPBSearchErrors(t *testing.T) {
 
 			tpb := NewTPB(srv.Client())
 			tpb.site = srv.URL
-			releases, err := tpb.SearchMovie(context.Background(), "Interstellar", 2014)
+			releases, err := tpb.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 			if err == nil {
 				t.Fatalf("got %d releases and no error", len(releases))
 			}
@@ -488,7 +621,7 @@ func TestTPBSearchErrors(t *testing.T) {
 	t.Run("unreachable host", func(t *testing.T) {
 		tpb := NewTPB(&http.Client{Timeout: time.Second})
 		tpb.site = "http://127.0.0.1:1"
-		if _, err := tpb.SearchMovie(context.Background(), "Interstellar", 2014); err == nil {
+		if _, err := tpb.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err == nil {
 			t.Fatal("want an error when apibay cannot be reached")
 		} else if !strings.Contains(err.Error(), "tpb") {
 			t.Errorf("error %q does not name the indexer", err)
@@ -526,7 +659,7 @@ func TestTPBLive(t *testing.T) {
 		t.Skip("live apibay search skipped under -short")
 	}
 
-	// The recorder is how a refused status reaches the classifier: SearchMovie
+	// The recorder is how a refused status reaches the classifier: Search
 	// formats it into a plain error string, so it cannot be read with errors.As.
 	client, rec := liveClient(20 * time.Second)
 
@@ -536,12 +669,12 @@ func TestTPBLive(t *testing.T) {
 
 	dnsWorks := liveDNSWorks(ctx, tpbControlHost)
 
-	releases, err := tpb.SearchMovie(ctx, "Interstellar", 2014)
+	releases, err := tpb.Search(ctx, Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
 		if verdict, why := classifyLiveFailure(err, rec.lastStatus(), dnsWorks); verdict == liveSkip {
 			t.Skipf("skipping live apibay test: %s: %v", why, err)
 		}
-		t.Fatalf("live SearchMovie: %v", err)
+		t.Fatalf("live Search: %v", err)
 	}
 	if len(releases) == 0 {
 		t.Fatal("live search for Interstellar (2014) returned nothing")
@@ -552,16 +685,52 @@ func TestTPBLive(t *testing.T) {
 		}
 	}
 
+	// Television, live, and in THIS test rather than a third one. The rule for a
+	// failed live search lives in one place and both live tests ask it (T76); a
+	// new test with a skip rule of its own is precisely the divergence that
+	// existed to be removed. So this is another call under the same rule, the
+	// same client and the same control name.
+	//
+	// What it proves is the one thing no fixture can: that cat=205,208 is still
+	// what television is filed under at apibay. The fixture pins how the answer
+	// parses, and it would go on passing forever after the categories moved.
+	tv, err := tpb.Search(ctx, Query{Title: "Severance", Media: MediaTV, Season: 2})
+	if err != nil {
+		if verdict, why := classifyLiveFailure(err, rec.lastStatus(), dnsWorks); verdict == liveSkip {
+			t.Skipf("skipping live apibay television check: %s: %v", why, err)
+		}
+		t.Fatalf("live Search (television): %v", err)
+	}
+	if len(tv) == 0 {
+		t.Fatalf("live television search in categories %s returned nothing", tpbTVCategories)
+	}
+	// At least one row has to state a season, or these are not the television
+	// categories any more — which is the failure this call exists to catch.
+	var seasons int
+	for _, r := range tv {
+		if r.Season > 0 {
+			seasons++
+		}
+		if r.Year != 0 {
+			t.Errorf("live television release %q carries year %d, want none", r.Title, r.Year)
+			break
+		}
+	}
+	if seasons == 0 {
+		t.Errorf("none of the %d live television releases names a season: %s", len(tv), tv[0].Title)
+	}
+	t.Logf("live: %d television releases, %d naming a season", len(tv), seasons)
+
 	// The trap, live: apibay answers this with its sentinel row, and none of it
 	// may reach a caller.
-	empty, err := tpb.SearchMovie(ctx, "zzqqxxnosuchmoviezz9999", 0)
+	empty, err := tpb.Search(ctx, Query{Title: "zzqqxxnosuchmoviezz9999"})
 	if err != nil {
 		// Same rule as the search above: apibay can refuse or time out between
 		// the two calls, and neither is this assertion failing.
 		if verdict, why := classifyLiveFailure(err, rec.lastStatus(), dnsWorks); verdict == liveSkip {
 			t.Skipf("skipping live apibay sentinel check: %s: %v", why, err)
 		}
-		t.Fatalf("live SearchMovie (absurd query): %v", err)
+		t.Fatalf("live Search (absurd query): %v", err)
 	}
 	if len(empty) != 0 {
 		t.Fatalf("absurd query returned %d releases: %+v", len(empty), empty)

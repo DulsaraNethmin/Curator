@@ -44,10 +44,20 @@ type Cache struct {
 // cacheKey identifies one search. The wrapped indexer's name is part of it so two
 // indexers' answers to the same question can never be taken for each other, even
 // though one Cache holds exactly one indexer's entries today.
+//
+// The media type and the season are part of it for a sharper reason than
+// tidiness, and 1337x is the indexer this Cache actually wraps. Without the media
+// type, a film search for "Severance" would serve the FILM's releases to a
+// television search under ok:true — and 1337x's documented failure mode is
+// already ok:true, count:0 rather than an error, so nothing on the screen would
+// look wrong. Without the season, "severance" and "severance s02" are one entry,
+// and they are two different queries sent to 1337x.
 type cacheKey struct {
 	indexer string
 	title   string
 	year    int
+	media   string
+	season  int
 }
 
 // cacheEntry is one remembered search: the releases exactly as the wrapped indexer
@@ -89,10 +99,22 @@ func (c *Cache) Name() string { return c.inner.Name() }
 // survives the cache being composed around it.
 func (c *Cache) Unwrap() Indexer { return c.inner }
 
-// SearchMovie implements Indexer. A miss is indistinguishable from having no cache
+// Handles implements MediaCapable by reporting what the WRAPPED indexer handles,
+// the same way Name reports the wrapped indexer's name. A capability is a
+// property of the source, and a cache in front of it changes nothing about it.
+//
+// This is the opposite call to ResolveMagnet above, and the difference is the
+// default. "Handles everything" is the correct answer for an indexer that
+// declares nothing, so a Cache that always satisfies MediaCapable still tells
+// the truth whichever indexer is inside it. ResolveMagnet has no such default: a
+// Cache claiming to resolve magnets it never has would send every 1337x pick to
+// something that cannot answer.
+func (c *Cache) Handles(media string) bool { return handlesMedia(c.inner, media) }
+
+// Search implements Indexer. A miss is indistinguishable from having no cache
 // at all: call through, store, return.
-func (c *Cache) SearchMovie(ctx context.Context, title string, year int) ([]Release, error) {
-	key := cacheKeyFor(c.inner.Name(), title, year)
+func (c *Cache) Search(ctx context.Context, q Query) ([]Release, error) {
+	key := cacheKeyFor(c.inner.Name(), q)
 	if releases, ok := c.lookup(key); ok {
 		return releases, nil
 	}
@@ -103,9 +125,9 @@ func (c *Cache) SearchMovie(ctx context.Context, title string, year int) ([]Rele
 	// a cold entry both call through: one duplicated fetch, weighed against a lock
 	// held for seconds, in a service with one user.
 	//
-	// The caller's title goes through untouched — normalisation is for keying only,
+	// The caller's query goes through untouched — normalisation is for keying only,
 	// and the indexer builds its query from what was actually asked for.
-	releases, err := c.inner.SearchMovie(ctx, title, year)
+	releases, err := c.inner.Search(ctx, q)
 	if err != nil {
 		// A failure is never stored. minter being down for a minute must not become
 		// an hour of "no results" for a title that has plenty.
@@ -164,8 +186,18 @@ func (c *Cache) pruneLocked(now time.Time) {
 }
 
 // cacheKeyFor builds the key for one search.
-func cacheKeyFor(indexerName, title string, year int) cacheKey {
-	return cacheKey{indexer: indexerName, title: cacheNormaliseTitle(title), year: year}
+//
+// The media type is taken through Query.mediaType, so a Query that leaves it
+// blank and one that spells out MediaMovie are one entry rather than two names
+// for one identical fetch.
+func cacheKeyFor(indexerName string, q Query) cacheKey {
+	return cacheKey{
+		indexer: indexerName,
+		title:   cacheNormaliseTitle(q.Title),
+		year:    q.Year,
+		media:   q.mediaType(),
+		season:  q.Season,
+	}
 }
 
 // cacheNormaliseTitle folds a title to its key form: trimmed and lowercased, and

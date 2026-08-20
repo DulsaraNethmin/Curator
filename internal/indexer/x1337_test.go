@@ -321,9 +321,9 @@ func TestInfoHash(t *testing.T) {
 	}
 }
 
-// TestSearchMovie drives the whole 1337x path against a fake minter serving the
+// TestSearch drives the whole 1337x path against a fake minter serving the
 // captured fixture. No network.
-func TestSearchMovie(t *testing.T) {
+func TestSearch(t *testing.T) {
 	var fetched []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		target := decodeFetchTarget(t, r)
@@ -334,9 +334,9 @@ func TestSearchMovie(t *testing.T) {
 	defer srv.Close()
 
 	x := NewX1337(NewMinter(srv.URL))
-	releases, err := x.SearchMovie(context.Background(), "Interstellar", 2014)
+	releases, err := x.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if len(releases) != 20 {
 		t.Fatalf("got %d releases, want 20", len(releases))
@@ -357,7 +357,7 @@ func TestSearchMovie(t *testing.T) {
 	}
 }
 
-func TestSearchMovieWithoutYear(t *testing.T) {
+func TestSearchWithoutYear(t *testing.T) {
 	var fetched []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fetched = append(fetched, decodeFetchTarget(t, r))
@@ -365,11 +365,70 @@ func TestSearchMovieWithoutYear(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := NewX1337(NewMinter(srv.URL)).SearchMovie(context.Background(), "Interstellar", 0); err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+	if _, err := NewX1337(NewMinter(srv.URL)).Search(context.Background(), Query{Title: "Interstellar"}); err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 	if want := "https://1337x.to/search/Interstellar/1/"; fetched[0] != want {
 		t.Errorf("searched %q, want %q", fetched[0], want)
+	}
+}
+
+// searchQuery is the one line to suspect when searches come back empty, so what
+// it builds is pinned directly rather than only through a fetched URL.
+//
+// The television rows are the point: a show is narrowed by SEASON and never by
+// year. "Severance 2019" is a keyword string with no chance of matching a
+// release named S02E05 — a show's first-air year is in essentially no release
+// name — while "Severance S02" is the token those names actually carry.
+func TestSearchQuery(t *testing.T) {
+	for _, tt := range []struct {
+		label string
+		query Query
+		want  string
+	}{
+		{"a film carries its year", Query{Title: "Interstellar", Year: 2014}, "Interstellar 2014"},
+		{"a film with no year is the bare title", Query{Title: "Interstellar"}, "Interstellar"},
+		{"a film spelled out", Query{Title: "Dune Part Two", Year: 2024, Media: MediaMovie}, "Dune Part Two 2024"},
+
+		{"a season is two digits", Query{Title: "Severance", Media: MediaTV, Season: 2}, "Severance S02"},
+		{"a double-digit season is unpadded", Query{Title: "Bluey", Media: MediaTV, Season: 12}, "Bluey S12"},
+		{"a show with no season is the bare title", Query{Title: "Severance", Media: MediaTV}, "Severance"},
+		{"a show's year never reaches the query", Query{Title: "Severance", Year: 2022, Media: MediaTV, Season: 2}, "Severance S02"},
+		{"a show's year with no season either", Query{Title: "Severance", Year: 2022, Media: MediaTV}, "Severance"},
+	} {
+		t.Run(tt.label, func(t *testing.T) {
+			if got := searchQuery(tt.query); got != tt.want {
+				t.Errorf("searchQuery(%+v) = %q, want %q", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+// The same, through the whole path: what is actually fetched for a television
+// query, and what the releases are stamped with when it comes back.
+func TestSearchTelevisionFetchesTheSeasonAndStampsNoYear(t *testing.T) {
+	var fetched []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetched = append(fetched, decodeFetchTarget(t, r))
+		writeFetchResponse(t, w, fixture(t))
+	}))
+	defer srv.Close()
+
+	releases, err := NewX1337(NewMinter(srv.URL)).Search(context.Background(),
+		Query{Title: "Severance", Year: 2022, Media: MediaTV, Season: 2})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if want := "https://1337x.to/search/Severance%20S02/1/"; fetched[0] != want {
+		t.Errorf("searched %q, want %q", fetched[0], want)
+	}
+	// The fixture is the Interstellar page — this indexer echoes the year it was
+	// searched with onto every release, and for television that is none.
+	for _, r := range releases {
+		if r.Year != 0 {
+			t.Errorf("release %q stamped with year %d, want 0 for television", r.Title, r.Year)
+			break
+		}
 	}
 }
 
@@ -387,9 +446,9 @@ func TestResolveMagnet(t *testing.T) {
 	defer srv.Close()
 
 	x := NewX1337(NewMinter(srv.URL))
-	releases, err := x.SearchMovie(context.Background(), "Interstellar", 2014)
+	releases, err := x.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 
 	magnet, err := x.ResolveMagnet(context.Background(), releases[0])

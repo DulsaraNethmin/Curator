@@ -15,7 +15,7 @@ import (
 // taken as a concrete type, like Store, Scanner and Matcher, so the handlers can
 // be exercised against fakes instead of three live indexers and a browser.
 type Searcher interface {
-	SearchMovie(ctx context.Context, title string, year int) (indexer.SearchResult, error)
+	Search(ctx context.Context, q indexer.Query) (indexer.SearchResult, error)
 	ResolveMagnet(ctx context.Context, id string) (string, error)
 }
 
@@ -75,6 +75,14 @@ type indexerBody struct {
 	// run one line. It is `omitempty` because false is the ordinary case and a
 	// key on every outcome would read as a state every indexer has.
 	Unconfigured bool `json:"unconfigured,omitempty"`
+
+	// NotApplicable separates the indexer that was never asked from both of
+	// them: this media type is not one it has, so there is no instruction at
+	// all. Without it, YTS would answer a television search with the empty
+	// result its own documentation calls "does not have this film", and the
+	// screen would show ok:true, count:0 — a lie in the format that reads as
+	// "nobody uploaded it". `omitempty` for the same reason as above.
+	NotApplicable bool `json:"not_applicable,omitempty"`
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -90,7 +98,14 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.searcher.SearchMovie(r.Context(), title, year)
+	// Films, spelled out rather than left to the zero value: this handler is the
+	// film one, and a television search reaches the indexers through a query of
+	// its own rather than by this route learning a second media type.
+	result, err := s.searcher.Search(r.Context(), indexer.Query{
+		Title: title,
+		Year:  year,
+		Media: indexer.MediaMovie,
+	})
 	if err != nil {
 		// Only the caller's own context failing gets here: an indexer failing —
 		// even all of them — comes back as a reported outcome, not an error.
@@ -126,7 +141,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	for _, o := range result.Outcomes {
 		out.Indexers = append(out.Indexers, indexerBody{
 			Name: o.Name, OK: o.OK, Count: o.Count, Error: o.Error,
-			Unconfigured: o.Unconfigured,
+			Unconfigured:  o.Unconfigured,
+			NotApplicable: o.NotApplicable,
 		})
 	}
 

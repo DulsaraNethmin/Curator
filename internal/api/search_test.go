@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/DulsaraNethmin/curator/internal/indexer"
+	"github.com/DulsaraNethmin/curator/internal/store"
 )
 
 // fakeSearcher stands in for the aggregator. It records what it was asked so a
@@ -22,13 +23,15 @@ type fakeSearcher struct {
 	magnets   map[string]string
 	magnetErr error
 
+	gotQuery indexer.Query
 	gotTitle string
 	gotYear  int
 	gotID    string
 }
 
-func (f *fakeSearcher) SearchMovie(_ context.Context, title string, year int) (indexer.SearchResult, error) {
-	f.gotTitle, f.gotYear = title, year
+func (f *fakeSearcher) Search(_ context.Context, q indexer.Query) (indexer.SearchResult, error) {
+	f.gotQuery = q
+	f.gotTitle, f.gotYear = q.Title, q.Year
 	if f.err != nil {
 		return indexer.SearchResult{}, f.err
 	}
@@ -96,6 +99,20 @@ func decodeError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int) s
 	return body["error"]
 }
 
+// internal/indexer spells the two media types out itself rather than importing
+// internal/store, which would drag the SQLite driver into a package that
+// searches torrent sites. This is the cheap half of that import: the two
+// spellings have to agree, and nothing in either package would notice if they
+// drifted. This is the one place that imports both.
+func TestTheIndexersMediaTypesAreTheStoresMediaTypes(t *testing.T) {
+	if indexer.MediaMovie != store.MediaTypeMovie {
+		t.Errorf("indexer.MediaMovie = %q, store.MediaTypeMovie = %q", indexer.MediaMovie, store.MediaTypeMovie)
+	}
+	if indexer.MediaTV != store.MediaTypeTV {
+		t.Errorf("indexer.MediaTV = %q, store.MediaTypeTV = %q", indexer.MediaTV, store.MediaTypeTV)
+	}
+}
+
 func TestSearchReturnsReleasesAndIndexerOutcomes(t *testing.T) {
 	fake := &fakeSearcher{result: indexer.SearchResult{
 		Releases: []indexer.Found{
@@ -116,6 +133,16 @@ func TestSearchReturnsReleasesAndIndexerOutcomes(t *testing.T) {
 
 	if fake.gotTitle != "Interstellar" || fake.gotYear != 2014 {
 		t.Errorf("searched for %q/%d, want Interstellar/2014", fake.gotTitle, fake.gotYear)
+	}
+	// This route is the film one. A television search reaches the indexers
+	// through a query of its own, not by this handler learning a second media
+	// type — and a blank media type here would be a film by default anyway,
+	// which is exactly the kind of default worth spelling out.
+	if fake.gotQuery.Media != indexer.MediaMovie {
+		t.Errorf("searched media %q, want %q", fake.gotQuery.Media, indexer.MediaMovie)
+	}
+	if fake.gotQuery.Season != 0 {
+		t.Errorf("searched season %d, want 0 — a film has none", fake.gotQuery.Season)
 	}
 	if got.Title != "Interstellar" || got.Year != 2014 {
 		t.Errorf("echoed %q/%d", got.Title, got.Year)
@@ -277,6 +304,43 @@ func TestSearchReportsAnUnconfiguredIndexer(t *testing.T) {
 	// reading as a state each indexer has.
 	if strings.Count(rec.Body.String(), `"unconfigured"`) != 1 {
 		t.Errorf("body = %s, want exactly one unconfigured key", rec.Body.String())
+	}
+}
+
+// The third state, and the one that would otherwise be invisible: a source the
+// search never asked because the media type is not one it has. Reported rather
+// than dropped, and reported as itself rather than as a failure or as a search
+// that found nothing — ok:true, count:0 is the format that reads as "nobody
+// uploaded it".
+func TestSearchReportsASourceWithNothingToSearch(t *testing.T) {
+	fake := &fakeSearcher{result: indexer.SearchResult{
+		Releases: []indexer.Found{
+			searchFound("a", "Severance S02E05", "1080p", 381, "magnet:?xt=urn:btih:aa", "tpb"),
+		},
+		Outcomes: []indexer.Outcome{
+			{Name: "yts", NotApplicable: true},
+			{Name: "tpb", OK: true, Count: 1},
+		},
+	}}
+
+	rec := do(t, newSearchServer(t, fake), http.MethodGet, "/api/search?title=Severance")
+	got := decodeSearch(t, rec)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	byName := map[string]indexerBody{}
+	for _, ix := range got.Indexers {
+		byName[ix.Name] = ix
+	}
+	if ix := byName["yts"]; !ix.NotApplicable || ix.OK || ix.Count != 0 || ix.Error != "" {
+		t.Errorf("yts outcome = %+v, want not_applicable with no ok, no count and no error", ix)
+	}
+	if ix := byName["tpb"]; !ix.OK || ix.NotApplicable {
+		t.Errorf("tpb outcome = %+v, want an ordinary success", ix)
+	}
+	if strings.Count(rec.Body.String(), `"not_applicable"`) != 1 {
+		t.Errorf("body = %s, want exactly one not_applicable key", rec.Body.String())
 	}
 }
 

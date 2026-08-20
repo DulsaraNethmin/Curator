@@ -253,7 +253,7 @@ func dnsDown() bool { return false }
 
 func TestClassifyLiveFailureCoversTheCallAndNotJustTheProbe(t *testing.T) {
 	// The errors below carry the shapes each indexer actually produces:
-	// client.Do's *url.Error, wrapped with %w the way both SearchMovie do.
+	// client.Do's *url.Error, wrapped with %w the way both Search methods do.
 
 	// T75's case, and it is a TIMEOUT rather than a name failure — the T76
 	// version of this table called a *net.DNSError "timedOut" and asserted a

@@ -18,22 +18,15 @@ type cacheStubIndexer struct {
 	mu       sync.Mutex
 	err      error
 	calls    int
-	searched []cacheSearchArgs
-}
-
-// cacheSearchArgs is what the wrapped indexer was actually asked, recorded so a test
-// can prove the caller's title reaches it unnormalised.
-type cacheSearchArgs struct {
-	title string
-	year  int
+	searched []Query
 }
 
 func (s *cacheStubIndexer) Name() string { return s.name }
 
-func (s *cacheStubIndexer) SearchMovie(_ context.Context, title string, year int) ([]Release, error) {
+func (s *cacheStubIndexer) Search(_ context.Context, q Query) ([]Release, error) {
 	s.mu.Lock()
 	s.calls++
-	s.searched = append(s.searched, cacheSearchArgs{title: title, year: year})
+	s.searched = append(s.searched, q)
 	err := s.err
 	s.mu.Unlock()
 
@@ -50,10 +43,10 @@ func (s *cacheStubIndexer) callCount() int {
 	return s.calls
 }
 
-func (s *cacheStubIndexer) searches() []cacheSearchArgs {
+func (s *cacheStubIndexer) searches() []Query {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]cacheSearchArgs(nil), s.searched...)
+	return append([]Query(nil), s.searched...)
 }
 
 func (s *cacheStubIndexer) setErr(err error) {
@@ -131,9 +124,9 @@ func cacheEntryCount(c *Cache) int {
 func TestCacheMissCallsThroughOnce(t *testing.T) {
 	c, stub, _ := newCacheForTest(time.Hour)
 
-	got, err := c.SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if stub.callCount() != 1 {
 		t.Errorf("wrapped indexer called %d times on a miss, want 1", stub.callCount())
@@ -154,15 +147,15 @@ func TestCacheMissCallsThroughOnce(t *testing.T) {
 func TestCacheHitInsideTTLCallsThroughZeroMoreTimes(t *testing.T) {
 	c, stub, clock := newCacheForTest(time.Hour)
 
-	first, err := c.SearchMovie(context.Background(), "Interstellar", 2014)
+	first, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("first SearchMovie: %v", err)
+		t.Fatalf("first Search: %v", err)
 	}
 	clock.Advance(59 * time.Minute)
 
-	second, err := c.SearchMovie(context.Background(), "Interstellar", 2014)
+	second, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("second SearchMovie: %v", err)
+		t.Fatalf("second Search: %v", err)
 	}
 	if stub.callCount() != 1 {
 		t.Fatalf("wrapped indexer called %d times for two identical searches, want 1 — the second launched a browser", stub.callCount())
@@ -183,12 +176,12 @@ func TestCacheHitInsideTTLCallsThroughZeroMoreTimes(t *testing.T) {
 func TestCacheHitPreservesDetailPath(t *testing.T) {
 	c, _, _ := newCacheForTest(time.Hour)
 
-	if _, err := c.SearchMovie(context.Background(), "Interstellar", 2014); err != nil {
-		t.Fatalf("first SearchMovie: %v", err)
+	if _, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+		t.Fatalf("first Search: %v", err)
 	}
-	got, err := c.SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("second SearchMovie: %v", err)
+		t.Fatalf("second Search: %v", err)
 	}
 	for i, r := range got {
 		want := cacheTestReleases()[i].detailPath
@@ -204,13 +197,13 @@ func TestCacheHitPreservesDetailPath(t *testing.T) {
 func TestCacheExpiresPastTTL(t *testing.T) {
 	c, stub, clock := newCacheForTest(time.Hour)
 
-	if _, err := c.SearchMovie(context.Background(), "Interstellar", 2014); err != nil {
-		t.Fatalf("first SearchMovie: %v", err)
+	if _, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+		t.Fatalf("first Search: %v", err)
 	}
 	clock.Advance(time.Hour + time.Second)
 
-	if _, err := c.SearchMovie(context.Background(), "Interstellar", 2014); err != nil {
-		t.Fatalf("second SearchMovie: %v", err)
+	if _, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+		t.Fatalf("second Search: %v", err)
 	}
 	if stub.callCount() != 2 {
 		t.Errorf("wrapped indexer called %d times across an expiry, want 2", stub.callCount())
@@ -224,28 +217,37 @@ func TestCacheExpiresPastTTL(t *testing.T) {
 func TestCacheKeying(t *testing.T) {
 	for _, tt := range []struct {
 		label     string
-		title     string
-		year      int
+		second    Query
 		wantCalls int // total call-throughs after the second search
 	}{
-		{label: "identical", title: "Interstellar", year: 2014, wantCalls: 1},
-		{label: "trailing whitespace is the same entry", title: "Interstellar ", year: 2014, wantCalls: 1},
-		{label: "differing case is the same entry", title: "iNTERSTELLAR", year: 2014, wantCalls: 1},
-		{label: "case and whitespace together", title: "  interstellar  ", year: 2014, wantCalls: 1},
-		{label: "differing title is a different entry", title: "Inception", year: 2014, wantCalls: 2},
-		{label: "differing year is a different entry", title: "Interstellar", year: 2015, wantCalls: 2},
-		{label: "no year is a different entry", title: "Interstellar", year: 0, wantCalls: 2},
+		{label: "identical", second: Query{Title: "Interstellar", Year: 2014}, wantCalls: 1},
+		{label: "trailing whitespace is the same entry", second: Query{Title: "Interstellar ", Year: 2014}, wantCalls: 1},
+		{label: "differing case is the same entry", second: Query{Title: "iNTERSTELLAR", Year: 2014}, wantCalls: 1},
+		{label: "case and whitespace together", second: Query{Title: "  interstellar  ", Year: 2014}, wantCalls: 1},
+		{label: "differing title is a different entry", second: Query{Title: "Inception", Year: 2014}, wantCalls: 2},
+		{label: "differing year is a different entry", second: Query{Title: "Interstellar", Year: 2015}, wantCalls: 2},
+		{label: "no year is a different entry", second: Query{Title: "Interstellar"}, wantCalls: 2},
 		// Punctuation is not collapsed: these are genuinely different keyword
 		// searches, and this library is full of titles where it matters.
-		{label: "punctuation is not collapsed", title: "Spider Man", year: 2014, wantCalls: 2},
+		{label: "punctuation is not collapsed", second: Query{Title: "Spider Man", Year: 2014}, wantCalls: 2},
+
+		// The media type spelled out is the same search as the one that left it
+		// blank, because blank means film.
+		{label: "an explicit film is the same entry", second: Query{Title: "Interstellar", Year: 2014, Media: MediaMovie}, wantCalls: 1},
+		// ...and television is not. Without this, a film search for a name a
+		// show shares would serve the FILM's releases to a television search
+		// under ok:true — and 1337x is the indexer this Cache wraps, whose
+		// documented failure mode is already ok:true, count:0 rather than an
+		// error, so nothing on the screen would look wrong.
+		{label: "television is a different entry", second: Query{Title: "Interstellar", Year: 2014, Media: MediaTV}, wantCalls: 2},
 	} {
 		t.Run(tt.label, func(t *testing.T) {
 			c, stub, _ := newCacheForTest(time.Hour)
-			if _, err := c.SearchMovie(context.Background(), "Interstellar", 2014); err != nil {
-				t.Fatalf("first SearchMovie: %v", err)
+			if _, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+				t.Fatalf("first Search: %v", err)
 			}
-			if _, err := c.SearchMovie(context.Background(), tt.title, tt.year); err != nil {
-				t.Fatalf("second SearchMovie: %v", err)
+			if _, err := c.Search(context.Background(), tt.second); err != nil {
+				t.Fatalf("second Search: %v", err)
 			}
 			if got := stub.callCount(); got != tt.wantCalls {
 				t.Errorf("wrapped indexer called %d times, want %d", got, tt.wantCalls)
@@ -254,35 +256,78 @@ func TestCacheKeying(t *testing.T) {
 	}
 }
 
-// TestCacheKeyIncludesIndexerName pins the third component of the key. Two Caches
-// never share a map today, so nothing else can observe it.
-func TestCacheKeyIncludesIndexerName(t *testing.T) {
-	a := cacheKeyFor("1337x", "Interstellar", 2014)
-	b := cacheKeyFor("yts", "Interstellar", 2014)
-	if a == b {
-		t.Error("two indexers' answers to the same question share a key")
-	}
-	if a != cacheKeyFor("1337x", "  INTERSTELLAR ", 2014) {
-		t.Error("normalisation is not applied consistently to the key")
+// The season is part of the key for the same reason the title is: "severance"
+// and "severance s02" are two different strings sent to 1337x, and one entry for
+// both would answer whichever was asked second with the other's page.
+func TestCacheKeyingBySeason(t *testing.T) {
+	for _, tt := range []struct {
+		label     string
+		second    Query
+		wantCalls int
+	}{
+		{label: "the same season is one entry", second: Query{Title: "Severance", Media: MediaTV, Season: 2}, wantCalls: 1},
+		{label: "another season is another entry", second: Query{Title: "Severance", Media: MediaTV, Season: 1}, wantCalls: 2},
+		{label: "no season at all is another entry", second: Query{Title: "Severance", Media: MediaTV}, wantCalls: 2},
+	} {
+		t.Run(tt.label, func(t *testing.T) {
+			c, stub, _ := newCacheForTest(time.Hour)
+			first := Query{Title: "Severance", Media: MediaTV, Season: 2}
+			if _, err := c.Search(context.Background(), first); err != nil {
+				t.Fatalf("first Search: %v", err)
+			}
+			if _, err := c.Search(context.Background(), tt.second); err != nil {
+				t.Fatalf("second Search: %v", err)
+			}
+			if got := stub.callCount(); got != tt.wantCalls {
+				t.Errorf("wrapped indexer called %d times, want %d", got, tt.wantCalls)
+			}
+		})
 	}
 }
 
-// TestCacheCallsThroughWithTheCallersTitle: normalisation is for keying only. The
-// indexer builds its query from the title the caller asked for, so lowercasing it on
-// the way through would change what is searched for.
+// TestCacheKeyIncludesIndexerName pins the indexer component of the key. Two
+// Caches never share a map today, so nothing else can observe it.
+func TestCacheKeyIncludesIndexerName(t *testing.T) {
+	a := cacheKeyFor("1337x", Query{Title: "Interstellar", Year: 2014})
+	b := cacheKeyFor("yts", Query{Title: "Interstellar", Year: 2014})
+	if a == b {
+		t.Error("two indexers' answers to the same question share a key")
+	}
+	if a != cacheKeyFor("1337x", Query{Title: "  INTERSTELLAR ", Year: 2014}) {
+		t.Error("normalisation is not applied consistently to the key")
+	}
+	// The blank media type is resolved on the way into the key, so the default
+	// is not two names for one identical fetch.
+	if a != cacheKeyFor("1337x", Query{Title: "Interstellar", Year: 2014, Media: MediaMovie}) {
+		t.Error("a query that spells out \"movie\" keys differently from one that leaves it blank")
+	}
+}
+
+// TestCacheCallsThroughWithTheCallersQuery: normalisation is for keying only. The
+// indexer builds its query from what the caller asked for, so lowercasing the title
+// on the way through would change what is searched for — and since T90 the season
+// travels the same way, because each indexer spells one differently.
 func TestCacheCallsThroughWithTheCallersTitle(t *testing.T) {
 	c, stub, _ := newCacheForTest(time.Hour)
 
-	if _, err := c.SearchMovie(context.Background(), "  Avengers - Infinity War  ", 2018); err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+	want := Query{Title: "  Avengers - Infinity War  ", Year: 2018}
+	if _, err := c.Search(context.Background(), want); err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 	got := stub.searches()
 	if len(got) != 1 {
 		t.Fatalf("wrapped indexer saw %d searches, want 1", len(got))
 	}
-	if got[0].title != "  Avengers - Infinity War  " || got[0].year != 2018 {
-		t.Errorf("wrapped indexer searched %q/%d, want the caller's own %q/%d",
-			got[0].title, got[0].year, "  Avengers - Infinity War  ", 2018)
+	if got[0] != want {
+		t.Errorf("wrapped indexer searched %+v, want the caller's own %+v", got[0], want)
+	}
+
+	tv := Query{Title: "Severance", Media: MediaTV, Season: 2}
+	if _, err := c.Search(context.Background(), tv); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got = stub.searches(); got[1] != tv {
+		t.Errorf("wrapped indexer searched %+v, want the caller's own %+v", got[1], tv)
 	}
 }
 
@@ -291,7 +336,7 @@ func TestCacheDoesNotCacheErrors(t *testing.T) {
 	down := errors.New("calling minter: connection refused")
 	stub.setErr(down)
 
-	if _, err := c.SearchMovie(context.Background(), "Interstellar", 2014); !errors.Is(err, down) {
+	if _, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); !errors.Is(err, down) {
 		t.Fatalf("error = %v, want it returned unchanged", err)
 	}
 	if n := cacheEntryCount(c); n != 0 {
@@ -299,7 +344,7 @@ func TestCacheDoesNotCacheErrors(t *testing.T) {
 	}
 
 	// The next call must try again rather than replay the failure for an hour.
-	if _, err := c.SearchMovie(context.Background(), "Interstellar", 2014); !errors.Is(err, down) {
+	if _, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); !errors.Is(err, down) {
 		t.Fatalf("second error = %v, want the same failure from a fresh call", err)
 	}
 	if stub.callCount() != 2 {
@@ -308,15 +353,15 @@ func TestCacheDoesNotCacheErrors(t *testing.T) {
 
 	// And once minter is back, the recovery is what gets cached.
 	stub.setErr(nil)
-	got, err := c.SearchMovie(context.Background(), "Interstellar", 2014)
+	got, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie after recovery: %v", err)
+		t.Fatalf("Search after recovery: %v", err)
 	}
 	if len(got) != len(cacheTestReleases()) {
 		t.Fatalf("got %d releases after recovery, want %d", len(got), len(cacheTestReleases()))
 	}
-	if _, err := c.SearchMovie(context.Background(), "Interstellar", 2014); err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+	if _, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 	if stub.callCount() != 3 {
 		t.Errorf("wrapped indexer called %d times, want 3 — the recovered result was not cached", stub.callCount())
@@ -330,9 +375,9 @@ func TestCacheDoesNotCacheErrors(t *testing.T) {
 func TestCacheReturnedSliceCannotCorruptEntry(t *testing.T) {
 	c, _, _ := newCacheForTest(time.Hour)
 
-	miss, err := c.SearchMovie(context.Background(), "Interstellar", 2014)
+	miss, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	// Mutate what the miss returned — the slice the wrapped indexer produced.
 	miss[0].Title = "corrupted by the caller"
@@ -340,9 +385,9 @@ func TestCacheReturnedSliceCannotCorruptEntry(t *testing.T) {
 	miss[0].detailPath = "/torrent/0/wrong/"
 	miss[0], miss[1] = miss[1], miss[0] // an in-place sort would do exactly this
 
-	hit, err := c.SearchMovie(context.Background(), "Interstellar", 2014)
+	hit, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	want := cacheTestReleases()
 	for i := range want {
@@ -353,9 +398,9 @@ func TestCacheReturnedSliceCannotCorruptEntry(t *testing.T) {
 
 	// Same again from a hit's slice.
 	hit[0].Title = "corrupted by the second caller"
-	second, err := c.SearchMovie(context.Background(), "Interstellar", 2014)
+	second, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
 	if err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+		t.Fatalf("Search: %v", err)
 	}
 	if second[0] != want[0] {
 		t.Errorf("entry corrupted by a caller mutating a hit result: release 0 = %+v, want %+v", second[0], want[0])
@@ -368,8 +413,8 @@ func TestCachePrunesExpiredEntriesOnWrite(t *testing.T) {
 	c, _, clock := newCacheForTest(time.Hour)
 
 	for _, title := range []string{"Interstellar", "Inception", "Dune"} {
-		if _, err := c.SearchMovie(context.Background(), title, 2014); err != nil {
-			t.Fatalf("SearchMovie(%q): %v", title, err)
+		if _, err := c.Search(context.Background(), Query{Title: title, Year: 2014}); err != nil {
+			t.Fatalf("Search(%q): %v", title, err)
 		}
 	}
 	if n := cacheEntryCount(c); n != 3 {
@@ -382,13 +427,13 @@ func TestCachePrunesExpiredEntriesOnWrite(t *testing.T) {
 	}
 
 	// One unrelated search, and every dead entry goes with it.
-	if _, err := c.SearchMovie(context.Background(), "Arrival", 2016); err != nil {
-		t.Fatalf("SearchMovie: %v", err)
+	if _, err := c.Search(context.Background(), Query{Title: "Arrival", Year: 2016}); err != nil {
+		t.Fatalf("Search: %v", err)
 	}
 	if n := cacheEntryCount(c); n != 1 {
 		t.Errorf("holding %d entries after a write past the TTL, want 1 — the map grows without bound", n)
 	}
-	if _, ok := c.entries[cacheKeyFor("1337x", "Arrival", 2016)]; !ok {
+	if _, ok := c.entries[cacheKeyFor("1337x", Query{Title: "Arrival", Year: 2016})]; !ok {
 		t.Error("pruning removed the entry that was just written")
 	}
 }
@@ -397,8 +442,8 @@ func TestCacheZeroTTLDisablesCaching(t *testing.T) {
 	for _, ttl := range []time.Duration{0, -time.Hour} {
 		c, stub, _ := newCacheForTest(ttl)
 		for i := 0; i < 3; i++ {
-			if _, err := c.SearchMovie(context.Background(), "Interstellar", 2014); err != nil {
-				t.Fatalf("ttl %v: SearchMovie: %v", ttl, err)
+			if _, err := c.Search(context.Background(), Query{Title: "Interstellar", Year: 2014}); err != nil {
+				t.Fatalf("ttl %v: Search: %v", ttl, err)
 			}
 		}
 		if stub.callCount() != 3 {
@@ -423,13 +468,13 @@ func TestCacheConcurrentSearchesAreSafe(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 25; j++ {
 				title := titles[(i+j)%len(titles)]
-				got, err := c.SearchMovie(context.Background(), title, 2014)
+				got, err := c.Search(context.Background(), Query{Title: title, Year: 2014})
 				if err != nil {
-					t.Errorf("SearchMovie(%q): %v", title, err)
+					t.Errorf("Search(%q): %v", title, err)
 					return
 				}
 				if len(got) != len(cacheTestReleases()) {
-					t.Errorf("SearchMovie(%q) returned %d releases, want %d", title, len(got), len(cacheTestReleases()))
+					t.Errorf("Search(%q) returned %d releases, want %d", title, len(got), len(cacheTestReleases()))
 					return
 				}
 				// Writing into a result must stay a caller's own business even when
@@ -462,6 +507,35 @@ func TestCacheNameIsTheWrappedIndexers(t *testing.T) {
 	if c.Unwrap() != Indexer(stub) {
 		t.Error("Unwrap must return the wrapped indexer, or lazy magnet resolution cannot reach it")
 	}
+}
+
+// Handles is forwarded the way Name is, because a capability is a property of
+// the source and a cache in front of it changes nothing about it.
+//
+// It is the opposite call to ResolveMagnet, which a Cache deliberately does NOT
+// forward, and the difference is the default: "handles everything" is right for
+// an indexer that declares nothing, so a Cache always satisfying MediaCapable
+// still tells the truth whichever indexer is inside it.
+func TestCacheForwardsHandles(t *testing.T) {
+	// A wrapped indexer that declares nothing: the Cache must answer for it the
+	// way it would answer for itself, which is yes to everything.
+	plain := NewCache(&cacheStubIndexer{name: "1337x"}, time.Hour)
+	if !plain.Handles(MediaTV) || !plain.Handles(MediaMovie) {
+		t.Error("a Cache around an indexer that declares nothing must handle everything")
+	}
+
+	// And one that declares.
+	filmOnly := NewCache(&aggMovieOnlyStub{aggStub: aggStub{name: "yts"}}, time.Hour)
+	if filmOnly.Handles(MediaTV) {
+		t.Error("a Cache hid the wrapped indexer's refusal of television")
+	}
+	if !filmOnly.Handles(MediaMovie) {
+		t.Error("a Cache lost the wrapped indexer's films")
+	}
+
+	// A Cache is a MediaCapable whichever indexer it holds — that is what
+	// forwarding costs, and the safe default is what makes it affordable here.
+	var _ MediaCapable = plain
 }
 
 func TestCacheDefaultsToWallClock(t *testing.T) {

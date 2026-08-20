@@ -69,6 +69,27 @@ type Outcome struct {
 	// constructed, so it runs no search and files no outcome. This field is
 	// only ever about one that is on and cannot work.
 	Unconfigured bool
+
+	// NotApplicable says the indexer was never asked, because the media type is
+	// not one it has. YTS is the case it exists for, and the argument is
+	// Unconfigured's argument twice over.
+	//
+	// Without it a television search reaches YTS, which is /list_movies.json and
+	// has no television surface at all, and comes back with an empty slice and a
+	// nil error — which YTS's own doc comment defines as "YTS does not have this
+	// film". The aggregator would then report ok:true, count:0. It would not
+	// crash and it would not fail; it would quietly lie, in exactly the format
+	// the code documents as indistinguishable from "nobody uploaded it".
+	//
+	// Separate from OK because the three states lead to three different actions
+	// and only one of them is anybody's to take: a failed indexer is something to
+	// retry, an unconfigured one is a container to start, and this one is neither
+	// — it is a source that will never have television, and nothing is wrong.
+	//
+	// It is reported rather than omitted because Outcomes is positional against
+	// the configured indexers, and because a source that was not asked is a fact
+	// about the search worth stating once.
+	NotApplicable bool
 }
 
 // SearchResult is one whole search: the merged, ranked releases and what each
@@ -121,13 +142,13 @@ func NewAggregator(indexers []Indexer, timeout, ttl time.Duration) *Aggregator {
 	}
 }
 
-// SearchMovie searches every indexer concurrently and returns the merged, ranked
+// Search searches every indexer concurrently and returns the merged, ranked
 // releases with a per-indexer outcome for each.
 //
 // The error return is for the caller's own context being cancelled. An indexer
 // failing — even all of them — is not an error: it is reported in Outcomes, and
 // the search still succeeded.
-func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (SearchResult, error) {
+func (a *Aggregator) Search(ctx context.Context, q Query) (SearchResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
@@ -136,12 +157,20 @@ func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (S
 	// result it would have returned, silently.
 	//
 	// Here rather than inside x1337.searchQuery, which is the narrower place:
-	// indexer.Cache wraps 1337x and keys on the title it is HANDED, so
+	// indexer.Cache wraps 1337x and keys on the query it is HANDED, so
 	// normalising below the cache leaves "avengers: endgame" and "avengers
 	// endgame" as two entries for one identical minter fetch, and each path pays
 	// its own ~9 s browser launch. Above the cache, the key is the string that
 	// was actually queried.
-	query := NormaliseQuery(title)
+	//
+	// The season deliberately stays in the Query rather than being folded into
+	// the title here: each indexer spells it differently, and one of them
+	// (TPB, measured) is better off not spelling it at all.
+	q.Title = NormaliseQuery(q.Title)
+
+	// The default resolved once, so that the capability check, the cache key and
+	// the indexers themselves all see the same word for it.
+	q.Media = q.mediaType()
 
 	// Results land in per-indexer slots rather than an append-shared slice so that
 	// a straggler still running after the deadline has somewhere defined to write.
@@ -153,6 +182,16 @@ func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (S
 	slots := make([]slot, len(a.indexers))
 	var mu sync.Mutex
 
+	// Which indexers this media type is not for, decided BEFORE the fan-out and
+	// remembered. Not deciding it inside the loop and simply skipping the g.Go:
+	// a slot with no goroutine never sets reported, and the reporting switch
+	// below opens with `case !s.reported:` producing "timed out after 30s" — so
+	// YTS would be reported as having timed out on every television search.
+	skip := make([]bool, len(a.indexers))
+	for i, ix := range a.indexers {
+		skip[i] = !handlesMedia(ix, q.Media)
+	}
+
 	// A plain errgroup.Group, deliberately not errgroup.WithContext: WithContext
 	// cancels every sibling the moment one goroutine returns non-nil, which is
 	// exactly backwards here — one downed indexer would silently empty an
@@ -160,8 +199,11 @@ func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (S
 	// nil, so nothing is ever cancelled on a sibling's behalf.
 	var g errgroup.Group
 	for i, ix := range a.indexers {
+		if skip[i] {
+			continue
+		}
 		g.Go(func() error {
-			releases, err := ix.SearchMovie(ctx, query, year)
+			releases, err := ix.Search(ctx, q)
 			mu.Lock()
 			defer mu.Unlock()
 			slots[i] = slot{reported: true, releases: releases, err: err}
@@ -193,6 +235,13 @@ func (a *Aggregator) SearchMovie(ctx context.Context, title string, year int) (S
 		name := ix.Name()
 		s := snapshot[i]
 		switch {
+		case skip[i]:
+			// First, ahead of the timeout arm, because this slot was never
+			// given a goroutine and so can never have reported. The outcome is
+			// still filed rather than omitted: Outcomes is positional against
+			// a.indexers, and an omitted slot would render as a nameless
+			// {"name":"","ok":false} on the search screen.
+			out.Outcomes[i] = Outcome{Name: name, NotApplicable: true}
 		case !s.reported:
 			out.Outcomes[i] = Outcome{Name: name, OK: false, Error: fmt.Sprintf("timed out after %s", a.timeout)}
 		case s.err != nil:
