@@ -2329,3 +2329,149 @@ D27 makes for the UI staying off the tunnel applies here unchanged.
 on their own when a tunnel dies. What it cannot do is notice, so the rows keep saying nobody is
 seeding a release while the real answer is that curator's tunnel went away — and it cannot see the
 one state where the dials succeed and the bytes still leave from the wrong address.
+
+---
+
+## D48 — Television is additive: a show is a row in `movies`, and the second library root is opt-in
+
+**Status:** decided and **built** ([T88](tasks/T88-two-media-types.md)) · **Spends the hook**
+[D6](#d6--tmdb_id-is-nullable) left in the schema in phase 1 · **Reopens** what
+`roadmap.md` listed under *Deliberately out of scope* · **Extends**
+[D5](#d5--manual-search-not-automatic-grabbing) to a second media type rather than reversing it ·
+**Does not disturb** [D26](#d26--television-keeps-its-stack-the-cutover-removes-only-what-curator-replaces-for-movies)
+or [D43](#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader)
+
+Curator does television: search a show on TMDB, pick a release, download it through the tunnel,
+hardlink the episodes into a TV library, tell Jellyfin. **One deliberate grab at a time, exactly
+like a film.** No monitoring, no scheduler, no RSS, no quality profiles, no unattended grabbing.
+
+### Why this does not overturn D43
+
+D43 retired television on the Pi, and the sentence that matters is its own: *"the series are deleted
+and television is retired deliberately, not because the dependency analysis changed… there is no
+longer a sonarr to protect."* **It retired a stack, not a capability.** Nothing in it argues curator
+must not do television; it argues that sonarr no longer needed protecting, which is why nine
+containers could go instead of three. D26 and D43 are records and are left exactly as written.
+
+What *is* overturned is `roadmap.md`'s bullet — *"**TV.** Retired by choice in D43, not deferred"* —
+and the README's *"No television. Movies only."* Both were true when written and both were always
+qualified by the same escape hatch, which D6 put there on purpose: *"A `media_type` column
+defaulting to `'movie'` is included from the start so TV is additive later."* This is later.
+
+### A show is a row in `movies`, and that is forced rather than chosen
+
+The obvious alternative is a `shows` table with an `episodes` table beside it. It does not survive
+contact with one column:
+
+```sql
+downloads.movie_id INTEGER NOT NULL REFERENCES movies(id)
+```
+
+Foreign keys are genuinely on (`_foreign_keys=1` in the DSN), and `movie_id` is `NOT NULL`. A
+`shows` table plus a nullable `downloads.show_id` — which `addColumn` could add today — **still
+cannot insert a downloads row without a movies row**, so every show would need a shadow row anyway:
+the single-table design plus a redundant second table. The only real alternative is a second
+`show_downloads` table, and that duplicates far more than dispatch: the poller's `GetDownloadByHash`
+sweep and its "torrent in our category has no download row" warning, `Service.Resume`,
+`GET /api/downloads`, and `store.DeleteMovie`'s FK-ordered transaction.
+
+**The stronger argument is that the accumulation semantics a season pack needs are already
+written.** `MarkImported` → `adoptTwin` folds the dispatch-time `wanted` row into whichever row
+already claims that `library_path`, repointing every download at it. That gives **one row per show,
+N downloads pointing at it, converging on the folder as identity** — which is exactly what "season 2
+arrives six months after season 1" needs, and it only works because downloads point at `movies.id`.
+
+What carries over free, stated so nobody "fixes" it: `year INTEGER NOT NULL` as the *folder's* year
+works unchanged, because `Show (FirstAirYear)` is Jellyfin's own series convention and `DestFolder`'s
+four-digit check and `ParseFolder` round-trip it; `library_path UNIQUE` is fine, since a show folder
+and a film folder are different paths; and the poller, `Resume`, `DeleteMovie`, `InsertDownload` and
+`UpdateDownloadProgress` are media-agnostic already.
+
+### `tmdb_id` could not be reused, and this is the expensive half
+
+**TMDB's movie and tv id sequences overlap.** Severance is tv id 95396, and a film holds movie id
+95396. `tmdb_id` is `UNIQUE` at table level, and `migrate.go` cannot drop it — its whole mechanism is
+`addColumn` via `pragma_table_info`, chosen in phase 7 so that every step is idempotent by
+construction, and relaxing a column constraint means rebuilding the one table that holds somebody's
+library.
+
+Putting a tv id in `tmdb_id` is not a rare loud collision. It is routine silent corruption:
+
+| | what happens |
+|---|---|
+| `UpsertWanted` | probes `WHERE tmdb_id = ?`, so dispatching Severance returns **the film's row** and attaches the season pack to it. No error. |
+| `MatchMovie` / `CorrectMatch` | answer `ErrTMDBIDTaken`, rendered as *"curator already has that film in the library under another folder"* — a sentence the user cannot act on because it is false |
+| `adoptTwin` | its third-row probe finds the film and **silently skips the tmdb_id carry**, leaving the show unmatched for ever |
+
+So `tmdb_tv_id`, nullable, NULL for every film — additive, and it backfills to the right answer with
+no backfill. `store.tmdbColumn` is the single place a media type becomes a column name.
+
+**Its index is the first thing the migration mechanism has grown that is not a column**, and it could
+not have gone anywhere else. A column added by `ALTER TABLE` cannot carry `UNIQUE` in its
+declaration, and `schema.sql` is execd *before* `migrate` runs — so an index declared there would be
+created against a column that does not exist yet and fail with `no such column` on exactly the
+databases the mechanism exists to serve. `addIndex` asks the database nothing, because
+`CREATE UNIQUE INDEX IF NOT EXISTS` is already idempotent by construction. A UNIQUE index over a
+NULLABLE column is the right instrument: SQLite treats NULLs as distinct, so every film coexists
+under it without noticing, and only two rows claiming the same show are refused.
+
+### The charge for one table: eighteen reads and writes that could assume one kind of thing
+
+Reusing `movies` buys the download pipeline unchanged and charges for it in every query. The three
+that would have shipped as silent damage:
+
+1. **`MoviesMissingMetadata`.** A show's `tmdb_id` is NULL by construction, so `WHERE tmdb_id IS
+   NULL` puts **every show on the matching pass's work list on every scan**. `handleScan` feeds that
+   list to TMDB's `/search/movie` and writes the answer back with `SetTMDBMetadata`, which
+   overwrites unconditionally by design — and for **Fargo, Watchmen, Hannibal, Westworld, Dune and
+   Snowpiercer the lookup succeeds.** The show acquires a film's id, overview and poster, with no
+   error and no log, and it re-fires every scan.
+2. **`prune`.** `case outside` sits *before* `case recorded[key]`, so a TV row is not merely unfound
+   — it is affirmatively deleted with the reason *"outside LIBRARY_MOVIES, so it can never be
+   served"*, cascading its downloads. The first movie scan after the first TV import would empty the
+   TV library.
+3. **`ScannedMovie.MediaType` defaulting to `movie`.** Correct with one media type; a loaded gun with
+   two, because `UpsertMovieByPath` **rewrites** `media_type` from that field on every pass. One
+   construction site that forgot it would relabel a show as a film, and then (2) deletes it.
+
+The media type is therefore a **required argument with no value meaning "both"** on every scoped
+read, and a **required field** on every write. Making it required turned all four `LibraryByTMDBID`
+call sites and nine construction sites into compile errors and loud test failures somebody had to
+answer on purpose — which is the whole argument for a refusal over a default. The writes go the
+other way: `tmdbIDWrite` is a `CASE` over the row's own `media_type`, so a caller cannot put a tv id
+in the movie column by passing the wrong argument, because there is no argument to pass.
+
+`MoviesOnDisk` is the deliberate exception: it grows `MediaType` on the **row** rather than a filter
+on the query. That list is what a prune may *consider*, and a prune deletes on a positive finding —
+so a row filtered out of it is a row that cannot be kept either. Every row present, the caller
+deciding which root owns it, is what [D33](#d33--a-folder-with-no-film-in-it-is-not-a-movie-the-row-goes-the-folder-stays)'s
+asymmetry needs.
+
+### `LIBRARY_TV` has no default, and that asymmetry is the opt-in
+
+`LIBRARY_MOVIES` points at the fixture so a fresh clone does something useful. `LIBRARY_TV` points at
+nothing, and **empty means television is off** — no Shows tab, no TV rails, and the TV routes
+answering 503 naming the variable. A default would point curator at a directory nobody asked it to
+write to, and would turn television on for every existing install on the next image. It is the same
+posture `QBIT_USER` and `JELLYFIN_URL` already have: unconfigured is a supported state, not a broken
+one, and `config.TVConfigured()` is the one place to ask.
+
+### Alternatives
+
+**Separate `shows` and `episodes` tables.** Cleaner on paper and it removes the contamination sweep
+entirely. It loses to `downloads.movie_id NOT NULL`, which forces either a shadow movies row or a
+duplicate downloads pipeline — and to `adoptTwin`, which already implements the accumulation
+semantics that would then have to be rewritten.
+
+**Rebuilding `movies` to relax `tmdb_id UNIQUE`.** SQLite's twelve-step table rebuild, with the
+foreign key from `downloads` to work around. It is possible and it is surgery on the one table that
+holds the user's library, to avoid one nullable column.
+
+**An `episode_count` column.** Only a scan could write it, and there is no scheduler by design — so
+it would be stale from the moment an import landed until somebody pressed Scan. Given that
+season-by-season tracking is deliberately out of scope, **a count that is silently wrong half the
+time is worse than no count.** Episodes are files on disk; the scan is the source of truth.
+
+**Making `media_type` optional on the reads, defaulting to `movie`.** It reads fine at every call
+site and is wrong at one — the dispatch guard, where a colliding id refuses a TV grab with a sentence
+about a film the user never asked about.
