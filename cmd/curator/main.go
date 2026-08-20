@@ -468,6 +468,12 @@ func run() error {
 		WithJellyfinSetup(api.JellyfinSetup{
 			URL:         provisionURL(cfg),
 			LibraryPath: cfg.LibraryMovies,
+			// Empty is television off, and it is passed through as empty
+			// rather than defaulted: LIBRARY_TV has no default for the same
+			// reason (internal/config), and a curator that invented one would
+			// create a Shows library on somebody's Jellyfin for a feature they
+			// never turned on.
+			TVLibraryPath: cfg.LibraryTV,
 			New: func(baseURL string) api.Provisioner {
 				return jellyfin.NewProvisioner(baseURL, Version, indexerHTTP, log)
 			},

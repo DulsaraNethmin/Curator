@@ -453,22 +453,51 @@ func (p *Provisioner) Authenticate(ctx context.Context, username, password strin
 	}, nil
 }
 
-// AddLibrary creates a Movies library pointing at libraryPath and then proves
-// it exists.
+// LibraryKind is what a library holds, and it is an enum rather than Jellyfin's
+// own string because a mistyped collection type is a library that looks right
+// in the listing and scans as the wrong kind of media — Jellyfin files films
+// into a `tvshows` library as nothing at all, and nothing errors.
+type LibraryKind int
+
+const (
+	// MovieLibrary is the zero value, which is what this package created for
+	// the whole of phases 9 and 10, before there was a second media type.
+	MovieLibrary LibraryKind = iota
+	// ShowLibrary is television.
+	ShowLibrary
+)
+
+// CollectionType is Jellyfin's own name for this kind — the string that goes on
+// the wire as collectionType=, and the one its listing reports back.
+//
+// "tvshows" is what Jellyfin's own UI sends for a Shows library. "shows" and
+// "tv" are not collection types it knows, and neither is refused: the library
+// is created, and it holds nothing.
+func (k LibraryKind) CollectionType() string {
+	if k == ShowLibrary {
+		return "tvshows"
+	}
+	return "movies"
+}
+
+// AddLibrary creates a library of kind kind pointing at libraryPath and then
+// proves it exists.
 //
 // libraryPath is the path as JELLYFIN sees it, which inside compose is the
 // shared volume both services mount. Getting those two mounts to agree is the
 // step people fail silently when they do this by hand — the library scans,
 // nothing appears, and no error is produced anywhere — and it is the whole
 // reason this method exists rather than a paragraph in a README.
-func (p *Provisioner) AddLibrary(ctx context.Context, session Session, name, libraryPath string, consent Consent) error {
+func (p *Provisioner) AddLibrary(
+	ctx context.Context, session Session, name string, kind LibraryKind, libraryPath string, consent Consent,
+) error {
 	if err := p.permit(ctx, consent); err != nil {
 		return err
 	}
 
 	query := url.Values{
 		"name":           {name},
-		"collectionType": {"movies"},
+		"collectionType": {kind.CollectionType()},
 		// Measured: created with refreshLibrary=false the folder came back in
 		// the listing with no ItemId and no LibraryOptions key at all until a
 		// refresh materialised it. The verification below depends on this.
@@ -538,6 +567,23 @@ func (p *Provisioner) AddLibrary(ctx context.Context, session Session, name, lib
 type Library struct {
 	Name      string   `json:"Name"`
 	Locations []string `json:"Locations"`
+
+	// CollectionType is Jellyfin's own "movies" / "tvshows" / … and is empty
+	// for a mixed library, which is a real state rather than a decode failure:
+	// a folder somebody added without choosing a type has none. It is here
+	// because a path comparison cannot see that a household's Shows library and
+	// curator's television root are one directory behind two mounts, and the
+	// type is then the only evidence there is (see internal/api's covers).
+	CollectionType string `json:"CollectionType"`
+}
+
+// Holds reports whether this library is of kind k.
+//
+// Compared case-insensitively for the same reason ProviderIds.Tmdb is: the
+// casing is a spelling in somebody else's release, and a version that answered
+// "TvShows" would otherwise silently stop matching.
+func (l Library) Holds(k LibraryKind) bool {
+	return strings.EqualFold(strings.TrimSpace(l.CollectionType), k.CollectionType())
 }
 
 // Covers reports whether this library already takes in path — as one of its

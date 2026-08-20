@@ -40,12 +40,18 @@ import (
 // budget — every individual call has internal/jellyfin's own 15 s on it.
 const provisionTimeout = 90 * time.Second
 
-// libraryName is what curator's Movies library is called inside Jellyfin.
+// libraryName is what curator's Movies library is called inside Jellyfin, and
+// tvLibraryName is the television one.
 //
-// A constant rather than a field on the screen for the same reason the path is
-// not a field: there is one library, curator creates it, and a name somebody
-// can type is a name that can disagree with the one the next version looks for.
-const libraryName = "Movies"
+// Constants rather than fields on the screen for the same reason the paths are
+// not fields: curator creates these libraries, and a name somebody can type is
+// a name that can disagree with the one the next version looks for. They are
+// also the names Jellyfin's own wizard offers, so a household that already has
+// one recognises it.
+const (
+	libraryName   = "Movies"
+	tvLibraryName = "Shows"
+)
 
 // Provisioner is the writing half of internal/jellyfin, as this package needs
 // it.
@@ -61,7 +67,8 @@ type Provisioner interface {
 	CreateAdmin(ctx context.Context, name, password string) error
 	EnableRemoteAccess(ctx context.Context) error
 	Authenticate(ctx context.Context, username, password string) (jellyfin.Session, error)
-	AddLibrary(ctx context.Context, session jellyfin.Session, name, libraryPath string, consent jellyfin.Consent) error
+	AddLibrary(ctx context.Context, session jellyfin.Session, name string, kind jellyfin.LibraryKind,
+		libraryPath string, consent jellyfin.Consent) error
 	MintKey(ctx context.Context, session jellyfin.Session, app string, consent jellyfin.Consent) (string, error)
 	CompleteSetup(ctx context.Context) error
 
@@ -87,6 +94,17 @@ type JellyfinSetup struct {
 	// reintroduced.
 	LibraryPath string
 
+	// TVLibraryPath is LIBRARY_TV, and **empty means television is off** — not
+	// "use a default". There is no default: config.Config.LibraryTV has none
+	// either, because a curator that invented a television root would create a
+	// Shows library on somebody's Jellyfin for a feature they never asked for.
+	// Empty here has to leave every television affordance absent rather than
+	// broken: no Shows library on provision, no television row on adopt, and no
+	// second path in the manual instructions.
+	//
+	// Not a field on the screen, for the reason LibraryPath is not one.
+	TVLibraryPath string
+
 	// New builds a Provisioner for a base URL. A function, so cmd/curator owns
 	// the HTTP client and the version string, and so a test can hand back a
 	// fake without a listening socket.
@@ -103,6 +121,50 @@ type JellyfinSetup struct {
 	// rather than failing the adoption, which is the state every test that does
 	// not care about it is in.
 	Reader func(baseURL, apiKey string) MediaServer
+}
+
+// libraryRoot is one of curator's library roots as both flows reason about it:
+// the name Jellyfin would file it under, the kind of library that is, and the
+// path Jellyfin gets pointed at.
+//
+// A type rather than three parallel arguments because the two flows now do the
+// same thing twice, and the failure mode of getting it wrong — a Shows library
+// created at the movies path, or the other way round — is a library that scans
+// and holds nothing, with no error anywhere.
+type libraryRoot struct {
+	name string
+	kind jellyfin.LibraryKind
+	path string
+
+	// step is what the failure body puts after "curator got as far as". The
+	// films one is still "the library" rather than "the film library", because
+	// it is the string T64's screen and its tests already say.
+	step string
+}
+
+// roots is what this process will point Jellyfin at: films always, television
+// only when LIBRARY_TV is set.
+//
+// The whole of the television half of this file hangs off this one function, so
+// that "empty means television is off" is decided once rather than in five
+// places that can drift apart.
+func (setup *JellyfinSetup) roots() []libraryRoot {
+	roots := []libraryRoot{{
+		name: libraryName, kind: jellyfin.MovieLibrary, path: setup.LibraryPath, step: "the library",
+	}}
+	if setup.tvConfigured() {
+		roots = append(roots, libraryRoot{
+			name: tvLibraryName, kind: jellyfin.ShowLibrary,
+			path: setup.TVLibraryPath, step: "the television library",
+		})
+	}
+	return roots
+}
+
+// tvConfigured reports whether this process has anywhere to put a show, and is
+// the only place that asks.
+func (setup *JellyfinSetup) tvConfigured() bool {
+	return strings.TrimSpace(setup.TVLibraryPath) != ""
 }
 
 // WithJellyfinSetup attaches the Playback screen's dependencies.
@@ -176,6 +238,11 @@ type jellyfinProbeBody struct {
 	// without a copy of the path in the UI.
 	LibraryPath string `json:"library_path"`
 
+	// TVLibraryPath is the same for television, and it is ABSENT rather than
+	// empty when LIBRARY_TV is unset — the screen draws a television row when
+	// there is one to draw and nothing at all when there is not.
+	TVLibraryPath string `json:"tv_library_path,omitempty"`
+
 	// Command is the line the user pastes. It is here rather than hard-coded in
 	// the UI because it names the profile in compose.yaml, and two spellings of
 	// a profile name is a service that never starts and never errors.
@@ -214,9 +281,10 @@ func (s *Server) handleJellyfinProbe(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	body := jellyfinProbeBody{
-		URL:         target,
-		LibraryPath: setup.LibraryPath,
-		Command:     bundleCommand,
+		URL:           target,
+		LibraryPath:   setup.LibraryPath,
+		TVLibraryPath: setup.TVLibraryPath,
+		Command:       bundleCommand,
 	}
 
 	status, err := setup.New(target).Status(ctx)
@@ -278,6 +346,11 @@ type jellyfinProvisionBody struct {
 	PublicURL   string `json:"public_url"`
 	LibraryPath string `json:"library_path"`
 	Library     string `json:"library"`
+
+	// The television pair, absent when LIBRARY_TV is unset — which is the same
+	// thing as "no Shows library was created", because nothing else creates one.
+	TVLibraryPath string `json:"tv_library_path,omitempty"`
+	TVLibrary     string `json:"tv_library,omitempty"`
 }
 
 // jellyfinFailureBody is a provisioning failure the screen can act on.
@@ -373,15 +446,20 @@ func (s *Server) handleJellyfinProvision(w http.ResponseWriter, r *http.Request)
 	}
 
 	s.log.Info("jellyfin provisioned",
-		"url", setup.URL, "library", setup.LibraryPath, "user", req.Username)
+		"url", setup.URL, "library", setup.LibraryPath, "tv_library", setup.TVLibraryPath,
+		"user", req.Username)
 
-	s.respond(w, http.StatusOK, jellyfinProvisionBody{
+	body := jellyfinProvisionBody{
 		Username:    req.Username,
 		URL:         setup.URL,
 		PublicURL:   req.PublicURL,
 		LibraryPath: setup.LibraryPath,
 		Library:     libraryName,
-	})
+	}
+	if setup.tvConfigured() {
+		body.TVLibraryPath, body.TVLibrary = setup.TVLibraryPath, tvLibraryName
+	}
+	s.respond(w, http.StatusOK, body)
 }
 
 // provisionStep names the step for the error body, and is the string the screen
@@ -424,18 +502,29 @@ func (s *Server) provision(
 			session, err = p.Authenticate(ctx, req.Username, req.Password)
 			return err
 		}},
-		{"the library", func() error {
-			return p.AddLibrary(ctx, session, libraryName, setup.LibraryPath, jellyfin.OnlyIfUnconfigured)
-		}},
-		{"the API key", func() error {
+	}
+
+	// One library per configured root, which on an install with no LIBRARY_TV
+	// is exactly the one call this flow has always made. A Shows library is
+	// created only where there is somewhere to put a show — a curator that made
+	// one anyway would leave an empty library on a server the user then has to
+	// go and delete, for a feature they did not turn on.
+	for _, root := range setup.roots() {
+		steps = append(steps, provisionStep{root.step, func() error {
+			return p.AddLibrary(ctx, session, root.name, root.kind, root.path, jellyfin.OnlyIfUnconfigured)
+		}})
+	}
+
+	steps = append(steps,
+		provisionStep{"the API key", func() error {
 			var err error
 			key, err = p.MintKey(ctx, session, jellyfin.KeyAppName, jellyfin.OnlyIfUnconfigured)
 			return err
 		}},
-		{"finishing the wizard", func() error {
+		provisionStep{"finishing the wizard", func() error {
 			return p.CompleteSetup(ctx)
 		}},
-	}
+	)
 
 	for _, step := range steps {
 		if err := step.run(); err != nil {
@@ -578,12 +667,21 @@ func provisionOutcome(err error, setup *JellyfinSetup) (int, jellyfinFailureBody
 // for a bundle, a bind mount and a laptop alike — and the library path is
 // precisely the step people get wrong when they do this by hand.
 func manualSteps(setup *JellyfinSetup) []string {
-	return []string{
+	steps := []string{
 		"Open Jellyfin yourself and run its own setup wizard.",
-		"When it asks for a library, add a Movies library at exactly this path: " + setup.LibraryPath,
-		"Then in Jellyfin: Dashboard → API Keys → new key, and paste it into this page's Jellyfin section as JELLYFIN_API_KEY.",
-		"Set JELLYFIN_URL to " + setup.URL + " in the same section.",
+		"When it asks for a library, add a " + libraryName + " library at exactly this path: " + setup.LibraryPath,
 	}
+	// Only where there is television. An instruction to create a Shows library
+	// on an install with no LIBRARY_TV is a step that cannot be completed
+	// correctly, because there is no path to give it.
+	if setup.tvConfigured() {
+		steps = append(steps,
+			"Add a "+tvLibraryName+" library at exactly this path as well: "+setup.TVLibraryPath)
+	}
+	return append(steps,
+		"Then in Jellyfin: Dashboard → API Keys → new key, and paste it into this page's Jellyfin section as JELLYFIN_API_KEY.",
+		"Set JELLYFIN_URL to "+setup.URL+" in the same section.",
+	)
 }
 
 // shadowedByEnv returns the environment variables that own the settings this
@@ -714,6 +812,21 @@ type jellyfinAdoptRequest struct {
 	// and the screen never pre-ticks it: a library is the only thing curator may
 	// add to a server somebody else configured, and "may" is not "should".
 	AddLibrary bool `json:"add_library"`
+
+	// AddTVLibrary is the same opt-in for television, and it is a SECOND flag
+	// rather than the first one covering both. Consenting to a Movies library
+	// is not consenting to a Shows library: they are two writes to somebody
+	// else's server, and one tick that performed both would be exactly the
+	// "may is not should" this branch refuses.
+	AddTVLibrary bool `json:"add_tv_library"`
+}
+
+// adds reports whether the caller opted in to a library for this root.
+func (r jellyfinAdoptRequest) adds(kind jellyfin.LibraryKind) bool {
+	if kind == jellyfin.ShowLibrary {
+		return r.AddTVLibrary
+	}
+	return r.AddLibrary
 }
 
 // jellyfinLibraryReport is what curator found out about its own path on a server
@@ -755,6 +868,13 @@ type jellyfinAdoptedBody struct {
 	Version     string                `json:"version"`
 	Library     jellyfinLibraryReport `json:"library"`
 	Check       jellyfinCheckReport   `json:"check"`
+
+	// The television root, reported the same way and only when there is one.
+	// A pointer rather than a value so that "television is off" is absent from
+	// the JSON rather than a report with an empty state in it, which a screen
+	// would have to special-case to avoid rendering an empty row.
+	TVLibraryPath string                 `json:"tv_library_path,omitempty"`
+	TVLibrary     *jellyfinLibraryReport `json:"tv_library,omitempty"`
 }
 
 // handleJellyfinAdopt connects curator to a Jellyfin that is already somebody's.
@@ -857,11 +977,26 @@ func (s *Server) handleJellyfinAdopt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	report, err := s.libraryReport(ctx, p, session, setup.LibraryPath, req.AddLibrary)
-	if err != nil {
-		code, body := s.adoptFailure(stepError{step: "the library", err: err}, target, setup)
-		s.respond(w, code, body)
-		return
+	// One report per root, in the order roots() gives them: films, then
+	// television when there is any. Each reads the listing for itself rather
+	// than sharing one read, because the first may have added a library and the
+	// second has to see the server as it is now.
+	var (
+		report   jellyfinLibraryReport
+		tvReport *jellyfinLibraryReport
+	)
+	for _, root := range setup.roots() {
+		got, err := s.libraryReport(ctx, p, session, root, req.adds(root.kind))
+		if err != nil {
+			code, body := s.adoptFailure(stepError{step: root.step, err: err}, target, setup)
+			s.respond(w, code, body)
+			return
+		}
+		if root.kind == jellyfin.ShowLibrary {
+			tvReport = &got
+			continue
+		}
+		report = got
 	}
 
 	// Curator's own call, with curator's own key, before anything says "done".
@@ -894,9 +1029,10 @@ func (s *Server) handleJellyfinAdopt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info("jellyfin adopted",
-		"url", target, "user", req.Username, "library", report.State, "added", report.Added)
+		"url", target, "user", req.Username, "library", report.State, "added", report.Added,
+		"tv_library", tvState(tvReport), "tv_added", tvReport != nil && tvReport.Added)
 
-	s.respond(w, http.StatusOK, jellyfinAdoptedBody{
+	body := jellyfinAdoptedBody{
 		Username:    req.Username,
 		URL:         target,
 		PublicURL:   req.PublicURL,
@@ -904,28 +1040,33 @@ func (s *Server) handleJellyfinAdopt(w http.ResponseWriter, r *http.Request) {
 		Version:     status.Version,
 		Library:     report,
 		Check:       check,
-	})
+	}
+	if tvReport != nil {
+		body.TVLibraryPath, body.TVLibrary = setup.TVLibraryPath, tvReport
+	}
+	s.respond(w, http.StatusOK, body)
 }
 
-// libraryReport works out which of the three cases the user is in, and adds a
-// library when — and only when — they asked for one.
+// libraryReport works out which of the three cases the user is in for one root,
+// and adds a library when — and only when — they asked for one.
 //
 // The order is the argument. Coverage is read first because a library that
 // already takes curator's path in makes every other question moot; the path
 // check runs only when nothing covers it, because it is the thing that decides
 // between "offer" and "explain".
 func (s *Server) libraryReport(
-	ctx context.Context, p Provisioner, session jellyfin.Session, path string, add bool,
+	ctx context.Context, p Provisioner, session jellyfin.Session, root libraryRoot, add bool,
 ) (jellyfinLibraryReport, error) {
+	path := root.path
 	libraries, err := p.Libraries(ctx, session)
 	if err != nil {
 		return jellyfinLibraryReport{}, err
 	}
 
 	report := jellyfinLibraryReport{Names: names(libraries)}
-	if covers(libraries, path) {
+	if covered, why := covers(libraries, root); covered {
 		report.State = libraryCovered
-		report.Detail = "a library on that server already covers " + path + ", so there is nothing to add"
+		report.Detail = why
 		return report, nil
 	}
 
@@ -962,7 +1103,7 @@ func (s *Server) libraryReport(
 	}
 	// The one write. AdoptConfigured is the caller's explicit opt-in, passed
 	// here and nowhere else in this handler.
-	if err := p.AddLibrary(ctx, session, libraryName, path, jellyfin.AdoptConfigured); err != nil {
+	if err := p.AddLibrary(ctx, session, root.name, root.kind, path, jellyfin.AdoptConfigured); err != nil {
 		return jellyfinLibraryReport{}, err
 	}
 	// Re-read rather than trust the 204, for the reason AddLibrary itself
@@ -975,18 +1116,74 @@ func (s *Server) libraryReport(
 	report.Names = names(libraries)
 	report.Added = true
 	report.State = libraryCovered
-	report.Detail = "curator added a " + libraryName + " library at " + path + " and changed nothing else"
+	report.Detail = "curator added a " + root.name + " library at " + path + " and changed nothing else"
 	return report, nil
 }
 
-// covers reports whether any of a server's libraries already takes path in.
-func covers(libraries []jellyfin.Library, path string) bool {
+// covers reports whether a server already takes one of curator's roots in, and
+// on what evidence — the sentence comes back with the answer because the two
+// ways of arriving at it are not the same fact, and the screen has to say
+// which.
+func covers(libraries []jellyfin.Library, root libraryRoot) (bool, string) {
 	for _, library := range libraries {
-		if library.Covers(path) {
-			return true
+		if library.Covers(root.path) {
+			return true, "a library on that server already covers " + root.path + ", so there is nothing to add"
 		}
 	}
-	return false
+
+	// **Television only, and it can only ever make curator do less.**
+	//
+	// A second library of the same kind is the failure AddLibrary already names
+	// for films — Movies, Movies2 and Movies3 all pointing at one directory —
+	// and for television it is the likely outcome rather than a remote one.
+	// Measured: the Pi's own Jellyfin holds a `Shows` library of collection
+	// type `tvshows` at `/tv`, which is the host's /media/storage/media/tv —
+	// the very directory curator's LIBRARY_TV names, and curator sees it as
+	// /media/tv through its own mount. No string comparison can see that, and
+	// D32 established that mounts disagreeing is the normal deployment rather
+	// than the exotic one. The collection type is then the only evidence there
+	// is.
+	//
+	// It is deliberately NOT applied to films. T66 measured and pinned those
+	// three cases, and this rule would turn its `unseen` into a `covered`;
+	// changing a measured behaviour is not what a new media type is for. The
+	// asymmetry is safe in exactly one direction — this can only ever REMOVE an
+	// offer to write to a server somebody else owns, never add one
+	// (docs/decisions.md D34) — and the sentence says what was assumed so the
+	// person who knows their own mounts can overrule it.
+	if root.kind == jellyfin.ShowLibrary {
+		for _, library := range libraries {
+			if !library.Holds(jellyfin.ShowLibrary) {
+				continue
+			}
+			return true, "that server already has a television library — " + describe(library) +
+				" — so curator will not add a second one. If it does not hold " + root.path +
+				", add that path to it on that server yourself"
+		}
+	}
+	return false, ""
+}
+
+// describe names a library and where it points, for a sentence that has to be
+// checkable by somebody who knows their own mounts.
+func describe(library jellyfin.Library) string {
+	name := strings.TrimSpace(library.Name)
+	if name == "" {
+		name = "an unnamed library"
+	}
+	if len(library.Locations) == 0 {
+		return name + ", which points at nothing"
+	}
+	return name + " at " + strings.Join(library.Locations, " and ")
+}
+
+// tvState is the television report's state for a log line, and "off" when there
+// is no television at all.
+func tvState(report *jellyfinLibraryReport) string {
+	if report == nil {
+		return "off"
+	}
+	return report.State
 }
 
 // names lists the libraries a server holds, so the screen can show that curator
@@ -1120,7 +1317,7 @@ func adoptOutcome(err error, target string, setup *JellyfinSetup) (int, jellyfin
 		body.Instructions = append([]string{
 			"Your username and password are not the problem — do not retype them.",
 			"This is curator's sign-in request, or a Jellyfin newer than the 10.10.7 it was measured against.",
-		}, adoptManualSteps(target, setup.LibraryPath)...)
+		}, adoptManualSteps(target, setup)...)
 		return http.StatusBadGateway, body
 
 	case errors.Is(err, jellyfin.ErrUnauthorized):
@@ -1132,7 +1329,7 @@ func adoptOutcome(err error, target string, setup *JellyfinSetup) (int, jellyfin
 		body.Error = "that account signed in, and then jellyfin would not let it do what curator needs — creating an API key takes an administrator"
 		body.Instructions = append([]string{
 			"That account signed in, and then Jellyfin refused it something. An administrator account is required to create an API key.",
-		}, adoptManualSteps(target, setup.LibraryPath)...)
+		}, adoptManualSteps(target, setup)...)
 		return http.StatusBadGateway, body
 
 	case errors.Is(err, jellyfin.ErrUnreachable):
@@ -1154,18 +1351,27 @@ func adoptOutcome(err error, target string, setup *JellyfinSetup) (int, jellyfin
 	// As in provisionOutcome: everything else the server can do, under one
 	// sentence, with Step carrying how far curator got.
 	body.Error = "jellyfin answered something curator did not expect, so curator stopped rather than leave this half-connected"
-	body.Instructions = adoptManualSteps(target, setup.LibraryPath)
+	body.Instructions = adoptManualSteps(target, setup)
 	return http.StatusBadGateway, body
 }
 
 // adoptManualSteps is this branch's fallback, and it is a different list from
 // provisioning's: there is no wizard to run here, because the server already has
 // one somebody completed.
-func adoptManualSteps(target, libraryPath string) []string {
-	return []string{
+func adoptManualSteps(target string, setup *JellyfinSetup) []string {
+	steps := []string{
 		"In Jellyfin: Dashboard → API Keys → new key.",
 		"Paste it into this page's Jellyfin section as JELLYFIN_API_KEY, with JELLYFIN_URL set to " + target + ".",
-		"If no library on that server covers " + libraryPath + ", and it can see that path, add a " +
+		"If no library on that server covers " + setup.LibraryPath + ", and it can see that path, add a " +
 			libraryName + " library there yourself.",
 	}
+	if setup.tvConfigured() {
+		// Said the other way round from the films line, because it is the more
+		// likely state: a server that has been playing television for years
+		// already has a Shows library, and a second one is the mistake.
+		steps = append(steps,
+			"If that server has no television library covering "+setup.TVLibraryPath+
+				", add that path to the "+tvLibraryName+" library it already has rather than making another.")
+	}
+	return steps
 }
