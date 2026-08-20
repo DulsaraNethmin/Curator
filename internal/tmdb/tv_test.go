@@ -2,9 +2,11 @@ package tmdb
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -258,6 +260,111 @@ func TestSearchShowsRejectsAnEmptyQuery(t *testing.T) {
 	// No server: it must fail before making a request.
 	if _, err := New("k", nil).SearchShows(context.Background(), "   ", 0); err == nil {
 		t.Error("an empty query was accepted")
+	}
+}
+
+func TestShowDecodesEverythingTheScreenShows(t *testing.T) {
+	client := browseClient(t, map[string]string{"/tv/1396": "tv_1396.json"})
+
+	got, err := client.Show(context.Background(), 1396)
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+
+	if got.TMDBID != 1396 || got.Title != "Breaking Bad" || got.Year != 2008 {
+		t.Errorf("identity = %d %q %d", got.TMDBID, got.Title, got.Year)
+	}
+	if got.NumberOfSeasons != 5 {
+		t.Errorf("NumberOfSeasons = %d, want 5", got.NumberOfSeasons)
+	}
+	if got.NumberOfEpisodes != 62 {
+		t.Errorf("NumberOfEpisodes = %d, want 62", got.NumberOfEpisodes)
+	}
+	if got.FirstAirDate != "2008-01-20" {
+		t.Errorf("FirstAirDate = %q — the full date, not just the year", got.FirstAirDate)
+	}
+	if got.LastAirDate != "2013-09-29" {
+		t.Errorf("LastAirDate = %q", got.LastAirDate)
+	}
+	// episode_run_time is [45, 47]; the first entry is what TMDB's own pages
+	// show, and averaging would invent a number TMDB never states.
+	if got.EpisodeRuntime != 45 {
+		t.Errorf("EpisodeRuntime = %d, want 45 — the first entry of episode_run_time", got.EpisodeRuntime)
+	}
+	if got.Status != "Ended" {
+		t.Errorf("Status = %q, want television's own vocabulary", got.Status)
+	}
+	if got.Tagline != "Change the equation." {
+		t.Errorf("Tagline = %q", got.Tagline)
+	}
+	if got.Homepage == "" {
+		t.Error("Homepage is empty")
+	}
+	if got.OriginalLanguage != "en" {
+		t.Errorf("OriginalLanguage = %q", got.OriginalLanguage)
+	}
+	if len(got.Genres) != 2 || got.Genres[0] != "Drama" {
+		t.Errorf("Genres = %v, want them in TMDB's own order", got.Genres)
+	}
+	if len(got.Studios) == 0 || got.Studios[0] != "Sony Pictures Television Studios" {
+		t.Errorf("Studios = %v", got.Studios)
+	}
+	if len(got.SpokenLanguages) != 2 || got.SpokenLanguages[0] != "English" {
+		t.Errorf("SpokenLanguages = %v", got.SpokenLanguages)
+	}
+	if got.BackdropPath == "" || got.PosterPath == "" {
+		t.Error("the screen has no images")
+	}
+}
+
+// The film-only fields stay zero rather than being filled with something close.
+// A show with ReleaseDate set would read as "released 2008-01-20" about
+// something that ran until 2013, and a Runtime of 45 would compare an episode
+// to a whole picture.
+func TestShowLeavesTheFilmOnlyFieldsZero(t *testing.T) {
+	client := browseClient(t, map[string]string{"/tv/1396": "tv_1396.json"})
+
+	got, err := client.Show(context.Background(), 1396)
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got.ReleaseDate != "" {
+		t.Errorf("ReleaseDate = %q, want empty — a show has FirstAirDate", got.ReleaseDate)
+	}
+	if got.Runtime != 0 {
+		t.Errorf("Runtime = %d, want 0 — a show has EpisodeRuntime", got.Runtime)
+	}
+	// TMDB serves a show's imdb_id from /tv/{id}/external_ids, which is a second
+	// request nothing needs yet. Empty is the honest answer, not a bug.
+	if got.IMDBID != "" {
+		t.Errorf("IMDBID = %q, want empty — /tv/{id} does not carry one", got.IMDBID)
+	}
+}
+
+// An id comes from a URL a human can type, so "no such show" must be tellable
+// from "TMDB is having a bad day". The fixture is the movie one because TMDB's
+// error envelope is byte-identical for both — it names no media type.
+func TestShowNotFound(t *testing.T) {
+	client := browseClient(t, map[string]string{"/tv/999999999": "movie_notfound.json"})
+
+	_, err := client.Show(context.Background(), 999999999)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound — the same sentinel Movie returns", err)
+	}
+	if !strings.Contains(err.Error(), "could not be found") {
+		t.Errorf("err = %q, want TMDB's message", err)
+	}
+	// The error names what was asked for, and never the URL, which carries the key.
+	if !strings.Contains(err.Error(), "show 999999999") {
+		t.Errorf("err = %q, want it to say which show", err)
+	}
+}
+
+func TestShowRejectsANonID(t *testing.T) {
+	for _, id := range []int{0, -1} {
+		if _, err := New("k", nil).Show(context.Background(), id); err == nil {
+			t.Errorf("Show(%d) was accepted", id)
+		}
 	}
 }
 

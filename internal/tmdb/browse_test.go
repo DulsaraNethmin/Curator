@@ -88,6 +88,10 @@ func TestEveryEndpointScrubsTheAPIKey(t *testing.T) {
 			_, err := client.SearchShows(ctx, "the office", 0)
 			return err
 		},
+		"Show": func(ctx context.Context) error {
+			_, err := client.Show(ctx, 1396)
+			return err
+		},
 	}
 
 	for name, call := range calls {
@@ -261,6 +265,7 @@ func TestBrowseReportsARejectedKey(t *testing.T) {
 		"Popular":      second(client.Popular(ctx)),
 		"SearchShow":   second(client.SearchShow(ctx, "Breaking Bad", 2008)),
 		"SearchShows":  second(client.SearchShows(ctx, "the office", 0)),
+		"Show":         second(client.Show(ctx, 1396)),
 	} {
 		if !errors.Is(err, ErrUnauthorized) {
 			t.Errorf("%s: err = %v, want ErrUnauthorized", name, err)

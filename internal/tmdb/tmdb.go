@@ -41,12 +41,16 @@ const separator = " - "
 // exactly like "none of your 29 movies exist". Callers test it with errors.Is.
 var ErrUnauthorized = errors.New("tmdb: api key rejected")
 
-// ErrNotFound reports that TMDB has no movie with that id.
+// ErrNotFound reports that TMDB has no title with that id — a film for Movie, a
+// show for Show. One sentinel covers both, so a caller that already branches on
+// it keeps working when it gains a television screen; its message says "title"
+// rather than "movie" for that reason, since T89 made it wrap "tmdb show 1396:"
+// as often as it wraps a film.
 //
 // It is deliberately distinct from SearchMovie's (nil, nil) "no match": an id
 // arrives from a URL a human can type, so the API layer answers 404 rather than
 // a vague 502 about a dependency that was perfectly healthy.
-var ErrNotFound = errors.New("tmdb: no such movie")
+var ErrNotFound = errors.New("tmdb: no such title")
 
 // Match is the metadata we keep from a search hit. PosterPath stays the bare
 // TMDB path ("/xyz.jpg"); building an image URL is the UI's job and downloading
@@ -70,26 +74,53 @@ type Match struct {
 	VoteAverage  float64
 }
 
-// Details is one film as /movie/{id} describes it — everything the movie screen
-// shows, in a single request.
+// Details is one title as /movie/{id} or /tv/{id} describes it — everything the
+// screen shows, in a single request.
 //
 // It embeds Match so a card and a detail page cannot come to disagree about what
 // a title or a year is. Runtime is 0 and Status is "Planned" for a film TMDB has
 // no release for; ReleaseDate is the full date, while Match.Year is derived from
 // it.
+//
+// One type serves both kinds. The fields a film has and a show does not are zero
+// for a show, and vice versa — see the television block below for why they are
+// separate fields rather than reused ones.
 type Details struct {
 	Match
 
-	Tagline          string
-	Runtime          int // minutes
-	Genres           []string
-	Status           string // "Released", "Post Production", "Planned"
-	ReleaseDate      string // "2019-04-24"
+	Tagline string
+	Runtime int // minutes; films only — a show's per-episode runtime is EpisodeRuntime
+	Genres  []string
+	// Status is "Released", "Post Production" or "Planned" for a film, and
+	// "Returning Series", "Ended", "Canceled" or "In Production" for a show.
+	Status           string
+	ReleaseDate      string // "2019-04-24"; films only — a show has FirstAirDate
 	OriginalLanguage string // ISO 639-1
 	SpokenLanguages  []string
 	Studios          []string
 	Homepage         string
-	IMDBID           string
+	IMDBID           string // films only: TMDB serves a show's imdb_id from /tv/{id}/external_ids, a second request nothing yet needs
+
+	// Television only, and zero for a film.
+	//
+	// FirstAirDate and EpisodeRuntime are separate fields rather than reuses of
+	// ReleaseDate and Runtime because the meanings genuinely differ, and a
+	// caller reading a field that means two things has to know which kind it is
+	// holding — exactly the branch this type exists to avoid. "Released
+	// 2008-01-20" is a lie about a show that ran until 2013, and a Runtime of
+	// 47 next to a film's 181 is comparing an episode to a whole picture. What
+	// is uniform is Match.Year, which is the first-aired year for a show and the
+	// release year for a film; a renderer that only needs the year never
+	// branches.
+	//
+	// EpisodeRuntime is TMDB's episode_run_time[0]. The array exists because a
+	// show's episode length varies — Breaking Bad records [45, 47] — and TMDB's
+	// own pages show the first entry.
+	FirstAirDate     string // "2008-01-20"; Match.Year is derived from it
+	LastAirDate      string // "2013-09-29"; the most recent aired episode, not a promise of the end
+	NumberOfSeasons  int
+	NumberOfEpisodes int
+	EpisodeRuntime   int // minutes
 }
 
 // Client queries the TMDB v3 API. The zero value is not usable; call New.

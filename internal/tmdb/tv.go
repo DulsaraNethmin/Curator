@@ -168,3 +168,78 @@ func (c *Client) searchTV(ctx context.Context, query string, year int) ([]search
 	}
 	return asMovieShapedAll(body.Results), nil
 }
+
+// tvDetailsResponse is /tv/{id}. It embeds tvResult because TMDB repeats those
+// fields verbatim there, exactly as detailsResponse embeds searchResult.
+//
+// The film fields that have no television equivalent are simply absent rather
+// than mapped to something close: there is no runtime (episode_run_time is a
+// list of per-episode lengths), no release_date, and no imdb_id — TMDB serves a
+// show's IMDB id from /tv/{id}/external_ids, a second request nothing needs yet.
+type tvDetailsResponse struct {
+	tvResult
+
+	Tagline          string `json:"tagline"`
+	Status           string `json:"status"`
+	Homepage         string `json:"homepage"`
+	OriginalLanguage string `json:"original_language"`
+	LastAirDate      string `json:"last_air_date"`
+	NumberOfSeasons  int    `json:"number_of_seasons"`
+	NumberOfEpisodes int    `json:"number_of_episodes"`
+	EpisodeRunTime   []int  `json:"episode_run_time"`
+
+	Genres              []struct{ Name string } `json:"genres"`
+	ProductionCompanies []struct{ Name string } `json:"production_companies"`
+	SpokenLanguages     []struct {
+		EnglishName string `json:"english_name"`
+	} `json:"spoken_languages"`
+}
+
+// Show fetches one television show by TMDB id — the counterpart of Movie. An id
+// TMDB does not have is ErrNotFound, the same sentinel Movie returns, so a
+// caller that already answers 404 on it needs no new branch.
+//
+// A show id and a film id are different namespaces: 1396 is Breaking Bad here
+// and a Hong Kong action film on /movie/1396. Nothing in this package can tell
+// them apart, and nothing should try — the caller knows which kind it asked for
+// because it chose the method.
+func (c *Client) Show(ctx context.Context, id int) (*Details, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("tmdb show %d: not a tmdb id", id)
+	}
+
+	var body tvDetailsResponse
+	if err := c.get(ctx, "/tv/"+strconv.Itoa(id), nil, fmt.Sprintf("show %d", id), &body); err != nil {
+		return nil, err
+	}
+
+	details := Details{
+		// The same conversion the search path uses, so a card and this page
+		// cannot disagree about a title or a year.
+		Match:            toMatch(body.asMovieShaped()),
+		Tagline:          body.Tagline,
+		Status:           body.Status,
+		OriginalLanguage: body.OriginalLanguage,
+		Homepage:         body.Homepage,
+		FirstAirDate:     body.FirstAirDate,
+		LastAirDate:      body.LastAirDate,
+		NumberOfSeasons:  body.NumberOfSeasons,
+		NumberOfEpisodes: body.NumberOfEpisodes,
+	}
+	// episode_run_time is a list because a show's episode length varies, and it
+	// is empty for plenty of shows. The first entry is what TMDB's own pages
+	// show; averaging the list would invent a number TMDB never states.
+	if len(body.EpisodeRunTime) > 0 {
+		details.EpisodeRuntime = body.EpisodeRunTime[0]
+	}
+	for _, genre := range body.Genres {
+		details.Genres = append(details.Genres, genre.Name)
+	}
+	for _, studio := range body.ProductionCompanies {
+		details.Studios = append(details.Studios, studio.Name)
+	}
+	for _, language := range body.SpokenLanguages {
+		details.SpokenLanguages = append(details.SpokenLanguages, language.EnglishName)
+	}
+	return &details, nil
+}
