@@ -531,7 +531,38 @@ func TestYTSLiveSearchInterstellar(t *testing.T) {
 	}
 }
 
-// Compile-time proof that YTS satisfies Indexer. It deliberately does not
-// implement MagnetResolver: its search already carries every magnet, so there is
-// nothing to resolve.
-var _ Indexer = (*YTS)(nil)
+// YTS is the only indexer in this package that declares a capability, and the
+// declaration is not a nicety: the endpoint is /list_movies.json, so a
+// television search that reached it would come back empty with a nil error —
+// which this indexer's own doc comment defines as "YTS does not have this film".
+func TestYTSHandlesFilmsOnly(t *testing.T) {
+	y := NewYTS(nil)
+	if !y.Handles(MediaMovie) {
+		t.Error("YTS says it does not handle films")
+	}
+	if y.Handles(MediaTV) {
+		t.Error("YTS says it handles television; it is /list_movies.json and has no television surface")
+	}
+	// The blank media type is a film, and by the time an indexer is asked the
+	// aggregator has already resolved it — but the indexer must not disagree.
+	if !y.Handles("") {
+		t.Error("YTS refuses the default media type, which is a film")
+	}
+
+	// The other two must declare NOTHING. "Not implementing it means handles
+	// everything" is the whole design, and a general catalogue that starts
+	// answering the question is how that default quietly stops being true.
+	for _, ix := range []Indexer{NewTPB(nil), NewX1337(NewMinter("http://127.0.0.1:8191"))} {
+		if _, declares := ix.(MediaCapable); declares {
+			t.Errorf("%s implements MediaCapable; only a source that LACKS a media type should", ix.Name())
+		}
+	}
+}
+
+// Compile-time proof that YTS satisfies Indexer, and MediaCapable with it. It
+// deliberately does not implement MagnetResolver: its search already carries
+// every magnet, so there is nothing to resolve.
+var (
+	_ Indexer      = (*YTS)(nil)
+	_ MediaCapable = (*YTS)(nil)
+)

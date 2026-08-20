@@ -105,6 +105,17 @@ func NewYTS(httpClient *http.Client, opts ...YTSOption) *YTS {
 // Name implements Indexer.
 func (y *YTS) Name() string { return ytsIndexerName }
 
+// Handles implements MediaCapable: YTS has films and nothing else.
+//
+// This is the one indexer in the repo that declares anything, and it is not a
+// nicety. The endpoint is /list_movies.json — there is no television surface to
+// query, no parameter that would reach one, and a television search that got
+// here would come back as an empty slice with a nil error. Search's own doc
+// comment defines that as "YTS does not have this film", so the aggregator would
+// report ok:true, count:0: not a crash and not a failure, but a quiet lie in the
+// exact format that is indistinguishable from "nobody has uploaded it".
+func (y *YTS) Handles(media string) bool { return media != MediaTV }
+
 // Search implements Indexer. Every returned Release already carries a
 // magnet — YTS gives the info hash in the search response, so there is nothing to
 // resolve lazily.

@@ -307,6 +307,43 @@ func TestSearchReportsAnUnconfiguredIndexer(t *testing.T) {
 	}
 }
 
+// The third state, and the one that would otherwise be invisible: a source the
+// search never asked because the media type is not one it has. Reported rather
+// than dropped, and reported as itself rather than as a failure or as a search
+// that found nothing — ok:true, count:0 is the format that reads as "nobody
+// uploaded it".
+func TestSearchReportsASourceWithNothingToSearch(t *testing.T) {
+	fake := &fakeSearcher{result: indexer.SearchResult{
+		Releases: []indexer.Found{
+			searchFound("a", "Severance S02E05", "1080p", 381, "magnet:?xt=urn:btih:aa", "tpb"),
+		},
+		Outcomes: []indexer.Outcome{
+			{Name: "yts", NotApplicable: true},
+			{Name: "tpb", OK: true, Count: 1},
+		},
+	}}
+
+	rec := do(t, newSearchServer(t, fake), http.MethodGet, "/api/search?title=Severance")
+	got := decodeSearch(t, rec)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	byName := map[string]indexerBody{}
+	for _, ix := range got.Indexers {
+		byName[ix.Name] = ix
+	}
+	if ix := byName["yts"]; !ix.NotApplicable || ix.OK || ix.Count != 0 || ix.Error != "" {
+		t.Errorf("yts outcome = %+v, want not_applicable with no ok, no count and no error", ix)
+	}
+	if ix := byName["tpb"]; !ix.OK || ix.NotApplicable {
+		t.Errorf("tpb outcome = %+v, want an ordinary success", ix)
+	}
+	if strings.Count(rec.Body.String(), `"not_applicable"`) != 1 {
+		t.Errorf("body = %s, want exactly one not_applicable key", rec.Body.String())
+	}
+}
+
 func TestSearchFiltersByQuality(t *testing.T) {
 	fake := &fakeSearcher{result: indexer.SearchResult{
 		Releases: []indexer.Found{

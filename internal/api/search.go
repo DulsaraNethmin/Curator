@@ -75,6 +75,14 @@ type indexerBody struct {
 	// run one line. It is `omitempty` because false is the ordinary case and a
 	// key on every outcome would read as a state every indexer has.
 	Unconfigured bool `json:"unconfigured,omitempty"`
+
+	// NotApplicable separates the indexer that was never asked from both of
+	// them: this media type is not one it has, so there is no instruction at
+	// all. Without it, YTS would answer a television search with the empty
+	// result its own documentation calls "does not have this film", and the
+	// screen would show ok:true, count:0 — a lie in the format that reads as
+	// "nobody uploaded it". `omitempty` for the same reason as above.
+	NotApplicable bool `json:"not_applicable,omitempty"`
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -133,7 +141,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	for _, o := range result.Outcomes {
 		out.Indexers = append(out.Indexers, indexerBody{
 			Name: o.Name, OK: o.OK, Count: o.Count, Error: o.Error,
-			Unconfigured: o.Unconfigured,
+			Unconfigured:  o.Unconfigured,
+			NotApplicable: o.NotApplicable,
 		})
 	}
 

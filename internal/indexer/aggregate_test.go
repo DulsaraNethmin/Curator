@@ -55,6 +55,14 @@ func (s *aggStub) queries() []Query {
 	return append([]Query(nil), s.saw...)
 }
 
+// aggMovieOnlyStub declares it has no television, the way YTS does. It is a
+// separate type rather than a flag on aggStub because MediaCapable is an
+// optional interface: an indexer either has the method or it does not, and a
+// stub that always had it could not stand in for the ones that do not.
+type aggMovieOnlyStub struct{ aggStub }
+
+func (s *aggMovieOnlyStub) Handles(media string) bool { return media != MediaTV }
+
 // aggResolvingStub also implements MagnetResolver, standing in for 1337x — the
 // indexer whose releases arrive without magnets.
 type aggResolvingStub struct{ aggStub }
@@ -142,6 +150,113 @@ func TestAggregatorResolvesTheDefaultMediaTypeOnce(t *testing.T) {
 	}
 	if got := ix.queries()[0].Media; got != MediaMovie {
 		t.Errorf("the indexer was asked for media %q, want %q", got, MediaMovie)
+	}
+}
+
+// A source with no television is not asked, and says so. Without this, the
+// television search reaches YTS, which answers an empty slice and a nil error —
+// its own documented "does not have this film" — and the aggregator reports
+// ok:true, count:0. Not a crash and not a failure: a quiet lie, in the format
+// that is indistinguishable from "nobody uploaded it".
+func TestAggregatorDoesNotAskASourceThatHasNoTelevision(t *testing.T) {
+	yts := &aggMovieOnlyStub{aggStub: aggStub{
+		name: "yts", releases: []Release{aggRelease("yts", "a film", 10, aggMagnet("a"))}}}
+	tpb := &aggStub{name: "tpb", releases: []Release{aggRelease("tpb", "an episode", 20, aggMagnet("b"))}}
+
+	got, err := newAggTest(t, 2*time.Second, yts, tpb).
+		Search(context.Background(), Query{Title: "Severance", Media: MediaTV, Season: 2})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if yts.searches.Load() != 0 {
+		t.Errorf("the film-only indexer was searched %d times for television", yts.searches.Load())
+	}
+	if tpb.searches.Load() != 1 {
+		t.Errorf("the general indexer was searched %d times, want 1", tpb.searches.Load())
+	}
+	if len(got.Releases) != 1 || got.Releases[0].Title != "an episode" {
+		t.Errorf("releases = %+v, want only the general indexer's", got.Releases)
+	}
+
+	// Positional, and named. An omitted slot renders as {"name":"","ok":false}.
+	if len(got.Outcomes) != 2 {
+		t.Fatalf("outcomes = %d, want one per configured indexer", len(got.Outcomes))
+	}
+	o := got.Outcomes[0]
+	if o.Name != "yts" {
+		t.Errorf("outcome 0 name = %q, want yts — outcomes are positional against the indexers", o.Name)
+	}
+	if !o.NotApplicable {
+		t.Errorf("outcome = %+v, want not-applicable", o)
+	}
+	if o.OK || o.Count != 0 {
+		t.Errorf("outcome = %+v, want neither a success nor a count: it was never asked", o)
+	}
+	if o.Unconfigured {
+		t.Errorf("outcome = %+v, want unconfigured=false — nothing here is the operator's to fix", o)
+	}
+	// The specific trap: a slot with no goroutine never reports, and the
+	// reporting switch's first arm used to be `case !s.reported:`.
+	if o.Error != "" {
+		t.Errorf("outcome error = %q, want none — a source that was not asked did not time out", o.Error)
+	}
+}
+
+// The other direction, and the one that makes the flag mean something: the same
+// indexer is asked normally for a film, and reports the ordinary way.
+func TestAggregatorStillAsksAFilmOnlySourceForFilms(t *testing.T) {
+	yts := &aggMovieOnlyStub{aggStub: aggStub{
+		name: "yts", releases: []Release{aggRelease("yts", "a film", 10, aggMagnet("a"))}}}
+
+	got, err := newAggTest(t, 2*time.Second, yts).
+		Search(context.Background(), Query{Title: "Interstellar", Year: 2014})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if yts.searches.Load() != 1 {
+		t.Fatalf("searched %d times, want 1", yts.searches.Load())
+	}
+	if o := got.Outcomes[0]; !o.OK || o.Count != 1 || o.NotApplicable {
+		t.Errorf("outcome = %+v, want ok=true, count=1 and not-applicable=false", o)
+	}
+}
+
+// An indexer that declares nothing handles everything. This is what keeps a
+// fourth source from having to answer a question only YTS has.
+func TestAggregatorAsksAnIndexerThatDeclaresNothing(t *testing.T) {
+	tpb := &aggStub{name: "tpb", releases: []Release{aggRelease("tpb", "an episode", 20, aggMagnet("b"))}}
+
+	got, err := newAggTest(t, 2*time.Second, tpb).
+		Search(context.Background(), Query{Title: "Severance", Media: MediaTV})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if tpb.searches.Load() != 1 {
+		t.Errorf("an indexer with no Handles method was searched %d times, want 1", tpb.searches.Load())
+	}
+	if o := got.Outcomes[0]; !o.OK || o.NotApplicable {
+		t.Errorf("outcome = %+v, want an ordinary success", o)
+	}
+}
+
+// The composition that actually ships is an indexer wrapped in a Cache, and a
+// capability that stopped at the wrapper would put the film-only source back
+// into every television search — reporting ok:true, count:0 from a cache entry
+// it never had.
+func TestAggregatorSeesACapabilityThroughACache(t *testing.T) {
+	yts := &aggMovieOnlyStub{aggStub: aggStub{
+		name: "yts", releases: []Release{aggRelease("yts", "a film", 10, aggMagnet("a"))}}}
+
+	got, err := newAggTest(t, 2*time.Second, NewCache(yts, time.Hour)).
+		Search(context.Background(), Query{Title: "Severance", Media: MediaTV})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if yts.searches.Load() != 0 {
+		t.Errorf("the wrapped film-only indexer was searched %d times for television", yts.searches.Load())
+	}
+	if o := got.Outcomes[0]; !o.NotApplicable || o.Name != "yts" {
+		t.Errorf("outcome = %+v, want the wrapped indexer's name and not-applicable", o)
 	}
 }
 

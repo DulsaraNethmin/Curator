@@ -509,6 +509,35 @@ func TestCacheNameIsTheWrappedIndexers(t *testing.T) {
 	}
 }
 
+// Handles is forwarded the way Name is, because a capability is a property of
+// the source and a cache in front of it changes nothing about it.
+//
+// It is the opposite call to ResolveMagnet, which a Cache deliberately does NOT
+// forward, and the difference is the default: "handles everything" is right for
+// an indexer that declares nothing, so a Cache always satisfying MediaCapable
+// still tells the truth whichever indexer is inside it.
+func TestCacheForwardsHandles(t *testing.T) {
+	// A wrapped indexer that declares nothing: the Cache must answer for it the
+	// way it would answer for itself, which is yes to everything.
+	plain := NewCache(&cacheStubIndexer{name: "1337x"}, time.Hour)
+	if !plain.Handles(MediaTV) || !plain.Handles(MediaMovie) {
+		t.Error("a Cache around an indexer that declares nothing must handle everything")
+	}
+
+	// And one that declares.
+	filmOnly := NewCache(&aggMovieOnlyStub{aggStub: aggStub{name: "yts"}}, time.Hour)
+	if filmOnly.Handles(MediaTV) {
+		t.Error("a Cache hid the wrapped indexer's refusal of television")
+	}
+	if !filmOnly.Handles(MediaMovie) {
+		t.Error("a Cache lost the wrapped indexer's films")
+	}
+
+	// A Cache is a MediaCapable whichever indexer it holds — that is what
+	// forwarding costs, and the safe default is what makes it affordable here.
+	var _ MediaCapable = plain
+}
+
 func TestCacheDefaultsToWallClock(t *testing.T) {
 	c := NewCache(&cacheStubIndexer{name: "1337x"}, time.Hour)
 	if c.now == nil {

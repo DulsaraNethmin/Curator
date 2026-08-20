@@ -135,3 +135,29 @@ type Indexer interface {
 type MagnetResolver interface {
 	ResolveMagnet(ctx context.Context, r Release) (string, error)
 }
+
+// MediaCapable is implemented by indexers that do NOT handle every media type.
+// It sits beside Indexer rather than inside it for the same reason
+// MagnetResolver does: it describes one source's limitation, and making every
+// implementation answer a question only one of them has is how an interface
+// starts collecting the union of its implementations.
+//
+// Not implementing it means "handles everything", which is why YTS is the only
+// indexer that says anything at all: it is /list_movies.json and has no
+// television surface. TPB and 1337x are general catalogues and answer both.
+type MediaCapable interface {
+	Handles(media string) bool
+}
+
+// handlesMedia reports whether ix will answer a query for this media type.
+//
+// The default is the whole design: an indexer that declares nothing handles
+// everything, so adding a fourth source costs no capability declaration unless
+// it actually lacks one. That default is also what makes Cache able to forward
+// Handles, which is the difference from resolverFor — see Cache.Handles.
+func handlesMedia(ix Indexer, media string) bool {
+	if c, ok := ix.(MediaCapable); ok {
+		return c.Handles(media)
+	}
+	return true
+}

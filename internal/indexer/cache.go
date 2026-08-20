@@ -99,6 +99,18 @@ func (c *Cache) Name() string { return c.inner.Name() }
 // survives the cache being composed around it.
 func (c *Cache) Unwrap() Indexer { return c.inner }
 
+// Handles implements MediaCapable by reporting what the WRAPPED indexer handles,
+// the same way Name reports the wrapped indexer's name. A capability is a
+// property of the source, and a cache in front of it changes nothing about it.
+//
+// This is the opposite call to ResolveMagnet above, and the difference is the
+// default. "Handles everything" is the correct answer for an indexer that
+// declares nothing, so a Cache that always satisfies MediaCapable still tells
+// the truth whichever indexer is inside it. ResolveMagnet has no such default: a
+// Cache claiming to resolve magnets it never has would send every 1337x pick to
+// something that cannot answer.
+func (c *Cache) Handles(media string) bool { return handlesMedia(c.inner, media) }
+
 // Search implements Indexer. A miss is indistinguishable from having no cache
 // at all: call through, store, return.
 func (c *Cache) Search(ctx context.Context, q Query) ([]Release, error) {
