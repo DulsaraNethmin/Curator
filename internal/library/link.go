@@ -241,28 +241,48 @@ func FindFeature(root string, opts FeatureOpts) (Feature, error) {
 		return Feature{Path: root, Size: info.Size()}, nil
 	}
 
-	f := &featureSearch{minBytes: opts.minBytes(), maxDepth: opts.maxDepth()}
-	if err := f.walk(root, 0); err != nil {
+	pick := &featurePick{}
+	w := &videoWalk{
+		label:    "find feature",
+		minBytes: opts.minBytes(),
+		maxDepth: opts.maxDepth(),
+		visit:    pick.consider,
+	}
+	if err := w.walk(root, 0); err != nil {
 		return Feature{}, err
 	}
-	if f.found == 0 {
+	if pick.found == 0 {
 		return Feature{}, fmt.Errorf("find feature in %s: %w", root, ErrNoVideo)
 	}
-	return Feature{Path: f.best, Size: f.bestSize, Others: f.found - 1}, nil
+	return Feature{Path: pick.best, Size: pick.bestSize, Others: pick.found - 1}, nil
 }
 
-type featureSearch struct {
+// videoWalk is the walk under a release folder, and it is SHARED rather than
+// copied. FindFeature and FindEpisodes ask different questions about the
+// answer — "which one file is the film" against "which of these files are
+// episodes" — but the same question about the TREE: what counts as a video,
+// what clears the floor, which directories hold something other than the media,
+// how deep to go, and what must never be followed. FindFeature's doc comment
+// argues those are one answer by construction rather than by three
+// implementations agreeing for now, and a second copy of the walk for
+// television would quietly give that up.
+//
+// visit is called for every regular file that survives all of it, with the size
+// already taken from the directory entry.
+type videoWalk struct {
+	// label prefixes a read error, so a failure still says which question was
+	// being asked: "find feature in /downloads/x" is a string internal/api
+	// asserts on, and "find episodes in ..." is the television one.
+	label    string
 	minBytes int64
 	maxDepth int
-	best     string
-	bestSize int64
-	found    int
+	visit    func(path string, size int64)
 }
 
-func (f *featureSearch) walk(dir string, depth int) error {
+func (w *videoWalk) walk(dir string, depth int) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("find feature in %s: %w", dir, err)
+		return fmt.Errorf("%s in %s: %w", w.label, dir, err)
 	}
 
 	for _, entry := range entries {
@@ -276,14 +296,14 @@ func (f *featureSearch) walk(dir string, depth int) error {
 
 		switch {
 		case entry.IsDir():
-			if depth+1 > f.maxDepth || skipDirs[strings.ToLower(name)] {
+			if depth+1 > w.maxDepth || skipDirs[strings.ToLower(name)] {
 				continue
 			}
-			if err := f.walk(filepath.Join(dir, name), depth+1); err != nil {
+			if err := w.walk(filepath.Join(dir, name), depth+1); err != nil {
 				return err
 			}
 		case entry.Type().IsRegular():
-			f.consider(dir, entry)
+			w.consider(dir, entry)
 		default:
 			// Symlinks, sockets and devices. A torrent directory is written by a
 			// stranger and is not a place to follow links out of: descending one
@@ -296,7 +316,7 @@ func (f *featureSearch) walk(dir string, depth int) error {
 	return nil
 }
 
-func (f *featureSearch) consider(dir string, entry fs.DirEntry) {
+func (w *videoWalk) consider(dir string, entry fs.DirEntry) {
 	name := entry.Name()
 	if !isVideo(name) {
 		return
@@ -305,13 +325,26 @@ func (f *featureSearch) consider(dir string, entry fs.DirEntry) {
 	if err != nil {
 		return // vanished between ReadDir and Info; it was not going to be linkable
 	}
-	if info.Size() < f.minBytes {
+	if info.Size() < w.minBytes {
 		return
 	}
+	w.visit(filepath.Join(dir, name), info.Size())
+}
 
-	f.found++
-	if info.Size() > f.bestSize {
-		f.best, f.bestSize = filepath.Join(dir, name), info.Size()
+// featurePick is FindFeature's answer to that walk: the largest qualifying
+// video wins, and the ones passed over are counted rather than discarded so a
+// double feature — or a season pack that arrived in the movie category — shows
+// up in a log line instead of being silently half-imported.
+type featurePick struct {
+	best     string
+	bestSize int64
+	found    int
+}
+
+func (p *featurePick) consider(path string, size int64) {
+	p.found++
+	if size > p.bestSize {
+		p.best, p.bestSize = path, size
 	}
 }
 

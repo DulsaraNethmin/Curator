@@ -1,7 +1,13 @@
 package library
 
 import (
+	"cmp"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 )
 
@@ -102,4 +108,118 @@ func ParseEpisode(name string) (season, episode int, ok bool) {
 		return s, e, true
 	}
 	return 0, 0, false
+}
+
+// ErrNoEpisode reports that a folder holds video that clears the picker's
+// floor, but nothing whose name says which episode it is.
+//
+// It is a SECOND sentinel beside ErrNoVideo rather than the same one because
+// the two are different facts about the disk and a person can act on only one
+// of them. ErrNoVideo means the download brought nothing playable — wait, or
+// look at the torrent. This means the bytes are there and the NAME is the
+// problem, which is a rename away from working. Collapsing them would put a
+// season of files nobody can file behind the message "no episode in it", which
+// is exactly the sentence that gets a folder ignored.
+//
+// Both are answers to a folder that was READ SUCCESSFULLY, so both make
+// ScanShows report Skipped{NoMedia: true} — see that field's comment for why
+// that distinction is the one that matters to a caller pruning rows.
+var ErrNoEpisode = errors.New("no episode file to import")
+
+// Episode is one video file whose name says where it belongs.
+//
+// Season and Episode are what ParseEpisode read out of the file NAME. They are
+// not corrected against the folder above, against TMDB, or against the other
+// files beside it: this type reports what the disk says, and anything that
+// disagrees with TMDB is a fact the caller gets to see rather than one this
+// package quietly resolves.
+type Episode struct {
+	Path    string
+	Size    int64
+	Season  int
+	Episode int
+}
+
+// FindEpisodes returns every qualifying video under root, with the season and
+// episode read out of each file's name.
+//
+// It is FindFeature's counterpart and it shares FindFeature's walk (videoWalk),
+// which is the point rather than an implementation detail: the 50 MiB floor
+// that keeps a sample out of the library, the sample/extras/featurettes/subs
+// skip, the hidden-file skip that catches macOS "._Episode.mkv" AppleDouble
+// forks, the depth cap, and the refusal to follow a symlink out of a stranger's
+// torrent directory are ONE answer here, not two that agree today.
+//
+// root may be a FILE or a DIRECTORY, for the same reason FindFeature accepts
+// both: qBittorrent's content_path is the file itself for a single-file torrent
+// — one episode grabbed on its own — and the containing folder for a season
+// pack, and the caller cannot know which it will get.
+//
+// The two empty answers are different and are reported as such: ErrNoVideo when
+// nothing cleared the floor at all, ErrNoEpisode when video did but no name
+// said which episode it was. Neither is a failed download, exactly as
+// FindFeature's ErrNoVideo is not — the torrent fetched what it advertised.
+//
+// The result is sorted by season, then episode, then path, which does two
+// things worth relying on: two calls over an unchanged tree return identical
+// slices whatever the layout, and duplicates of one episode — a repack beside
+// the original — land next to each other for the caller to notice. They are
+// both RETURNED. Which of two files for one episode to keep is a decision about
+// what is in the library, and it is not this function's to make silently.
+func FindEpisodes(root string, opts FeatureOpts) ([]Episode, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, fmt.Errorf("find episodes in %s: %w", root, err)
+	}
+
+	// videos counts everything that cleared the floor, named or not, so the two
+	// empty answers below can be told apart.
+	videos := 0
+	var found []Episode
+	collect := func(path string, size int64) {
+		videos++
+		season, episode, ok := ParseEpisode(filepath.Base(path))
+		if !ok {
+			return
+		}
+		found = append(found, Episode{Path: path, Size: size, Season: season, Episode: episode})
+	}
+
+	if info.IsDir() {
+		w := &videoWalk{
+			label:    "find episodes",
+			minBytes: opts.minBytes(),
+			maxDepth: opts.maxDepth(),
+			visit:    collect,
+		}
+		if err := w.walk(root, 0); err != nil {
+			return nil, err
+		}
+	} else {
+		// The same three tests the walk applies to a file it meets inside a
+		// directory, so a single-file torrent is judged identically to the same
+		// file inside a folder.
+		if !info.Mode().IsRegular() || !isVideo(info.Name()) || info.Size() < opts.minBytes() {
+			return nil, fmt.Errorf("find episodes in %s: %w", root, ErrNoVideo)
+		}
+		collect(root, info.Size())
+	}
+
+	switch {
+	case videos == 0:
+		return nil, fmt.Errorf("find episodes in %s: %w", root, ErrNoVideo)
+	case len(found) == 0:
+		return nil, fmt.Errorf("find episodes in %s: %w", root, ErrNoEpisode)
+	}
+
+	slices.SortFunc(found, func(a, b Episode) int {
+		if c := cmp.Compare(a.Season, b.Season); c != 0 {
+			return c
+		}
+		if c := cmp.Compare(a.Episode, b.Episode); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Path, b.Path)
+	})
+	return found, nil
 }
