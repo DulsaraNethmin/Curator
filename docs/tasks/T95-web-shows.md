@@ -18,3 +18,16 @@ rails.
 The build is two commands and the order matters
 ([D16](../decisions.md#d16--the-ui-is-embedded-with-all-and-a-committed-placeholder-keeps-go-build-honest)):
 `npm --prefix web run build` writes `internal/web/dist/`, and only then does the Go build embed it.
+
+## Inherited, and currently visible as a bug
+
+**`Outcome.NotApplicable` has no renderer.** T90 added a fourth indexer state —
+constructed, switched on, did not fail, did not run — and the search screen still
+draws outcomes from `ok` and `unconfigured` alone. Until this lane consumes
+`not_applicable`, a television search paints YTS **red with no message**, which
+is worse than the `ok:true, count:0` lie T90 removed: it sends somebody hunting a
+broken indexer.
+
+It wants the same treatment `unconfigured` already gets — its own sentence, not a
+failure — because the two lead to different actions and neither of them is the
+user's.

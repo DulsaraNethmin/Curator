@@ -39,3 +39,27 @@ zero folders would prune the library.
 ## Out of scope
 
 Anything that consumes it. The importer is T93.
+
+## What shipped
+
+`FindFeature` was not forked. The walk underneath it was extracted, and both
+pickers now feed from it, so the 50 MiB floor, the `sample`/`extras`/
+`featurettes`/`subs` skips, the AppleDouble skip, the depth cap and the refusal
+to follow a symlink out of a torrent directory stay one implementation.
+`TestFindEpisodesQualifiesTheSameFilesAsFindFeature` is what fails first if
+anyone re-forks it.
+
+**Two empty answers, because D33 turns on the difference.** `ErrNoVideo` is
+"nothing cleared the floor"; `ErrNoEpisode` is "video cleared it, but no name
+carries a code". Both are positive findings and therefore
+`Skipped{NoMedia: true}`. Every *could not tell* stays `NoMedia: false`, and a
+failing `ReadDir` of the root is still fatal.
+
+**The `2x05` form is bounded rather than permissive** — season at most two
+digits, episode exactly two, word-bounded. Unbounded, `1920x1080` and
+`DD5.1x264` both parse as episode codes, and there are tests named after both.
+`S01E1010` is refused rather than truncated, and a bare `E05` is refused rather
+than inheriting the folder's season.
+
+`Show.Episodes` counts **distinct** `(season, episode)` pairs while `SizeBytes`
+sums every file, so a repack is two files and one episode.

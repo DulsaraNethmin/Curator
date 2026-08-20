@@ -54,3 +54,41 @@ internet from CI and share **one** rule, `classifyLiveFailure`. A live TV test u
 **Do not add a third live indexer test with its own private skip rule** — removing that divergence
 is what T76 existed to do. [D42](../decisions.md#d42--a-dead-base-url-fails-the-build-but-only-once-a-control-name-proves-the-machine-is-online)
 still binds.
+
+## What shipped, and the plan it overturned
+
+**The season does not go in TPB's query string.** This task file said to put it
+there, reasoning that a season pack would otherwise compete with a hundred single
+episodes for apibay's 100-row cap. That reasoning was sound and the conclusion
+was wrong, and the difference is a measurement. Live against apibay, 2026-08-20:
+
+| query | rows |
+|---|---|
+| `q=severance&cat=205,208` | **100** — 98 cat 208, 2 cat 205 |
+| `q=severance s02` | 8, all `Severance.S02.*` |
+| `q=severance season 2` | 4, a different four |
+
+and the 727-seeder `Severance - Season 2 - Mp4 x264 AC3 1080p` **is not among the
+eight**. apibay matches keywords against the release name, so `S02` and
+`Season 2` are two spellings of one thing and narrowing costs the best pack the
+show has. The query stays the bare title and the season is read back off each
+name instead — the same posture the year already had: narrowing happens where
+"ambiguous" is allowed to mean "keep". 1337x is the opposite and does take
+`<title> S02`.
+
+**Television searches with no year**, so `Release.Year` is 0 on a TV release. The
+alternative — threading media into `tpbToReleases` so only `tpbNameAllowsYear` is
+gated — costs a branch in three places to preserve a fact about the *show*
+stamped onto an *episode*. On the same 100 rows, 98 state no year at all and the
+two that do state their own.
+
+**The media constants are declared in `internal/indexer`, not imported from
+`internal/store`**, with a single test importing both packages to pin that they
+are equal. `internal/indexer` importing `internal/store` would drag the SQLite
+driver into the search path.
+
+The live television check is an extra call inside `TestTPBLive` rather than a
+third live test — CLAUDE.md is explicit that a third private skip rule is what
+T76 existed to remove. Real run: **100 television releases, 99 naming a season**;
+the hundredth is a *Seasons 1 and 2 Complete* box set, correctly parsing as no
+single season.
