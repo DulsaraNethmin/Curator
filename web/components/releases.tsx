@@ -231,18 +231,28 @@ export function Releases({
  * silently hides a downed indexer is how somebody concludes a film does not
  * exist.
  *
- * **Two kinds of not-working, and they are separated here because they need
- * different sentences.** An indexer that is *down* is something to retry or
- * wait out. An indexer that is *unconfigured* never started at all — the
+ * **Three kinds of not-working, and they are separated here because they need
+ * three different sentences.** An indexer that is *down* is something to retry
+ * or wait out. An indexer that is *unconfigured* never started at all — the
  * companion service it needs is not running — and no amount of waiting fixes
  * it; one line in a terminal does. Telling somebody 1337x is "down" when minter
  * was never started sends them to look at the wrong thing entirely
  * (docs/tasks/T49-minter-on-demand.md).
+ *
+ * The third is *not applicable*, and it is the one where nothing is wrong: the
+ * indexer was switched on, did not fail, and was never asked, because this
+ * media type is not one it has. All three arrive as `ok: false`, so all three
+ * have to be read off their own field — until T95 this file knew two of them
+ * and painted the third red with no message under it, on every television
+ * search YTS was configured for.
  */
 function Indexers({ result }: { result: SearchResult }) {
   const broken = result.indexers.filter((i) => !i.ok);
-  const unconfigured = broken.filter((i) => i.unconfigured);
-  const failed = broken.filter((i) => !i.unconfigured);
+  const notApplicable = broken.filter((i) => i.not_applicable);
+  // not_applicable first, and excluded from both lists below: an indexer that
+  // was never asked is not unconfigured and is emphatically not down.
+  const unconfigured = broken.filter((i) => !i.not_applicable && i.unconfigured);
+  const failed = broken.filter((i) => !i.not_applicable && !i.unconfigured);
 
   return (
     <>
@@ -258,13 +268,37 @@ function Indexers({ result }: { result: SearchResult }) {
         {result.indexers.map((indexer, i) => (
           <span key={indexer.name}>
             {i > 0 && ' · '}
-            <span className={indexer.ok ? '' : 'badge bad'}>
+            {/* Red is reserved for something that went wrong. An indexer that
+                has no listings of this kind did not go wrong, so it is a plain
+                badge — the sentence below says the rest. */}
+            <span className={indexer.ok ? '' : indexer.not_applicable ? 'badge' : 'badge bad'}>
               {indexer.name}{' '}
-              {indexer.ok ? indexer.count : indexer.unconfigured ? 'not set up' : 'failed'}
+              {indexer.ok
+                ? indexer.count
+                : indexer.not_applicable
+                  ? 'not searched'
+                  : indexer.unconfigured
+                    ? 'not set up'
+                    : 'failed'}
             </span>
           </span>
         ))}
       </p>
+
+      {/* Its own sentence, and deliberately NOT a banner. The two banners below
+          are things to act on — wait for an indexer, or start a container — and
+          this is a fact about the search with no action attached to it at all.
+          A warn banner would make "YTS has no television" look like a problem
+          somebody introduced. */}
+      {notApplicable.length > 0 && (
+        <p className="small muted" style={{ margin: '-.35rem 0 .75rem' }}>
+          {notApplicable.map((i) => i.name).join(', ')}{' '}
+          {notApplicable.length === 1 ? 'has no' : 'have no'}{' '}
+          {result.media === 'tv' ? 'television' : 'releases of this kind'}, so{' '}
+          {notApplicable.length === 1 ? 'it was' : 'they were'} not searched at all. Nothing is
+          wrong and there is nothing to set up — these results come from the sources that carry it.
+        </p>
+      )}
 
       {unconfigured.length > 0 && (
         <div className="banner warn">

@@ -13,6 +13,17 @@
 // and `next dev` sets this to http://localhost:8090 instead.
 const base = process.env.NEXT_PUBLIC_API_BASE ?? '';
 
+/**
+ * The two kinds of thing curator handles, spelled exactly as the API spells
+ * them — `store.MediaTypeMovie` and `store.MediaTypeTV`, which is what
+ * `?media=` and `media_type` are validated against on the Go side.
+ *
+ * Absent means `movie` on every request that takes one, because every request
+ * made before phase 11 was one. A screen that has not been told about
+ * television keeps meaning what it meant.
+ */
+export type MediaType = 'movie' | 'tv';
+
 export type Movie = {
   id: number;
   tmdb_id: number | null;
@@ -116,11 +127,40 @@ export type IndexerStatus = {
    * on every ordinary outcome.
    */
   unconfigured?: boolean;
+
+  /**
+   * The indexer was never asked, because this media type is not one it has.
+   * YTS is the case it exists for: it is `/list_movies.json` and has no
+   * television surface at all, so a TV search skips it rather than sending it a
+   * question it cannot answer.
+   *
+   * **It arrives with `ok: false`**, like the other two, and that is why this
+   * field has to be read. Drawn as a failure it paints YTS red with no message
+   * on every television search — which is worse than the `ok:true, count:0` lie
+   * T90 removed, because it sends somebody hunting a broken indexer. Three
+   * states, three actions, and this is the one where the action is none: a
+   * failed indexer is something to retry, an unconfigured one is a container to
+   * start, and a source that will never have television is neither.
+   */
+  not_applicable?: boolean;
 };
 
 export type SearchResult = {
   title: string;
   year: number;
+
+  /**
+   * Which kind of thing was searched for, echoed by the server rather than
+   * remembered here. A search that skipped an indexer has to say what it
+   * skipped it FOR, and the answer belongs to the request that was actually
+   * made — not to whatever the screen's controls say by the time it lands.
+   *
+   * `| string` because a media type added later must not fail the build of a UI
+   * that has not been rewritten yet, which is the rule every other union in
+   * this file follows.
+   */
+  media: MediaType | string;
+
   releases: Release[];
   indexers: IndexerStatus[];
 };
