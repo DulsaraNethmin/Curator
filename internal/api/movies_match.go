@@ -144,6 +144,33 @@ func (s *Server) applyMatch(w http.ResponseWriter, r *http.Request, kind matchWr
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
+	// **Films only, and refusing is the whole point of this check.**
+	//
+	// The lookup below is s.browser.Movie — TMDB's /movie/{id} — and the write
+	// underneath it goes through store's tmdbIDWrite, a CASE over the ROW's own
+	// media_type. Those two are each correct and together they are a trap: hand
+	// this a television row and it resolves a FILM, then stores that film's id
+	// in tmdb_tv_id. Silent, permanent, and it would make every later lookup for
+	// that show ask Jellyfin and TMDB about a film nobody mentioned.
+	//
+	// Refusing rather than resolving the right endpoint is deliberate for one
+	// release. Matching a show by hand needs its own route reading
+	// browser.Show — /api/shows/{id}/match — and that is a feature; this is the
+	// guard that stops the feature's absence corrupting a row. Nothing regresses:
+	// no screen offers a hand match for a show, so the only way to reach this is
+	// a hand-written request.
+	// It sits ABOVE kind.refuse, so the answer does not depend on whether the
+	// show happens to be matched yet. "This route is for films" is a fact about
+	// the route; "there is nothing to correct" is a fact about the row, and a
+	// television row should get the first one either way rather than a sentence
+	// about a film's match state that happens to arrive first.
+	if movie.MediaType == store.MediaTypeTV {
+		s.fail(w, http.StatusBadRequest, fmt.Errorf(
+			"movie %d is a television show, and this route matches films: "+
+				"it would look up a film and store its id as the show's", id))
+		return
+	}
+
 	if err := kind.refuse(movie); err != nil {
 		s.failMatch(w, err)
 		return
