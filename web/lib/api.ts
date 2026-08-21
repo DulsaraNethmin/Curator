@@ -134,6 +134,25 @@ export type Release = {
    */
   season?: number;
   episode?: number;
+
+  /**
+   * How directly this release answers the search, decided server-side by
+   * `indexer.SeasonTier` and sent rather than re-derived here:
+   *
+   * - `exact`    — the episode asked for, or any release of the season asked
+   *                for when no episode was named.
+   * - `pack`     — a season pack offered against a single-episode query. Not
+   *                what was asked for, and it does contain it.
+   * - `unstated` — the name claims no season at all.
+   *
+   * Absent when the search named no season, because then there is nothing for a
+   * release to be a near-miss of. A release stating the WRONG season or episode
+   * never arrives at all — it is filtered before the response is built.
+   *
+   * `| string` for the same reason `media` is: a tier added later must not fail
+   * the build of a UI that has not been rewritten yet.
+   */
+  match?: 'exact' | 'pack' | 'unstated' | string;
 };
 
 export type IndexerStatus = {
@@ -196,6 +215,14 @@ export type SearchResult = {
    * while the search was in flight.
    */
   season?: number;
+
+  /**
+   * The episode this answer is for, absent when the search named none. Echoed
+   * for exactly the reason `season` is — walking a season one episode at a time
+   * fires a request per change, and this is the only place the answer records
+   * which episode it is the answer to.
+   */
+  episode?: number;
 
   releases: Release[];
   indexers: IndexerStatus[];
@@ -1015,13 +1042,30 @@ export const api = {
    * would hide that from every screen. So it is sent only for television, and
    * only when it names a season — 0 is "every season" here and constrains
    * nothing at the indexers.
+   *
+   * `episode` narrows it further, and it is sent **only alongside a season**:
+   * the server answers 400 for an episode without one, because no release names
+   * itself that way — the convention is S02E05 and a bare E05 matches nothing,
+   * so honouring it would mean a query that reliably finds nothing while
+   * reporting success. 0 is "the whole season" and is not sent.
    */
-  search: (title: string, year?: number, quality?: string, media?: MediaType, season?: number) => {
+  search: (
+    title: string,
+    year?: number,
+    quality?: string,
+    media?: MediaType,
+    season?: number,
+    episode?: number,
+  ) => {
     const query = new URLSearchParams({ title });
     if (year) query.set('year', String(year));
     if (quality) query.set('quality', quality);
     if (media && media !== 'movie') query.set('media', media);
     if (media === 'tv' && season) query.set('season', String(season));
+    // The season guard is repeated rather than nested: an episode with no
+    // season is the one combination the server refuses, so the client must not
+    // be able to send it even if a caller passes one.
+    if (media === 'tv' && season && episode) query.set('episode', String(episode));
     return request<SearchResult>(`/api/search?${query}`);
   },
 
