@@ -27,6 +27,18 @@ export type MediaType = 'movie' | 'tv';
 export type Movie = {
   id: number;
   tmdb_id: number | null;
+  /**
+   * A show's TMDB id, and **never the same field as `tmdb_id`** — TMDB numbers
+   * films and shows independently, so 95396 is both Severance's tv id and some
+   * film's movie id (D48). Exactly one of the pair is ever non-null and which
+   * one is decided by `media_type`, so nothing may key one map on a bare number
+   * across both.
+   *
+   * A show row therefore has `tmdb_id: null` by construction, which is why
+   * "unmatched" on this screen has to be read off the column that matches the
+   * row's media type rather than off `tmdb_id` alone.
+   */
+  tmdb_tv_id: number | null;
   title: string;
   /** The FOLDER's year — what `Title (Year)` on disk says, and what the importer
    * writes back out. Not necessarily the film's: see tmdb_year. */
@@ -36,7 +48,7 @@ export type Movie = {
    * is what the server asks Jellyfin with, and it is here so the type matches
    * the row the API actually sends. */
   tmdb_year: number | null;
-  media_type: string;
+  media_type: MediaType | string;
   overview: string | null;
   poster_path: string | null;
   status: 'wanted' | 'downloading' | 'imported' | string;
@@ -109,6 +121,19 @@ export type Release = {
   // one costs a page fetch and a browser — it is deliberately lazy, and the UI
   // must never resolve a list to render it.
   magnet: string | null;
+
+  /**
+   * What the release NAME says, read by the indexers rather than taken from the
+   * query: a season pack has a season and no episode, a single episode has
+   * both, and a film has neither.
+   *
+   * Absent means the name does not say, which is not the same as season 0 — the
+   * Go side omits the key rather than sending a zero. It is the truest source
+   * for what a grab is actually for, which is why dispatch prefers it over the
+   * season the selector happened to be showing.
+   */
+  season?: number;
+  episode?: number;
 };
 
 export type IndexerStatus = {
@@ -161,6 +186,17 @@ export type SearchResult = {
    */
   media: MediaType | string;
 
+  /**
+   * The season this answer is for, absent when the search named none.
+   *
+   * It is echoed for one reason: a season selector fires a request per change,
+   * and the response is the only place the answer records which question it
+   * answers. Dispatch reads it rather than the control, so a release picked out
+   * of the season 2 list is never recorded as season 3 because the select moved
+   * while the search was in flight.
+   */
+  season?: number;
+
   releases: Release[];
   indexers: IndexerStatus[];
 };
@@ -178,10 +214,33 @@ export type ScanResult = {
   unmatched: number;
   /** Folders on disk with no film in them. */
   empty: number;
-  /** Rows removed. The folders themselves were left exactly where they are. */
+  /**
+   * Rows removed, and rows this scan could not account for. **Both count BOTH
+   * media types**, unlike the five above, because there is one prune over both
+   * roots — a second pair of counters would imply two passes that could
+   * disagree.
+   */
   removed: number;
   /** Rows kept because this scan could not account for them — absent, unreadable, or a name that no longer parses. */
   missing: number;
+
+  /**
+   * Television, counted separately so that every key above keeps exactly the
+   * meaning it had before phase 11: a screen reading `scanned` gets films, as
+   * it always did.
+   *
+   * All six are **zero when LIBRARY_TV is unset**, which is the honest report of
+   * a root that was never walked — not a television library that turned out to
+   * be empty. The screen must not draw them off these numbers alone.
+   */
+  shows: number;
+  shows_added: number;
+  shows_matched: number;
+  shows_unmatched: number;
+  /** Folders under LIBRARY_TV with no episode in them — a show's `empty`. */
+  shows_empty: number;
+  /** Distinct episodes across every show found, which is the number that says the scan read files rather than folders. */
+  episodes: number;
 };
 
 /**
@@ -248,6 +307,50 @@ export type MovieDetails = MovieSummary & {
 };
 
 /**
+ * ShowDetails is what the show screen shows, and it is a SEPARATE type from
+ * MovieDetails rather than a widening of it.
+ *
+ * The shared half is `MovieSummary` — a poster, a title, a year and what curator
+ * already has are the same facts about both — and the two diverge below it,
+ * where they genuinely differ. `runtime`, `release_date` and `imdb_id` are not
+ * here at all rather than zero: TMDB has no runtime for a series (it has a list
+ * of per-episode lengths, which is `episode_runtime`), the date a show has is
+ * its first air date, and a show's IMDb id costs a second request nothing yet
+ * needs. A screen given a shared type would draw "0m" for a series that ran
+ * five years.
+ *
+ * `tmdb_id` on the embedded summary is the **tv** id, in TMDB's own tv space.
+ * It is the number `/show/?id=` is addressed by and the number that must never
+ * be looked up as a film.
+ */
+export type ShowDetails = MovieSummary & {
+  tagline: string;
+  genres: string[];
+  /** A show's vocabulary — "Returning Series", "Ended", "Canceled" — where a film's is "Released". */
+  status: string;
+  original_language: string;
+  spoken_languages: string[];
+  studios: string[];
+  homepage: string;
+
+  first_air_date: string;
+  /** The most recently aired episode, and NOT a promise that the show has finished. `status` is where that is said. */
+  last_air_date: string;
+  seasons: number;
+  episodes: number;
+  /** Minutes, TMDB's episode_run_time[0]. 0 is "TMDB does not know". */
+  episode_runtime: number;
+
+  /**
+   * Where to open this show in Jellyfin, absent when there is no link to draw —
+   * exactly the rule the film page follows, and asked of Jellyfin as a Series
+   * rather than a Movie, because a tv id looked up as a film can LAND on an
+   * unrelated film rather than merely miss (T92).
+   */
+  jellyfin_url?: string;
+};
+
+/**
  * PlaybackURLs is what POST /api/movies/{id}/playback answers: how this film
  * can be played, in one round trip.
  *
@@ -307,6 +410,8 @@ export type SubtitleTrack = {
 export type TMDBSearchResult = {
   query: string;
   year: number;
+  /** Which catalogue answered — films or shows. Echoed, so the grid links its cards at the right page. */
+  media: MediaType | string;
   results: MovieSummary[];
 };
 
@@ -325,7 +430,16 @@ export type DiscoverRow = {
   results: MovieSummary[];
 };
 
-export type DiscoverResult = { rows: DiscoverRow[] };
+/**
+ * The rails, and which catalogue they came from.
+ *
+ * The row ids and titles are the SAME for both media types — "Trending this
+ * week" is unambiguous because the screen asks one media type at a time, and a
+ * "Trending shows" title would be the switch's job said twice. `media` is what
+ * the cards are linked by, and it is echoed rather than assumed for the same
+ * reason `SearchResult.media` is.
+ */
+export type DiscoverResult = { media: MediaType | string; rows: DiscoverRow[] };
 
 export type LogEntry = {
   seq: number;
@@ -465,6 +579,26 @@ export type SettingsResult = {
   intervals: Record<string, string>;
   settings: Setting[];
 };
+
+/**
+ * Is television on, in the process that is answering right now?
+ *
+ * **`paths.library_tv`, and not the `library_tv` settings row.** The difference
+ * is the one `/library/film/` already documents for TMDB: a path saved on the
+ * Settings screen makes the registry row `configured` immediately, while this
+ * process still has no television root, no ShowScanner and no importer for one
+ * — those are built at start-up, so the setting does nothing until a restart
+ * (D29). `paths` is read straight off the running `*config.Config`, so it is
+ * the only answer that matches what the API will actually do.
+ *
+ * Empty means off, which is D48's asymmetry: LIBRARY_MOVIES has a default and
+ * LIBRARY_TV deliberately has none, so that television is opt-in and no
+ * existing install acquires it on the next image. Every TV affordance in this UI
+ * is drawn behind this and is ABSENT rather than present-and-broken without it.
+ */
+export function televisionOn(settings: SettingsResult): boolean {
+  return (settings.paths?.library_tv ?? '').trim() !== '';
+}
 
 /**
  * The four worlds the Jellyfin probe distinguishes, and the screen branches on
@@ -830,6 +964,30 @@ export const api = {
   // (D35). Not to be confused with tmdbMovie below, which takes a TMDB id.
   movie: (id: number) => request<MovieRow>(`/api/movies/${id}`),
 
+  /**
+   * The television half of the library, and it is a SECOND route rather than a
+   * `?media=` on `movies` above.
+   *
+   * The two lists are two screens with two URLs, and a query parameter that
+   * changed what a route returns would make "which one am I looking at" a
+   * question about a string rather than about a path. It also keeps
+   * `GET /api/movies` exactly what it has always been: films.
+   *
+   * **503 naming LIBRARY_TV when television is off**, not 404 and not an empty
+   * list — the route exists and this install has simply not turned it on. No
+   * screen should ever have to see that, because every affordance that reaches
+   * it is drawn behind `televisionOn`.
+   */
+  shows: () => request<Movie[]>('/api/shows'),
+
+  // curator's own movies.id, exactly like `movie` — one table, two media types
+  // — and a film's id here is a 404 rather than a redirect, because a route
+  // that quietly served the other kind is how a screen draws a film as a show.
+  show: (id: number) => request<MovieRow>(`/api/shows/${id}`),
+
+  // Walks BOTH roots in one pass, and reports them in one body. The television
+  // counters are all zero on an install with no LIBRARY_TV, which is a root
+  // that was never walked rather than a library that is empty.
   scan: () => request<ScanResult>('/api/scan', { method: 'POST' }),
 
   // `force` is the "Check again" button. A page load must not spend a request:
@@ -843,37 +1001,82 @@ export const api = {
   // caller reloads rather than waiting for a body.
   updateNow: () => request<{ state: string; detail: string }>('/api/update', { method: 'POST' }),
 
-  // The release-name search. It asks three indexers what files exist, which is
-  // a different question from tmdbSearch's "which film is this" — and it is the
-  // escape hatch for a film TMDB does not have, as well as the fallback when
-  // there is no key.
-  search: (title: string, year?: number, quality?: string) => {
+  /**
+   * The release-name search. It asks the indexers what files exist, which is a
+   * different question from tmdbSearch's "which film is this" — and it is the
+   * escape hatch for a film TMDB does not have, as well as the fallback when
+   * there is no key.
+   *
+   * `media` decides TPB's `cat=` and the keywords 1337x is handed, and it is
+   * why YTS is skipped rather than asked and discarded for television. `season`
+   * narrows a show search, and **a season on a film request is a 400** rather
+   * than an ignored parameter: it is not a value a person types, it is a UI
+   * sending one media type's control with the other's request, and answering it
+   * would hide that from every screen. So it is sent only for television, and
+   * only when it names a season — 0 is "every season" here and constrains
+   * nothing at the indexers.
+   */
+  search: (title: string, year?: number, quality?: string, media?: MediaType, season?: number) => {
     const query = new URLSearchParams({ title });
     if (year) query.set('year', String(year));
     if (quality) query.set('quality', quality);
+    if (media && media !== 'movie') query.set('media', media);
+    if (media === 'tv' && season) query.set('season', String(season));
     return request<SearchResult>(`/api/search?${query}`);
   },
 
   // Everything under /api/tmdb/ goes dark without a key, and the prefix is the
-  // rule: these three answer 503 naming TMDB_API_KEY, while /api/movies stays
-  // the library and keeps working.
-  discover: () => request<DiscoverResult>('/api/tmdb/discover'),
+  // rule: these four answer 503 naming TMDB_API_KEY, while /api/movies stays
+  // the library and keeps working. The television ones answer 503 naming
+  // LIBRARY_TV FIRST, because television being off is not something a key
+  // changes and pointing somebody at TMDB_API_KEY would send them to fix the
+  // wrong line.
+  discover: (media?: MediaType) =>
+    request<DiscoverResult>(`/api/tmdb/discover${media && media !== 'movie' ? `?media=${media}` : ''}`),
 
-  tmdbSearch: (query: string, year?: number) => {
+  tmdbSearch: (query: string, year?: number, media?: MediaType) => {
     const params = new URLSearchParams({ query });
     if (year) params.set('year', String(year));
+    if (media && media !== 'movie') params.set('media', media);
     return request<TMDBSearchResult>(`/api/tmdb/search?${params}`);
   },
 
   tmdbMovie: (id: number) => request<MovieDetails>(`/api/tmdb/movies/${id}`),
 
+  /**
+   * A show's catalogue entry, addressed by TMDB's **tv** id.
+   *
+   * Its own route rather than a `?media=` on tmdbMovie, and that is the
+   * expensive half of D48 showing through: the two id sequences overlap, so a
+   * single route disambiguating a bare number by a query parameter is how a
+   * film ends up rendered as a show. 95396 answers on both, with two different
+   * titles.
+   */
+  tmdbShow: (id: number) => request<ShowDetails>(`/api/tmdb/shows/${id}`),
+
   downloads: () => request<Download[]>('/api/downloads'),
 
+  /**
+   * Send a picked release to the torrent backend.
+   *
+   * `media_type` is absent for a film, because every dispatch made before phase
+   * 11 was one — but it is **not cosmetic** when it is present: it decides which
+   * library root the import lands under and which of TMDB's two id spaces
+   * `tmdb_id` belongs to. A show dispatched as a film is deleted by the next
+   * movie scan for sitting outside LIBRARY_MOVIES, taking its downloads with it.
+   *
+   * `season` is the record and nothing more. It is checked and logged and does
+   * not reach the importer, which files episodes by what each FILE says — a
+   * season declared at dispatch time could only ever disagree with the pack that
+   * actually arrives.
+   */
   dispatch: (body: {
     release_id: string;
     title: string;
     year: number;
     tmdb_id?: number | null;
+    media_type?: MediaType;
+    season?: number;
   }) => request<Download>('/api/downloads', { method: 'POST', body: JSON.stringify(body) }),
 
   import: (hash: string) =>
