@@ -224,10 +224,24 @@ func TestLiveTV(t *testing.T) {
 		if got.FirstAirDate == "" || got.LastAirDate == "" {
 			t.Errorf("air dates missing: first=%q last=%q", got.FirstAirDate, got.LastAirDate)
 		}
+		// The one thing no fixture can prove: that TMDB still honours
+		// append_to_response on /tv/{id}. A fixture carries external_ids
+		// whether or not the request asked for them, so if TMDB ever stopped
+		// inlining the sub-resource, every offline test would stay green while
+		// EZTV silently lost the key it is searched by.
+		if !strings.HasPrefix(got.IMDBID, "tt") {
+			t.Errorf("IMDBID = %q, want tt... — append_to_response=external_ids did not arrive", got.IMDBID)
+		}
+		// seasons[] likewise: it is what the episode picker is built from, and
+		// number_of_seasons above cannot stand in for it.
+		if len(got.Seasons) == 0 {
+			t.Error("seasons[] is empty — the episode picker has nothing to draw")
+		}
 		// Counts are not asserted exactly: TMDB revises them, and a test that
 		// fails because a special was added is a test nobody trusts.
-		t.Logf("live: %s (%d), %d seasons, %d episodes, %d min/ep, %v",
-			got.Title, got.Year, got.NumberOfSeasons, got.NumberOfEpisodes, got.EpisodeRuntime, got.Genres)
+		t.Logf("live: %s (%d), %d seasons, %d episodes, %d min/ep, imdb=%s, seasons[]=%d, %v",
+			got.Title, got.Year, got.NumberOfSeasons, got.NumberOfEpisodes, got.EpisodeRuntime,
+			got.IMDBID, len(got.Seasons), got.Genres)
 	})
 
 	t.Run("NotFound", func(t *testing.T) {

@@ -413,10 +413,119 @@ func TestShowLeavesTheFilmOnlyFieldsZero(t *testing.T) {
 	if got.Runtime != 0 {
 		t.Errorf("Runtime = %d, want 0 — a show has EpisodeRuntime", got.Runtime)
 	}
-	// TMDB serves a show's imdb_id from /tv/{id}/external_ids, which is a second
-	// request nothing needs yet. Empty is the honest answer, not a bug.
-	if got.IMDBID != "" {
-		t.Errorf("IMDBID = %q, want empty — /tv/{id} does not carry one", got.IMDBID)
+}
+
+// The IMDb id, which /tv/{id} does not carry on its own — append_to_response
+// nests /tv/{id}/external_ids into the same payload, and this pins that it is
+// actually read out of there rather than left at the zero value.
+//
+// Verbatim, `tt` and all. Stripping the prefix is one indexer's business and is
+// done at that indexer's boundary; a package that reports what TMDB says must
+// not start reformatting for a caller.
+func TestShowCarriesTheIMDbIDFromTheAppendedExternalIDs(t *testing.T) {
+	client := browseClient(t, map[string]string{"/tv/1396": "tv_1396.json"})
+
+	got, err := client.Show(context.Background(), 1396)
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if got.IMDBID != "tt0903747" {
+		t.Errorf("IMDBID = %q, want tt0903747 with the prefix TMDB spells", got.IMDBID)
+	}
+}
+
+// The request itself, because the append is invisible in the decoded result
+// when the fixture happens to carry external_ids anyway. A Show that stopped
+// asking for them would keep passing the test above forever against this
+// fixture and return an empty id against the live API.
+func TestShowAsksForExternalIDsInOneRequest(t *testing.T) {
+	var paths, appends []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		appends = append(appends, r.URL.Query().Get("append_to_response"))
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(readFixture(t, "tv_1396.json"))
+	}))
+	defer srv.Close()
+
+	if _, err := New("k", nil, WithBaseURL(srv.URL)).Show(context.Background(), 1396); err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	// One request. The whole argument for append_to_response over a second GET
+	// is that there is no second GET.
+	if len(paths) != 1 || paths[0] != "/tv/1396" {
+		t.Fatalf("requested %v, want exactly one /tv/1396", paths)
+	}
+	if appends[0] != "external_ids" {
+		t.Errorf("append_to_response = %q, want external_ids", appends[0])
+	}
+}
+
+// seasons[] is decoded whole and unfiltered, and the fixture is chosen for the
+// two rows that are not ordinary: Specials at season_number 0, and — on Silo,
+// which is where this was measured — a season with episode_count 0.
+//
+// Reported rather than filtered here on purpose. number_of_seasons cannot say
+// how many episodes a season has, which is the entire reason this field exists;
+// deciding which of them a person may click is the screen's job.
+func TestShowDecodesEverySeasonTMDBLists(t *testing.T) {
+	client := browseClient(t, map[string]string{"/tv/1396": "tv_1396.json"})
+
+	got, err := client.Show(context.Background(), 1396)
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if len(got.Seasons) != 3 {
+		t.Fatalf("got %d seasons, want 3 — in TMDB's own order", len(got.Seasons))
+	}
+	// Specials first, exactly as TMDB orders them. This is the row a picker
+	// must not turn into a button, because season=0 already means "no season
+	// constraint" at the search API.
+	if got.Seasons[0].Number != 0 || got.Seasons[0].Name != "Specials" || got.Seasons[0].EpisodeCount != 11 {
+		t.Errorf("season 0 = %+v, want Specials with 11 episodes", got.Seasons[0])
+	}
+	if got.Seasons[1].Number != 1 || got.Seasons[1].EpisodeCount != 7 {
+		t.Errorf("season 1 = %+v, want 7 episodes", got.Seasons[1])
+	}
+	if got.Seasons[1].AirDate != "2008-01-20" {
+		t.Errorf("season 1 AirDate = %q", got.Seasons[1].AirDate)
+	}
+	// The count and the list are two different facts and both are kept: 5
+	// against three listed here, because this fixture is trimmed. On the live
+	// API they disagree for a better reason — Silo reports 4 and lists a fourth
+	// with no episodes in it.
+	if got.NumberOfSeasons != 5 {
+		t.Errorf("NumberOfSeasons = %d, want 5 — the count is not the list", got.NumberOfSeasons)
+	}
+}
+
+// A season TMDB announced but has not aired, which is the case the count cannot
+// express and the one that put an empty Season 4 on Silo's screen.
+func TestSeasonWithNoEpisodesIsReportedRatherThanDropped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":125988,"name":"Silo","first_air_date":"2023-05-04",
+			"number_of_seasons":4,
+			"seasons":[
+			  {"season_number":1,"name":"Season 1","episode_count":10,"air_date":"2023-05-04"},
+			  {"season_number":4,"name":"Season 4","episode_count":0,"air_date":null}
+			]}`))
+	}))
+	defer srv.Close()
+
+	got, err := New("k", nil, WithBaseURL(srv.URL)).Show(context.Background(), 125988)
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if len(got.Seasons) != 2 {
+		t.Fatalf("got %d seasons, want both — the empty one is a fact, not a row to hide here", len(got.Seasons))
+	}
+	if got.Seasons[1].Number != 4 || got.Seasons[1].EpisodeCount != 0 {
+		t.Errorf("season 4 = %+v, want episode_count 0 preserved", got.Seasons[1])
+	}
+	// A null air_date decodes to empty rather than failing the whole show.
+	if got.Seasons[1].AirDate != "" {
+		t.Errorf("AirDate = %q, want empty for a season with no date", got.Seasons[1].AirDate)
 	}
 }
 

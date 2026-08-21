@@ -99,7 +99,14 @@ type Details struct {
 	SpokenLanguages  []string
 	Studios          []string
 	Homepage         string
-	IMDBID           string // films only: TMDB serves a show's imdb_id from /tv/{id}/external_ids, a second request nothing yet needs
+
+	// IMDBID is `tt` plus digits, exactly as TMDB spells it, and it is now
+	// filled for both kinds. A film's arrives on /movie/{id} itself; a show's
+	// arrives through append_to_response=external_ids, which costs no second
+	// round trip (see Show). It is reported verbatim — an indexer that wants
+	// the bare digits strips the prefix at its own boundary, because one
+	// source's URL format is not TMDB's business.
+	IMDBID string
 
 	// Television only, and zero for a film.
 	//
@@ -121,6 +128,34 @@ type Details struct {
 	NumberOfSeasons  int
 	NumberOfEpisodes int
 	EpisodeRuntime   int // minutes
+
+	// Seasons is every season TMDB lists, in TMDB's own order, and it is NOT
+	// what NumberOfSeasons counts. Measured on Silo (tv 125988):
+	// number_of_seasons is 4, while seasons[] reports 10, 10, 10 and **0**
+	// episodes — the fourth is announced and unaired. A control built from the
+	// count therefore offers a season with nothing behind it, which is exactly
+	// what the show screen did until this field existed.
+	//
+	// It also carries season_number 0, which TMDB uses for Specials. That is
+	// reported rather than filtered here: this package says what TMDB says, and
+	// whether a caller can express "Specials" is the caller's problem — for the
+	// search API it currently is not, because 0 already means "no season
+	// constraint" there.
+	Seasons []Season
+}
+
+// Season is one season as /tv/{id}'s seasons[] describes it: enough to draw a
+// picker and nothing more.
+//
+// EpisodeCount is the field the count cannot give, and 0 is a real, common
+// value — an announced season that has not aired. Name is TMDB's own label
+// ("Season 1", "Specials") rather than something built from Number, because
+// Specials is not "Season 0" to anybody reading it.
+type Season struct {
+	Number       int
+	Name         string
+	EpisodeCount int
+	AirDate      string // "2008-01-20", and empty for a season with no date yet
 }
 
 // Client queries the TMDB v3 API. The zero value is not usable; call New.

@@ -1,140 +1,150 @@
 {
-    "adult": false,
-    "backdrop_path": "/9faGSFi5jam6pDWGNd0p8JcJgXQ.jpg",
-    "created_by": [
-        {
-            "id": 66633,
-            "credit_id": "52542286760ee31328001a7b",
-            "name": "Vince Gilligan",
-            "original_name": "Vince Gilligan",
-            "gender": 2,
-            "profile_path": "/rLSUjr725ez1cK7SKVxC9udO03Y.jpg"
-        }
-    ],
-    "episode_run_time": [
-        45,
-        47
-    ],
-    "first_air_date": "2008-01-20",
-    "genres": [
-        {
-            "id": 18,
-            "name": "Drama"
-        },
-        {
-            "id": 80,
-            "name": "Crime"
-        }
-    ],
-    "homepage": "https://www.amc.com/shows/breaking-bad",
-    "id": 1396,
-    "in_production": false,
-    "languages": [
-        "en"
-    ],
-    "last_air_date": "2013-09-29",
-    "last_episode_to_air": {
-        "id": 62161,
-        "name": "Felina",
-        "overview": "All bad things must come to an end.",
-        "air_date": "2013-09-29",
-        "episode_number": 16,
-        "season_number": 5,
-        "runtime": 56
+  "adult": false,
+  "backdrop_path": "/9faGSFi5jam6pDWGNd0p8JcJgXQ.jpg",
+  "created_by": [
+    {
+      "id": 66633,
+      "credit_id": "52542286760ee31328001a7b",
+      "name": "Vince Gilligan",
+      "original_name": "Vince Gilligan",
+      "gender": 2,
+      "profile_path": "/rLSUjr725ez1cK7SKVxC9udO03Y.jpg"
+    }
+  ],
+  "episode_run_time": [
+    45,
+    47
+  ],
+  "first_air_date": "2008-01-20",
+  "genres": [
+    {
+      "id": 18,
+      "name": "Drama"
     },
-    "name": "Breaking Bad",
-    "next_episode_to_air": null,
-    "networks": [
-        {
-            "id": 174,
-            "logo_path": "/alqLicR1ZMHMaZGP3xRQxn9sq7p.png",
-            "name": "AMC",
-            "origin_country": "US"
-        }
-    ],
-    "number_of_episodes": 62,
-    "number_of_seasons": 5,
-    "origin_country": [
-        "US"
-    ],
-    "original_language": "en",
-    "original_name": "Breaking Bad",
-    "overview": "Walter White, a New Mexico chemistry teacher, is diagnosed with Stage III cancer and given a prognosis of only two years left to live. He becomes filled with a sense of fearlessness and an unrelenting desire to secure his family's financial future at any cost as he enters the dangerous world of drugs and crime.",
-    "popularity": 264.9204,
-    "poster_path": "/ggFHVNu6YYI5L9pCfOacjizRGt.jpg",
-    "production_companies": [
-        {
-            "id": 11073,
-            "logo_path": "/wHs44fktdoj6c378ZbSWfzKsM2Z.png",
-            "name": "Sony Pictures Television Studios",
-            "origin_country": "US"
-        },
-        {
-            "id": 33742,
-            "logo_path": null,
-            "name": "High Bridge Productions",
-            "origin_country": "US"
-        },
-        {
-            "id": 2605,
-            "logo_path": null,
-            "name": "Gran Via Productions",
-            "origin_country": "US"
-        }
-    ],
-    "production_countries": [
-        {
-            "iso_3166_1": "US",
-            "name": "United States of America"
-        }
-    ],
-    "seasons": [
-        {
-            "air_date": "2009-02-17",
-            "episode_count": 11,
-            "id": 3577,
-            "name": "Specials",
-            "overview": "",
-            "poster_path": "/40dT79mDEZwXkQiZNBgSaydQFDP.jpg",
-            "season_number": 0,
-            "vote_average": 0.0
-        },
-        {
-            "air_date": "2008-01-20",
-            "episode_count": 7,
-            "id": 3572,
-            "name": "Season 1",
-            "overview": "High school chemistry teacher Walter White's life is suddenly transformed by a dire medical diagnosis.",
-            "poster_path": "/1BP4xYv9ZG4ZVHkL7ocOziBbSYH.jpg",
-            "season_number": 1,
-            "vote_average": 8.2
-        },
-        {
-            "air_date": "2013-08-11",
-            "episode_count": 16,
-            "id": 3576,
-            "name": "Season 5",
-            "overview": "Walt's ruthless business tactics have expanded his empire.",
-            "poster_path": "/r3z70vunihrAkjILQKWHX0G2xzO.jpg",
-            "season_number": 5,
-            "vote_average": 9.0
-        }
-    ],
-    "spoken_languages": [
-        {
-            "english_name": "English",
-            "iso_639_1": "en",
-            "name": "English"
-        },
-        {
-            "english_name": "Spanish",
-            "iso_639_1": "es",
-            "name": "Español"
-        }
-    ],
-    "status": "Ended",
-    "tagline": "Change the equation.",
-    "type": "Scripted",
-    "vote_average": 8.925,
-    "vote_count": 15243
+    {
+      "id": 80,
+      "name": "Crime"
+    }
+  ],
+  "homepage": "https://www.amc.com/shows/breaking-bad",
+  "id": 1396,
+  "in_production": false,
+  "languages": [
+    "en"
+  ],
+  "last_air_date": "2013-09-29",
+  "last_episode_to_air": {
+    "id": 62161,
+    "name": "Felina",
+    "overview": "All bad things must come to an end.",
+    "air_date": "2013-09-29",
+    "episode_number": 16,
+    "season_number": 5,
+    "runtime": 56
+  },
+  "name": "Breaking Bad",
+  "next_episode_to_air": null,
+  "networks": [
+    {
+      "id": 174,
+      "logo_path": "/alqLicR1ZMHMaZGP3xRQxn9sq7p.png",
+      "name": "AMC",
+      "origin_country": "US"
+    }
+  ],
+  "number_of_episodes": 62,
+  "number_of_seasons": 5,
+  "origin_country": [
+    "US"
+  ],
+  "original_language": "en",
+  "original_name": "Breaking Bad",
+  "overview": "Walter White, a New Mexico chemistry teacher, is diagnosed with Stage III cancer and given a prognosis of only two years left to live. He becomes filled with a sense of fearlessness and an unrelenting desire to secure his family's financial future at any cost as he enters the dangerous world of drugs and crime.",
+  "popularity": 264.9204,
+  "poster_path": "/ggFHVNu6YYI5L9pCfOacjizRGt.jpg",
+  "production_companies": [
+    {
+      "id": 11073,
+      "logo_path": "/wHs44fktdoj6c378ZbSWfzKsM2Z.png",
+      "name": "Sony Pictures Television Studios",
+      "origin_country": "US"
+    },
+    {
+      "id": 33742,
+      "logo_path": null,
+      "name": "High Bridge Productions",
+      "origin_country": "US"
+    },
+    {
+      "id": 2605,
+      "logo_path": null,
+      "name": "Gran Via Productions",
+      "origin_country": "US"
+    }
+  ],
+  "production_countries": [
+    {
+      "iso_3166_1": "US",
+      "name": "United States of America"
+    }
+  ],
+  "seasons": [
+    {
+      "air_date": "2009-02-17",
+      "episode_count": 11,
+      "id": 3577,
+      "name": "Specials",
+      "overview": "",
+      "poster_path": "/40dT79mDEZwXkQiZNBgSaydQFDP.jpg",
+      "season_number": 0,
+      "vote_average": 0.0
+    },
+    {
+      "air_date": "2008-01-20",
+      "episode_count": 7,
+      "id": 3572,
+      "name": "Season 1",
+      "overview": "High school chemistry teacher Walter White's life is suddenly transformed by a dire medical diagnosis.",
+      "poster_path": "/1BP4xYv9ZG4ZVHkL7ocOziBbSYH.jpg",
+      "season_number": 1,
+      "vote_average": 8.2
+    },
+    {
+      "air_date": "2013-08-11",
+      "episode_count": 16,
+      "id": 3576,
+      "name": "Season 5",
+      "overview": "Walt's ruthless business tactics have expanded his empire.",
+      "poster_path": "/r3z70vunihrAkjILQKWHX0G2xzO.jpg",
+      "season_number": 5,
+      "vote_average": 9.0
+    }
+  ],
+  "spoken_languages": [
+    {
+      "english_name": "English",
+      "iso_639_1": "en",
+      "name": "English"
+    },
+    {
+      "english_name": "Spanish",
+      "iso_639_1": "es",
+      "name": "Español"
+    }
+  ],
+  "status": "Ended",
+  "tagline": "Change the equation.",
+  "type": "Scripted",
+  "vote_average": 8.925,
+  "vote_count": 15243,
+  "external_ids": {
+    "imdb_id": "tt0903747",
+    "freebase_mid": "/m/03d34x8",
+    "tvdb_id": 81189,
+    "tvrage_id": 18164,
+    "wikidata_id": "Q1079",
+    "facebook_id": "BreakingBad",
+    "instagram_id": "breakingbad",
+    "twitter_id": "BreakingBad"
+  }
 }
