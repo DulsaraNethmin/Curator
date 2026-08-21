@@ -2475,3 +2475,78 @@ time is worse than no count.** Episodes are files on disk; the scan is the sourc
 **Making `media_type` optional on the reads, defaulting to `movie`.** It reads fine at every call
 site and is wrong at one — the dispatch guard, where a colliding id refuses a TV grab with a sentence
 about a film the user never asked about.
+
+---
+
+## D49 — A season narrows after the fetch, and a pack that contains the episode is kept below it
+
+**Status:** decided and **built** · **Completes** [D48](#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in),
+which shipped the season control without the narrowing behind it ·
+**Extends** [D11](#d11--rank-by-seeders-quality-is-a-filter-not-a-score)'s seeders-first order
+rather than reversing it · **Same posture as** `tpbNameAllowsYear`, where narrowing happens only
+where "ambiguous" can mean "keep"
+
+A television search takes a season and an episode. Both narrow the merged result **after** the
+indexers answer, not by being folded into what is asked.
+
+### The season was never actually narrowing anything
+
+Since T90 a season went into 1337x's keyword string and nowhere else. Nothing filtered a result, so
+TPB — whose query is the bare title on purpose — answered "season 2" with all four seasons, and the
+two backends answered different questions from one `Query`. That was invisible because the screen
+only ever showed one merged list.
+
+### Why the narrowing cannot move into TPB's query
+
+Measured against the live apibay on 2026-08-20, and it is the same measurement `tpbCategories`
+already rests on:
+
+```
+q=severance                 100 rows, packs and episodes
+q=severance s02               8 rows — and the 727-seeder
+                              "Severance - Season 2 - Mp4 x264 AC3 1080p" is NOT among them
+q=severance season 2          4 rows, a different four
+```
+
+"S02" and "Season 2" are two spellings of one thing and apibay matches letters, so a season in the
+query costs the best season pack the show has. The query stays bare and the rows are narrowed in the
+aggregator, which is the only place both backends' answers are in hand at once.
+
+### Four tiers, and only one is dropped
+
+**Exact** is the episode asked for, or any release of the season asked for when no episode was
+named. **Pack** is a season pack offered against a single-episode query. **Unstated** is a name that
+claims no season at all. **Wrong** states a season or episode that is not the one asked for, and is
+the only tier dropped — on the name's own evidence, never on its silence.
+
+### Keeping the pack, and putting the tier above seeders
+
+The clean alternative is to show only exact matches. It answers **"no releases found"** for an
+episode that has a 727-seeder source sitting right there, because that pack outseeds every single
+Severance episode apibay carries by roughly two to one. A pack is a real way to get the episode; it
+is only the wrong thing to offer *first*.
+
+Those same numbers are why the tier sorts above seeders — 727 against 381 — since seeders-first
+buries the episode somebody explicitly asked for underneath the pack they did not. This does not
+reverse D11: below the tier the order is untouched, and every query naming no season is `TierExact`
+for everything, so a film search sorts exactly as it always did.
+
+**Do not** move the tier below seeders to "rank by popularity". It looks reasonable in a diff and it
+is wrong for the only question a manual picker is asking.
+`TestRankPutsTheAskedForEpisodeAboveABetterSeededPack` fails when it is moved.
+
+### An episode with no season is refused, not honoured
+
+No release names itself `E05` — the convention is `S02E05` — so a bare episode is a query that
+reliably finds nothing while reporting `ok:true, count:0`, which is the silent-empty failure
+[D20](#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it) and `NormaliseQuery` already
+exist to prevent. `internal/api` answers 400 at the edge, which is the last place a caller can be
+told; `indexer.Query` ignores the field below that, because a half-applied filter is worse than
+neither.
+
+### Deliberately not decided here
+
+**The cache key.** It carries the episode because 1337x sends it, so walking ten episodes is ten
+identical apibay fetches under ten keys. That is the pre-existing shape of the season key, it costs
+one call to a source answering in milliseconds, and the fix — a key derived from the string each
+indexer actually queries — is a refactor rather than a line.

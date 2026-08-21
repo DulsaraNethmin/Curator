@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import {
   api,
   ApiError,
@@ -73,6 +73,8 @@ export function Releases({
   seasons = 0,
   season = 0,
   onSeason,
+  episode = 0,
+  onEpisode,
 }: {
   result: SearchResult | null;
   film: Film;
@@ -99,6 +101,23 @@ export function Releases({
   seasons?: number;
   season?: number;
   onSeason?: (season: number) => void;
+
+  /**
+   * The episode within the selected season, and 0 is the whole season.
+   *
+   * It is a free number rather than a select because nothing here knows how
+   * many episodes a season has: `seasons` comes from TMDB's series record,
+   * which carries a season COUNT and not a per-season episode count, and
+   * fetching one costs a request per season change for a control that is
+   * usually left alone. A number nobody uploaded returns no exact match and the
+   * packs below it still do, which is a better failure than a select that
+   * cannot offer the episode somebody knows exists.
+   *
+   * Only meaningful with a season: the server answers 400 for an episode
+   * without one, so the input is disabled until a season is picked.
+   */
+  episode?: number;
+  onEpisode?: (episode: number) => void;
 }) {
   const [dispatching, setDispatching] = useState<string | null>(null);
   const [dispatched, setDispatched] = useState<Record<string, Download>>({});
@@ -221,10 +240,47 @@ export function Releases({
               </option>
             ))}
           </select>
+
+          {onEpisode && (
+            <>
+              <label className="small muted" htmlFor="episode">
+                Episode
+              </label>
+              {/* Deliberately NOT searching on change, which is the one place
+                  this control differs from the season beside it. A select is a
+                  discrete choice and fires once; a number field fires per
+                  keystroke, and a cold television search costs up to thirteen
+                  seconds behind minter — so typing "12" would launch a search
+                  for episode 1 and abandon it. Enter runs it, and so does the
+                  Find releases button that was already there. */}
+              <input
+                id="episode"
+                type="number"
+                min={1}
+                step={1}
+                style={{ width: '5.5rem' }}
+                // An episode without a season is a 400 at the server, so the
+                // field cannot be reached until there is a season to put it in.
+                disabled={searching || season === 0}
+                value={episode || ''}
+                placeholder="all"
+                onChange={(e) => {
+                  const next = Number(e.target.value);
+                  onEpisode(Number.isFinite(next) && next > 0 ? Math.floor(next) : 0);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !searching) onSearchAgain?.();
+                }}
+              />
+            </>
+          )}
+
           <span className="small muted">
             {season === 0
               ? 'Season packs and single episodes, from every season TMDB knows about.'
-              : `Narrowed to season ${season}. Both a pack and a single episode import.`}
+              : episode > 0
+                ? `Narrowed to season ${season} episode ${episode}. Press Enter to search. Packs covering it are listed under the episodes.`
+                : `Narrowed to season ${season}. Both a pack and a single episode import. Add an episode to go narrower.`}
           </span>
         </div>
       )}
@@ -247,10 +303,31 @@ export function Releases({
               </tr>
             </thead>
             <tbody>
-              {result.releases.map((release) => {
+              {result.releases.map((release, i) => {
                 const saved = dispatched[release.id];
+                // The first release that is not an exact match opens the
+                // "contains it" group. Read off the server's own verdict rather
+                // than recomputed here (see Release.match), and keyed on the
+                // CHANGE rather than on the value so the divider is drawn once
+                // instead of before every pack. Releases arrive ranked by tier,
+                // so one transition is all there can be per group.
+                const previous = i > 0 ? result.releases[i - 1].match : undefined;
+                const opensGroup =
+                  release.match !== undefined &&
+                  release.match !== 'exact' &&
+                  release.match !== previous;
                 return (
-                  <tr key={release.id}>
+                  <Fragment key={release.id}>
+                    {opensGroup && (
+                      <tr>
+                        <td colSpan={6} className="small muted" style={{ paddingTop: '1rem' }}>
+                          {release.match === 'pack'
+                            ? `— season ${result.season} packs, which contain episode ${result.episode} —`
+                            : '— releases whose name does not say which season —'}
+                        </td>
+                      </tr>
+                    )}
+                    <tr>
                     <td>{release.title}</td>
                     {/* Seeders lead, because they are the only column that
                         predicts whether the download finishes — which is the
@@ -287,7 +364,8 @@ export function Releases({
                         </button>
                       )}
                     </td>
-                  </tr>
+                    </tr>
+                  </Fragment>
                 );
               })}
             </tbody>

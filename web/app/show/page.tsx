@@ -59,6 +59,9 @@ function Show() {
   const [searchError, setSearchError] = useState<unknown>(null);
   // 0 is every season, which is what the API reads an absent season as.
   const [season, setSeason] = useState(0);
+  // 0 is the whole season. It is only ever sent alongside a season — the server
+  // answers 400 for an episode without one.
+  const [episode, setEpisode] = useState(0);
 
   // One fetch, and the release search is emphatically not part of it. TMDB
   // answers in about 150 ms; a cold release search takes up to thirteen seconds
@@ -73,6 +76,7 @@ function Show() {
     setReleases(null);
     setSearchError(null);
     setSeason(0);
+    setEpisode(0);
 
     api
       .tmdbShow(id)
@@ -88,9 +92,10 @@ function Show() {
     };
   }, [id]);
 
-  async function findReleases(want = season) {
+  async function findReleases(want = season, wantEpisode = episode) {
     if (!details) return;
     setSeason(want);
+    setEpisode(wantEpisode);
     setSearching(true);
     setSearchError(null);
     try {
@@ -98,7 +103,16 @@ function Show() {
       // job, server-side and above the cache (D20). `undefined` for quality:
       // this screen has no quality control, and the show page's own year is
       // the first air year, which is what `Show (Year)` on disk is named for.
-      setReleases(await api.search(details.title, details.year || undefined, undefined, 'tv', want));
+      setReleases(
+        await api.search(
+          details.title,
+          details.year || undefined,
+          undefined,
+          'tv',
+          want,
+          wantEpisode,
+        ),
+      );
     } catch (e) {
       setSearchError(e);
       setReleases(null);
@@ -245,7 +259,17 @@ function Show() {
         // A new season is a new search, and the state moves inside it so the
         // control and the request can never disagree about which one is in
         // flight.
-        onSeason={(next) => void findReleases(next)}
+        //
+        // The episode resets to 0 with it. Carrying "episode 5" across a season
+        // change would answer a question nobody asked — season 3's episode 5,
+        // from a control the person was using to change season — and switching
+        // to Every season would leave an episode with no season to belong to,
+        // which is the one combination the server refuses.
+        onSeason={(next) => void findReleases(next, 0)}
+        episode={episode}
+        // Typed, not searched: this only moves the state, and Enter or Find
+        // releases runs it. See the input in Releases for why.
+        onEpisode={setEpisode}
         noYearReason="TMDB has no first air date for this show, so there is no year — and Show (Year) is the folder name curator would have to write."
         empty={
           <>

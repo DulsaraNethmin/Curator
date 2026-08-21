@@ -67,6 +67,16 @@ func searchQuery(q Query) string {
 	if q.IsTV() {
 		if q.Season > 0 {
 			// Two digits, which is how a release names a season: S02, not S2.
+			// The episode joins it in the same convention — S02E05, one token —
+			// because that is how every scene name spells it and 1337x matches
+			// keywords against those names.
+			//
+			// Episode only ever appears WITH a season, which is Query.Episode's
+			// documented contract: a bare "E05" matches nothing, and asking for
+			// it would turn a narrow search into an empty one.
+			if q.Episode > 0 {
+				return fmt.Sprintf("%s S%02dE%02d", q.Title, q.Season, q.Episode)
+			}
 			return fmt.Sprintf("%s S%02d", q.Title, q.Season)
 		}
 		return q.Title

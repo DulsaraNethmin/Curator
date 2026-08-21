@@ -261,7 +261,7 @@ func (a *Aggregator) Search(ctx context.Context, q Query) (SearchResult, error) 
 		}
 	}
 
-	out.Releases = rank(dedupe(all))
+	out.Releases = rank(narrow(dedupe(all), q), q)
 	a.issue(out.Releases)
 	return out, nil
 }
@@ -475,16 +475,52 @@ func FilterFound(in []Found, want []string) []Found {
 	return out
 }
 
-// rank orders releases by seeders descending, ties broken by quality then name.
+// narrow drops releases whose own name states a season or episode that is not
+// the one asked for. Everything else survives, including names that state
+// nothing.
+//
+// It exists because until now a season NARROWED ONLY 1337x — the season went
+// into that indexer's keyword string and nothing anywhere filtered a result — so
+// asking TPB for season 2 returned all four seasons and the two backends
+// answered different questions from one Query. Filtering here rather than in
+// each indexer is what makes them agree, and it is the only place that can:
+// TPB's query deliberately does not carry the season (see tpbCategories), so its
+// rows can only be narrowed after they arrive.
+func narrow(in []Found, q Query) []Found {
+	if !q.IsTV() || q.Season == 0 {
+		return in
+	}
+	out := make([]Found, 0, len(in))
+	for _, f := range in {
+		if SeasonTier(f.Release, q) != TierWrong {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// rank orders releases by how directly they answer the query, then by seeders
+// descending, ties broken by quality then name.
 //
 // Not by quality first: a 1-seeder 2160p above a 500-seeder 1080p is the wrong
 // answer to the only question a manual picker is actually asking, which is whether
 // this will finish downloading. Seeders predict that; resolution does not. Quality
 // is offered as a filter instead — see D11. The tie-breaks make the order total,
 // so a test can assert it exactly.
-func rank(in []Found) []Found {
+//
+// The tier sits ABOVE seeders, and only that ordering survives the measurement
+// this was built against: the 727-seeder Severance season pack outseeds every
+// single episode apibay carries by roughly two to one, so ranking by seeders
+// first buries the episode somebody explicitly asked for underneath the pack
+// they did not. Below the tier the old order is untouched, and for every query
+// that names no season SeasonTier is TierExact for everything — so a film search
+// sorts today exactly as it did before this existed.
+func rank(in []Found, q Query) []Found {
 	sort.SliceStable(in, func(i, j int) bool {
 		a, b := in[i], in[j]
+		if ta, tb := SeasonTier(a.Release, q), SeasonTier(b.Release, q); ta != tb {
+			return ta < tb
+		}
 		if a.Seeders != b.Seeders {
 			return a.Seeders > b.Seeders
 		}

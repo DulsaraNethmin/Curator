@@ -48,6 +48,16 @@ type Query struct {
 	// constraint. Only 1337x puts it in the query it sends — see searchQuery for
 	// where it goes and tpbCategories for why TPB deliberately does not.
 	Season int
+
+	// Episode is the episode within Season, and 0 means the whole season.
+	//
+	// It is meaningless without a season and is IGNORED when Season is 0 rather
+	// than treated as "episode 5 of any season": an episode number identifies an
+	// episode only inside a season, and every release name in the wild spells it
+	// that way too (S02E05, never a bare E05). internal/api refuses the
+	// combination at the edge with a 400 so a caller finds out; here it is simply
+	// not a constraint, because a silent half-filter is worse than neither.
+	Episode int
 }
 
 // IsTV reports whether q asks for television.
