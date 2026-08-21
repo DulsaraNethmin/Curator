@@ -53,7 +53,15 @@ jobs:
     timeout-minutes: 90
 
     steps:
+      # fetch-depth: 0, because the release body is built from `git log` over
+      # the range since the previous tag. The default is a shallow single-commit
+      # clone with no tags in it, under which `git tag --list` answers nothing
+      # and the log range does not resolve — and the failure would land at the
+      # LAST step of a twenty-minute multi-arch build, after the image is
+      # already published.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # cmd/curator/version.go is the repo's single copy of the version string,
       # and this is what keeps that true once a second place — the tag — exists.
@@ -187,9 +195,25 @@ jobs:
       # tells every running curator that a new version exists, so it must not
       # announce one that failed to publish or lost an architecture above.
       #
-      # `--generate-notes` writes the body from the commits since the previous
-      # tag. This repository's commit messages are the change log already, which
-      # is exactly the text somebody wants in front of an Update button.
+      # The body is built from the COMMIT SUBJECTS since the previous tag, and
+      # `--generate-notes` is deliberately not used.
+      #
+      # That flag's name is misleading and this comment used to repeat the
+      # mistake: GitHub generates notes from merged PULL REQUESTS, not from
+      # commits. This repository merges locally and pushes, so it has none —
+      # measured on the two releases that shipped with it, 0.2.0 and 0.3.0,
+      # whose bodies are one line each:
+      #
+      #     **Full Changelog**: .../compare/v0.2.0...v0.3.0
+      #
+      # That is the text D44 puts in front of an in-app Update button, so the
+      # careful reasoning this project writes into every commit message reached
+      # nobody. `git log` is where it actually lives.
+      #
+      # Subjects only, not bodies: the bodies here run to forty lines each and
+      # are written for `git log`, not for a release page. The subject line is
+      # already the summary — `T<n> <area>: <what>` — and the compare link below
+      # is one click from the full reasoning.
       - name: publish the release the update check reads
         env:
           GH_TOKEN: ${{ github.token }}
@@ -200,8 +224,35 @@ jobs:
             echo "release $tag already exists, leaving it alone"
             exit 0
           fi
+
+          # The previous tag by version order, not by commit date: a tag cut
+          # from an older branch would otherwise silently truncate the range.
+          previous="$(git tag --list 'v*' --sort=-version:refname \
+            | grep -v "^${tag}$" | head -1 || true)"
+
+          notes_file="$(mktemp)"
+          if [ -n "$previous" ]; then
+            printf 'Changes since %s\n\n' "$previous" >> "$notes_file"
+            range="${previous}..${tag}"
+          else
+            printf 'The first release.\n\n' >> "$notes_file"
+            range="$tag"
+          fi
+
+          # Merge commits are dropped: the branch name is in the merge subject
+          # and the work is in the commits under it, so keeping both prints
+          # everything twice.
+          git log --no-merges --format='- %s' "$range" >> "$notes_file"
+
+          if [ -n "$previous" ]; then
+            printf '\n**Full Changelog**: %s/compare/%s...%s\n' \
+              "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" "$previous" "$tag" >> "$notes_file"
+          fi
+
+          echo "--- release body ---"; cat "$notes_file"; echo "--- end ---"
+
           gh release create "$tag" \
             --title "$tag" \
-            --generate-notes \
+            --notes-file "$notes_file" \
             --verify-tag
           echo "published release $tag"
