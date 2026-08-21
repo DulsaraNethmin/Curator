@@ -9,6 +9,7 @@ import {
   type MediaType,
   type Release,
   type SearchResult,
+  type Season,
 } from '@/lib/api';
 import { Empty, Failure } from '@/components/states';
 
@@ -70,7 +71,7 @@ export function Releases({
   empty,
   noYearReason = 'Search with a year first — it becomes the library folder name',
   onSearchAgain,
-  seasons = 0,
+  seasons = [],
   season = 0,
   onSeason,
   episode = 0,
@@ -88,33 +89,35 @@ export function Releases({
   onSearchAgain?: () => void;
 
   /**
-   * How many seasons TMDB says the show has, and which one is selected. 0
-   * seasons means there is no selector to draw — nothing is known to pick from
-   * — and season 0 means "every season", which is what the API reads an absent
-   * season as and what finds a complete-series pack.
+   * The seasons TMDB lists, and which one is selected. An empty list means
+   * there is no picker to draw — nothing is known to pick from — and season 0
+   * means "every season", which is what the API reads an absent season as and
+   * what finds a complete-series pack.
+   *
+   * It is the LIST and not the count, which is the difference T98 turned on.
+   * `ShowDetails.seasons` is a number and cannot say how many episodes any of
+   * them has, so a control built from it offered Silo a Season 4 with nothing
+   * behind it and could not offer an episode row at all.
    *
    * The search itself belongs to the caller, which is why this is a callback
    * rather than a search made here: the show page owns the title, the year and
    * the request, and a second search implementation inside this component would
    * be a second place for the 410 wording to drift (see above).
    */
-  seasons?: number;
+  seasons?: Season[];
   season?: number;
   onSeason?: (season: number) => void;
 
   /**
    * The episode within the selected season, and 0 is the whole season.
    *
-   * It is a free number rather than a select because nothing here knows how
-   * many episodes a season has: `seasons` comes from TMDB's series record,
-   * which carries a season COUNT and not a per-season episode count, and
-   * fetching one costs a request per season change for a control that is
-   * usually left alone. A number nobody uploaded returns no exact match and the
-   * packs below it still do, which is a better failure than a select that
-   * cannot offer the episode somebody knows exists.
+   * It is drawn from the selected season's `episode_count`, which is a thing
+   * this component only learned in T98 — before it, `seasons` was a count and
+   * the control had to be a free number field that could not search on change.
+   * See the rows below for what that cost.
    *
    * Only meaningful with a season: the server answers 400 for an episode
-   * without one, so the input is disabled until a season is picked.
+   * without one, so there is no episode row until a season is picked.
    */
   episode?: number;
   onEpisode?: (episode: number) => void;
@@ -220,69 +223,15 @@ export function Releases({
           it re-runs the search. Drawn before the first search too: picking the
           season you want and then pressing Find releases is one wait instead of
           two. */}
-      {film.media === 'tv' && onSeason && seasons > 0 && (
-        <div className="row" style={{ margin: '0 0 .9rem' }}>
-          <label className="small muted" htmlFor="season">
-            Season
-          </label>
-          <select
-            id="season"
-            value={season}
-            disabled={searching}
-            onChange={(e) => onSeason(Number(e.target.value))}
-          >
-            {/* 0 is what the API reads an absent season as: no constraint at
-                the indexers, which is how a complete-series pack is found. */}
-            <option value={0}>Every season</option>
-            {Array.from({ length: seasons }, (_, i) => i + 1).map((n) => (
-              <option key={n} value={n}>
-                Season {n}
-              </option>
-            ))}
-          </select>
-
-          {onEpisode && (
-            <>
-              <label className="small muted" htmlFor="episode">
-                Episode
-              </label>
-              {/* Deliberately NOT searching on change, which is the one place
-                  this control differs from the season beside it. A select is a
-                  discrete choice and fires once; a number field fires per
-                  keystroke, and a cold television search costs up to thirteen
-                  seconds behind minter — so typing "12" would launch a search
-                  for episode 1 and abandon it. Enter runs it, and so does the
-                  Find releases button that was already there. */}
-              <input
-                id="episode"
-                type="number"
-                min={1}
-                step={1}
-                style={{ width: '5.5rem' }}
-                // An episode without a season is a 400 at the server, so the
-                // field cannot be reached until there is a season to put it in.
-                disabled={searching || season === 0}
-                value={episode || ''}
-                placeholder="all"
-                onChange={(e) => {
-                  const next = Number(e.target.value);
-                  onEpisode(Number.isFinite(next) && next > 0 ? Math.floor(next) : 0);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !searching) onSearchAgain?.();
-                }}
-              />
-            </>
-          )}
-
-          <span className="small muted">
-            {season === 0
-              ? 'Season packs and single episodes, from every season TMDB knows about.'
-              : episode > 0
-                ? `Narrowed to season ${season} episode ${episode}. Press Enter to search. Packs covering it are listed under the episodes.`
-                : `Narrowed to season ${season}. Both a pack and a single episode import. Add an episode to go narrower.`}
-          </span>
-        </div>
+      {film.media === 'tv' && onSeason && (
+        <SeasonPicker
+          seasons={seasons}
+          season={season}
+          onSeason={onSeason}
+          episode={episode}
+          onEpisode={onEpisode}
+          searching={searching}
+        />
       )}
 
       {result && <Indexers result={result} />}
@@ -382,6 +331,152 @@ export function Releases({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Season and episode, as two rows of buttons.
+ *
+ * ```
+ * SEASON   [Every] [1] [2] [3]
+ * EPISODE  [All] [1][2][3][4][5][6][7][8][9][10]
+ * ```
+ *
+ * **Both rows show what exists**, which is the whole change. The season row was
+ * a `<select>` built from TMDB's season COUNT, so Silo — which reports four
+ * seasons and has aired three — offered a Season 4 that could only ever return
+ * nothing. And an episode row was impossible at all: a count cannot say how
+ * many episodes a season has, so the episode control was a free number field.
+ * `season_list` carries `episode_count` per season, and both rows fall out of
+ * it.
+ *
+ * **Clicking searches immediately, and that undoes a compromise.** The number
+ * field could not: it fires per keystroke, and a cold television search costs
+ * up to thirteen seconds behind minter, so typing "12" would have launched a
+ * search for episode 1 and abandoned it — which is why it needed Enter, and why
+ * Enter had to be explained in the caption. A button is a discrete choice that
+ * fires once, exactly as the season select already did, so the explanation goes
+ * away with the input.
+ *
+ * It is `.switch`, the same class the Movies|Shows toggle uses, rather than a
+ * fourth way of drawing a group of buttons where one is active.
+ */
+function SeasonPicker({
+  seasons,
+  season,
+  onSeason,
+  episode,
+  onEpisode,
+  searching,
+}: {
+  seasons: Season[];
+  season: number;
+  onSeason: (season: number) => void;
+  episode: number;
+  onEpisode?: (episode: number) => void;
+  searching?: boolean;
+}) {
+  /**
+   * Which seasons get a button, and the two exclusions are excluded for
+   * completely different reasons.
+   *
+   * `episode_count === 0` is a season TMDB has ANNOUNCED and nobody has aired.
+   * There is nothing to search for, and offering it is what the count-based
+   * control did wrong.
+   *
+   * `number === 0` is Specials, and it is dropped because it **cannot be
+   * asked for**: `?season=0` is what the API reads an absent season as, so a
+   * Specials button would silently search every season and return a list that
+   * looks like an answer. That overload is a known gap rather than something
+   * this control can paper over — see parseSeason in internal/api/search.go.
+   * Omitting the button is what keeps the gap from becoming a wrong answer.
+   */
+  const pickable = seasons.filter((s) => s.number > 0 && s.episode_count > 0);
+  if (pickable.length === 0) return null;
+
+  // The selected season's own episode count. A season that is no longer in the
+  // list — the show was refetched between a click and a render — leaves this 0,
+  // which draws no episode row rather than a row of nothing.
+  const episodes = pickable.find((s) => s.number === season)?.episode_count ?? 0;
+
+  return (
+    <div style={{ margin: '0 0 .9rem' }}>
+      <div className="row" style={{ marginBottom: '.4rem' }}>
+        <span className="small muted" style={{ minWidth: '4.2rem' }}>
+          Season
+        </span>
+        <div className="switch" role="group" aria-label="Season">
+          {/* 0 is what the API reads an absent season as: no constraint at the
+              indexers, which is how a complete-series pack is found. */}
+          <button
+            type="button"
+            data-active={season === 0}
+            aria-pressed={season === 0}
+            disabled={searching}
+            onClick={() => onSeason(0)}
+          >
+            Every
+          </button>
+          {pickable.map((s) => (
+            <button
+              key={s.number}
+              type="button"
+              data-active={season === s.number}
+              aria-pressed={season === s.number}
+              disabled={searching}
+              // TMDB's own label, so a show that names its seasons something
+              // other than "Season N" is not renamed by this control.
+              title={`${s.name} — ${s.episode_count} episodes`}
+              onClick={() => onSeason(s.number)}
+            >
+              {s.number}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* No season, no episode row. The server answers 400 for an episode
+          without one, so an unreachable control is worse than no control:
+          this is the same rule, drawn. */}
+      {onEpisode && season > 0 && episodes > 0 && (
+        <div className="row" style={{ marginBottom: '.4rem' }}>
+          <span className="small muted" style={{ minWidth: '4.2rem' }}>
+            Episode
+          </span>
+          <div className="switch" role="group" aria-label="Episode">
+            <button
+              type="button"
+              data-active={episode === 0}
+              aria-pressed={episode === 0}
+              disabled={searching}
+              onClick={() => onEpisode(0)}
+            >
+              All
+            </button>
+            {Array.from({ length: episodes }, (_, i) => i + 1).map((n) => (
+              <button
+                key={n}
+                type="button"
+                data-active={episode === n}
+                aria-pressed={episode === n}
+                disabled={searching}
+                onClick={() => onEpisode(n)}
+              >
+                {n}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <span className="small muted">
+        {season === 0
+          ? 'Season packs and single episodes, from every season TMDB knows about.'
+          : episode > 0
+            ? `Narrowed to season ${season} episode ${episode}. Packs covering it are listed under the episodes.`
+            : `Narrowed to season ${season}. Both a pack and a single episode import. Pick an episode to go narrower.`}
+      </span>
+    </div>
   );
 }
 

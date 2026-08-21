@@ -260,7 +260,10 @@ function Show() {
         film={{ title: details.title, year: details.year, tmdb_id: details.tmdb_id, media: 'tv' }}
         searching={searching}
         onSearchAgain={() => findReleases()}
-        seasons={details.seasons}
+        // The LIST, not the count. `details.seasons` is 4 for Silo and three
+        // of them have aired; the list is what says so, and it is the only
+        // thing that knows how many episodes each one has.
+        seasons={details.season_list}
         season={season}
         // A new season is a new search, and the state moves inside it so the
         // control and the request can never disagree about which one is in
@@ -273,9 +276,11 @@ function Show() {
         // which is the one combination the server refuses.
         onSeason={(next) => void findReleases(next, 0)}
         episode={episode}
-        // Typed, not searched: this only moves the state, and Enter or Find
-        // releases runs it. See the input in Releases for why.
-        onEpisode={setEpisode}
+        // Searched, not merely typed — which is what T98 changed. This was
+        // `setEpisode` while the control was a number field that fired per
+        // keystroke and therefore could not search on change; a button is a
+        // discrete choice, so it behaves exactly like the season above it.
+        onEpisode={(next) => void findReleases(season, next)}
         noYearReason="TMDB has no first air date for this show, so there is no year — and Show (Year) is the folder name curator would have to write."
         empty={
           <>
