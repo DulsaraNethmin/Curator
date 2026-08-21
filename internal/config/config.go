@@ -43,13 +43,15 @@ type Config struct {
 	SearchTimeout  time.Duration
 	SearchCacheTTL time.Duration
 
-	// Phase 7: which of them are asked at all. All three are on unless somebody
-	// turns one off, so an unset value keeps exactly the behaviour phases 2-6
-	// shipped — and turning 1337x off is also what stops minter being probed for
-	// a service nobody asked for (docs/tasks/T40-settings-api.md).
+	// Phase 7: which of them are asked at all. All of them are on unless
+	// somebody turns one off — except 1337x, see the defaults — so an unset
+	// value keeps exactly the behaviour that shipped, and turning 1337x off is
+	// also what stops minter being probed for a service nobody asked for
+	// (docs/tasks/T40-settings-api.md).
 	IndexerYTS   bool
 	IndexerTPB   bool
 	IndexerX1337 bool
+	IndexerEZTV  bool
 
 	// Phase 3: downloads.
 	QBitURL              string
@@ -434,9 +436,18 @@ func Load(resolved map[string]string) (*Config, error) {
 		// YTS and TPB are plain JSON over the tunnel and need nothing, so they
 		// keep the default they had. Nobody who explicitly set INDEXER_1337X —
 		// in the environment or in the store — is affected either way.
+		//
+		// EZTV is on for the same reason those two are and not for 1337x's: it
+		// is plain JSON with no browser, no companion container and no
+		// credential, so a fresh install can use it on the first search. It
+		// also cannot be reported as broken on a search it was not built for —
+		// it declines a query with no IMDb id rather than failing one
+		// (internal/indexer, QueryCapable), which is what makes "on by
+		// default" safe for a source that only has television.
 		IndexerYTS:   true,
 		IndexerTPB:   true,
 		IndexerX1337: false,
+		IndexerEZTV:  true,
 	}
 
 	// Parsed from the raw value rather than from a pre-lowered copy, so the
@@ -472,6 +483,7 @@ func Load(resolved map[string]string) (*Config, error) {
 		{"INDEXER_YTS", &cfg.IndexerYTS},
 		{"INDEXER_TPB", &cfg.IndexerTPB},
 		{"INDEXER_1337X", &cfg.IndexerX1337},
+		{"INDEXER_EZTV", &cfg.IndexerEZTV},
 	} {
 		raw := r.get(b.key, "")
 		if raw == "" {

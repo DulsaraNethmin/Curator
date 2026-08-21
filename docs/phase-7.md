@@ -213,6 +213,7 @@ Every row is stored, has one environment variable, and takes effect at the next 
 | Indexers | `indexer_yts` · `INDEXER_YTS` | bool | **new** |
 | | `indexer_tpb` · `INDEXER_TPB` | bool | **new** |
 | | `indexer_1337x` · `INDEXER_1337X` | bool | **new**; default `false` since T49 — the other two need nothing, this one needs a container |
+| | `indexer_eztv` · `INDEXER_EZTV` | bool | **new in T97**; default `true`, with YTS and TPB rather than with 1337x — plain JSON, no browser and no credential. Television only, and it declines a query carrying no IMDb id rather than failing one |
 | | `minter_url` · `MINTER_URL` | url | |
 | | `search_timeout` · `SEARCH_TIMEOUT` | duration | |
 | | `search_cache_ttl` · `SEARCH_CACHE_TTL` | duration | |

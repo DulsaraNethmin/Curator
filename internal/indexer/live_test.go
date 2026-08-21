@@ -156,9 +156,14 @@ func classifyLiveFailure(err error, status int, dnsWorks func() bool) (liveVerdi
 //     apibay.org goes NXDOMAIN, TestTPBLive asks movies-api.accel.li, gets an
 //     answer, and fails loudly. Only both hosts dying in the same run hides
 //     either, and that is indistinguishable from an offline machine anyway.
+// With three live tests the arrangement is a CYCLE rather than a pair, and it
+// keeps both properties above: every host is somebody's control, no host is its
+// own, and no third party is introduced. TestEachIndexerIsTheOthersControl
+// pins that it stays a cycle.
 const (
-	tpbControlHost = "movies-api.accel.li" // YTS's host guards TPB's
-	ytsControlHost = "apibay.org"          // and TPB's guards YTS's
+	tpbControlHost  = "movies-api.accel.li" // YTS's host guards TPB's
+	ytsControlHost  = "eztvx.to"            // EZTV's guards YTS's
+	eztvControlHost = "apibay.org"          // and TPB's guards EZTV's
 )
 
 // liveDNSWorks returns the dnsWorks func classifyLiveFailure asks on the one
@@ -372,18 +377,41 @@ func TestTheControlNameIsOnlyLookedUpForANameFailure(t *testing.T) {
 	}
 }
 
-// The control is the other indexer's host, and that is the whole reason no third
-// party enters the suite. If these two ever name the same host, the arrangement
-// silently stops being a cross-check.
+// The control is ANOTHER indexer's host, and that is the whole reason no third
+// party enters the suite. Two properties have to hold, and with three live
+// tests neither is obvious by inspection any more:
+//
+//   - No indexer is its own control. Guarding a host with itself proves nothing
+//     — the lookup that failed is the lookup being asked again.
+//   - Every control is a host this suite actually searches, so it is a name
+//     somebody would notice going away.
+//
+// Adding a fourth live indexer means adding it to this table. A control left
+// pointing at a retired host is the failure this test exists to make loud.
 func TestEachIndexerIsTheOthersControl(t *testing.T) {
-	if tpbControlHost == ytsControlHost {
-		t.Fatalf("both controls are %q: each indexer must be guarded by the other", tpbControlHost)
-	}
-	if !strings.Contains(DefaultYTSBaseURL, tpbControlHost) {
-		t.Errorf("TPB's control is %q, which is not YTS's base URL %q", tpbControlHost, DefaultYTSBaseURL)
-	}
-	if !strings.Contains(tpbSite, ytsControlHost) {
-		t.Errorf("YTS's control is %q, which is not TPB's site %q", ytsControlHost, tpbSite)
+	for _, tt := range []struct {
+		indexer string
+		base    string // the base URL this indexer searches
+		control string // the host that guards it
+	}{
+		{"tpb", tpbSite, tpbControlHost},
+		{"yts", DefaultYTSBaseURL, ytsControlHost},
+		{"eztv", DefaultEZTVBaseURL, eztvControlHost},
+	} {
+		if strings.Contains(tt.base, tt.control) {
+			t.Errorf("%s is its own control (%q): a host cannot guard itself", tt.indexer, tt.control)
+		}
+		// The control must be some other indexer's real base URL. Anything else
+		// is a third party, which is what this arrangement exists to avoid.
+		var known bool
+		for _, base := range []string{tpbSite, DefaultYTSBaseURL, DefaultEZTVBaseURL} {
+			if strings.Contains(base, tt.control) {
+				known = true
+			}
+		}
+		if !known {
+			t.Errorf("%s's control is %q, which is not a host this suite searches", tt.indexer, tt.control)
+		}
 	}
 }
 

@@ -58,6 +58,21 @@ type Query struct {
 	// combination at the edge with a 400 so a caller finds out; here it is simply
 	// not a constraint, because a silent half-filter is worse than neither.
 	Episode int
+
+	// IMDBID is the title's IMDb id as TMDB reports it — "tt14688458", prefix
+	// and all — and empty means the caller did not have one.
+	//
+	// It is not a narrowing parameter like Season and Episode. It is a second,
+	// stronger way to NAME the thing being searched for, and one indexer cannot
+	// be searched without it: EZTV is keyed by id and has no keyword surface at
+	// all. Every other indexer ignores it, which is why it is optional and why
+	// its absence is not an error — it makes one source unaskable rather than
+	// the search unanswerable. See QueryCapable.
+	//
+	// Carried in TMDB's spelling rather than EZTV's bare digits, so this stays
+	// a fact about the title instead of one indexer's URL format leaking into
+	// every Query. The strip happens at that indexer's boundary.
+	IMDBID string
 }
 
 // IsTV reports whether q asks for television.
@@ -168,6 +183,40 @@ type MediaCapable interface {
 func handlesMedia(ix Indexer, media string) bool {
 	if c, ok := ix.(MediaCapable); ok {
 		return c.Handles(media)
+	}
+	return true
+}
+
+// QueryCapable is implemented by indexers that cannot answer every query of a
+// media type they otherwise handle. It sits beside MediaCapable and is a
+// strictly narrower question: MediaCapable asks whether this KIND of thing is
+// in the catalogue at all, this asks whether THIS query is one the source can
+// be asked.
+//
+// EZTV is why it exists, and one interface could not have covered both. It has
+// television and nothing but television — that is MediaCapable — and it is
+// keyed by IMDb id rather than by title, so a television search carrying no id
+// is a question it has no way to put. The two are independent: a query can pass
+// one and fail the other, and it is the pair that decides whether the indexer
+// is asked.
+//
+// A source that declines this way is reported NotApplicable rather than failed,
+// which is the same treatment YTS gets on a television search. Nothing is
+// wrong, nothing is unconfigured, and there is nothing for anybody to do.
+type QueryCapable interface {
+	Answers(q Query) bool
+}
+
+// answersQuery reports whether ix can answer this particular query.
+//
+// The default is true, and it is handlesMedia's default for handlesMedia's
+// reason: an indexer that declares nothing answers everything, so this costs
+// existing sources no declaration and costs a new one nothing unless it
+// genuinely has a limit. That default is also what lets Cache forward it — see
+// Cache.Answers.
+func answersQuery(ix Indexer, q Query) bool {
+	if c, ok := ix.(QueryCapable); ok {
+		return c.Answers(q)
 	}
 	return true
 }

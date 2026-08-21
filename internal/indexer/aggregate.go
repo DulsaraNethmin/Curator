@@ -182,14 +182,23 @@ func (a *Aggregator) Search(ctx context.Context, q Query) (SearchResult, error) 
 	slots := make([]slot, len(a.indexers))
 	var mu sync.Mutex
 
-	// Which indexers this media type is not for, decided BEFORE the fan-out and
+	// Which indexers this search is not for, decided BEFORE the fan-out and
 	// remembered. Not deciding it inside the loop and simply skipping the g.Go:
 	// a slot with no goroutine never sets reported, and the reporting switch
 	// below opens with `case !s.reported:` producing "timed out after 30s" — so
 	// YTS would be reported as having timed out on every television search.
+	//
+	// Two questions, not one, and they are independent. handlesMedia asks
+	// whether this KIND of thing is in the source's catalogue — YTS has no
+	// television. answersQuery asks whether THIS query is one the source can be
+	// asked at all — EZTV is keyed by IMDb id, so a television search carrying
+	// none is unaskable there even though television is all it has. Both land
+	// in the same skip, and so in the same NotApplicable outcome, because from
+	// the screen's side they are the same fact: this source was not asked, and
+	// nothing is wrong.
 	skip := make([]bool, len(a.indexers))
 	for i, ix := range a.indexers {
-		skip[i] = !handlesMedia(ix, q.Media)
+		skip[i] = !handlesMedia(ix, q.Media) || !answersQuery(ix, q)
 	}
 
 	// A plain errgroup.Group, deliberately not errgroup.WithContext: WithContext
