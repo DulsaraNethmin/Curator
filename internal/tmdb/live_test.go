@@ -142,10 +142,15 @@ func TestLiveBrowse(t *testing.T) {
 		t.Logf("live: %d results, first is %q (%d)", len(got), got[0].Title, got[0].Year)
 	})
 
+	// All four home-screen rails, because the fixture tests cannot tell a live
+	// path from a dead one: pathServer answers whatever the map says, so
+	// /movie/top_rated staying green there proves only that we ask for it.
 	t.Run("TrendingAndPopular", func(t *testing.T) {
 		for name, call := range map[string]func() ([]Match, error){
-			"Trending": func() ([]Match, error) { return client.Trending(ctx) },
-			"Popular":  func() ([]Match, error) { return client.Popular(ctx) },
+			"Trending":   func() ([]Match, error) { return client.Trending(ctx) },
+			"Popular":    func() ([]Match, error) { return client.Popular(ctx) },
+			"TopRated":   func() ([]Match, error) { return client.TopRated(ctx) },
+			"NowPlaying": func() ([]Match, error) { return client.NowPlaying(ctx) },
 		} {
 			got, err := call()
 			if err != nil {
@@ -276,6 +281,11 @@ func TestLiveTV(t *testing.T) {
 		for name, call := range map[string]func() ([]Match, error){
 			"TrendingShows": func() ([]Match, error) { return client.TrendingShows(ctx) },
 			"PopularShows":  func() ([]Match, error) { return client.PopularShows(ctx) },
+			"TopRatedShows": func() ([]Match, error) { return client.TopRatedShows(ctx) },
+			// The one rail whose fixture is hand-written and could not sensibly be
+			// captured — a rolling seven-day window — so this is the only check
+			// that /tv/on_the_air is a path TMDB still serves.
+			"OnTheAir": func() ([]Match, error) { return client.OnTheAir(ctx) },
 		} {
 			got, err := call()
 			if err != nil {

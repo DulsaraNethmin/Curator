@@ -514,6 +514,30 @@ func (c *Client) Popular(ctx context.Context) ([]Match, error) {
 	return c.list(ctx, "/movie/popular", "popular")
 }
 
+// TopRated returns TMDB's highest-rated films, first page.
+//
+// It is the rail that does not move: trending turns over weekly and popular
+// tracks whatever is being watched right now, so a home screen built from those
+// two alone shows the same handful of new releases from both. Top rated is the
+// back catalogue, and it is the only rail here that will still be worth reading
+// in a year.
+func (c *Client) TopRated(ctx context.Context) ([]Match, error) {
+	return c.list(ctx, "/movie/top_rated", "top rated")
+}
+
+// NowPlaying returns films currently in cinemas.
+//
+// /movie/now_playing rather than /movie/upcoming, and the difference is whether
+// a release can be acted on. This is a downloader: a rail of films that have not
+// been released is a rail where every card leads to a search with nothing behind
+// it, which is the failure the Discover screen is otherwise careful to avoid.
+//
+// The envelope carries a `dates` object beside `results` that nothing here
+// reads; searchResponse ignores unknown fields, so it decodes as any other page.
+func (c *Client) NowPlaying(ctx context.Context) ([]Match, error) {
+	return c.list(ctx, "/movie/now_playing", "now playing")
+}
+
 func (c *Client) list(ctx context.Context, path, what string) ([]Match, error) {
 	var body searchResponse
 	if err := c.get(ctx, path, nil, what, &body); err != nil {

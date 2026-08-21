@@ -17,17 +17,21 @@ import (
 
 // fakeBrowser stands in for the TMDB client.
 type fakeBrowser struct {
-	search   []tmdb.Match
-	details  *tmdb.Details
-	trending []tmdb.Match
-	popular  []tmdb.Match
+	search     []tmdb.Match
+	details    *tmdb.Details
+	trending   []tmdb.Match
+	popular    []tmdb.Match
+	topRated   []tmdb.Match
+	nowPlaying []tmdb.Match
 
-	searchErr   error
-	detailsErr  error
-	trendingErr error
-	popularErr  error
+	searchErr     error
+	detailsErr    error
+	trendingErr   error
+	popularErr    error
+	topRatedErr   error
+	nowPlayingErr error
 
-	// Television's four answer from their OWN fields, and that is the point of
+	// Television's six answer from their OWN fields, and that is the point of
 	// them. A fake that served the film rails to a TV request would let a
 	// handler that forgot to switch endpoints pass every test here and then ask
 	// TMDB's /search/movie for a show in production — which is the exact defect
@@ -36,11 +40,15 @@ type fakeBrowser struct {
 	showDetails  *tmdb.Details
 	showTrending []tmdb.Match
 	showPopular  []tmdb.Match
+	showTopRated []tmdb.Match
+	showOnTheAir []tmdb.Match
 
 	showSearchErr   error
 	showDetailsErr  error
 	showTrendingErr error
 	showPopularErr  error
+	showTopRatedErr error
+	showOnTheAirErr error
 
 	gotQuery string
 	gotYear  int
@@ -74,6 +82,14 @@ func (f *fakeBrowser) Popular(context.Context) ([]tmdb.Match, error) {
 	return f.popular, f.popularErr
 }
 
+func (f *fakeBrowser) TopRated(context.Context) ([]tmdb.Match, error) {
+	return f.topRated, f.topRatedErr
+}
+
+func (f *fakeBrowser) NowPlaying(context.Context) ([]tmdb.Match, error) {
+	return f.nowPlaying, f.nowPlayingErr
+}
+
 func (f *fakeBrowser) SearchShows(_ context.Context, query string, year int) ([]tmdb.Match, error) {
 	f.gotShowQuery, f.gotShowYear = query, year
 	return f.showSearch, f.showSearchErr
@@ -93,6 +109,14 @@ func (f *fakeBrowser) TrendingShows(context.Context) ([]tmdb.Match, error) {
 
 func (f *fakeBrowser) PopularShows(context.Context) ([]tmdb.Match, error) {
 	return f.showPopular, f.showPopularErr
+}
+
+func (f *fakeBrowser) TopRatedShows(context.Context) ([]tmdb.Match, error) {
+	return f.showTopRated, f.showTopRatedErr
+}
+
+func (f *fakeBrowser) OnTheAir(context.Context) ([]tmdb.Match, error) {
+	return f.showOnTheAir, f.showOnTheAirErr
 }
 
 // severance is television's endgame(): the fixture every show test in this
@@ -122,6 +146,23 @@ func browseServer(t *testing.T, b Browser, st *fakeStore) http.Handler {
 	}
 	mux := http.NewServeMux()
 	srv := New(st, ScannerFunc(nil), nil, fixtureRoot, quiet())
+	if b != nil {
+		srv = srv.WithBrowser(b)
+	}
+	srv.Register(mux)
+	srv.RegisterBrowse(mux)
+	return mux
+}
+
+// tvBrowseServer is browseServer with LIBRARY_TV set, which is what every
+// media=tv request needs: s.media gates television BEFORE it looks at the
+// browser, so without a root the catalogue routes answer 503 and the browser is
+// never reached at all.
+func tvBrowseServer(t *testing.T, b Browser) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, quiet()).
+		WithTV(TV{Root: tvFixtureRoot, Scanner: tvFixtureScanner()})
 	if b != nil {
 		srv = srv.WithBrowser(b)
 	}
@@ -253,8 +294,8 @@ func TestDiscoverReportsAFailingRailWithoutLosingTheOther(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 — a downed rail is not an error page", rec.Code)
 	}
-	if len(body.Rows) != 2 {
-		t.Fatalf("got %d rows, want 2", len(body.Rows))
+	if len(body.Rows) != 4 {
+		t.Fatalf("got %d rows, want 4", len(body.Rows))
 	}
 
 	byID := map[string]discoverRow{}
@@ -273,6 +314,98 @@ func TestDiscoverReportsAFailingRailWithoutLosingTheOther(t *testing.T) {
 	// [] and never null, so the UI can iterate it without a guard.
 	if byID["popular"].Results == nil {
 		t.Error("a failed rail returned null results")
+	}
+}
+
+// Every rail draws its OWN source, under its own heading.
+//
+// This is the test the parallel-slices version of handleDiscover could not have:
+// with `rows` and `fetch` indexed in lockstep, a rail inserted into one and
+// appended to the other keeps both lists the right length and every assertion
+// about counts and failure envelopes still passes — while the screen puts
+// top-rated films under "Trending this week". So each rail here is fed a card
+// nothing else returns, and the id it arrives under is checked.
+//
+// It runs both media types from one table because the transposition can happen
+// on either side, and the television half is the one with a rail whose TITLE
+// differs — a fifth thing to get wrong that films do not have.
+func TestEachDiscoverRailDrawsItsOwnSource(t *testing.T) {
+	// One card per rail, told apart by id. The numbers are arbitrary and only
+	// have to be distinct.
+	card := func(id int, title string) []tmdb.Match {
+		return []tmdb.Match{{TMDBID: id, Title: title, Year: 2024}}
+	}
+
+	for _, c := range []struct {
+		media   string
+		browser *fakeBrowser
+		// want maps a rail id to the title of the card that rail must return,
+		// and to the heading it must be drawn under.
+		want map[string][2]string
+	}{{
+		media: "movie",
+		browser: &fakeBrowser{
+			trending:   card(1, "the trending film"),
+			popular:    card(2, "the popular film"),
+			topRated:   card(3, "the top rated film"),
+			nowPlaying: card(4, "the film in cinemas"),
+		},
+		want: map[string][2]string{
+			"trending":   {"the trending film", "Trending this week"},
+			"popular":    {"the popular film", "Popular"},
+			"top_rated":  {"the top rated film", "Top rated"},
+			"in_release": {"the film in cinemas", "In cinemas now"},
+		},
+	}, {
+		media: "tv",
+		browser: &fakeBrowser{
+			showTrending: card(5, "the trending show"),
+			showPopular:  card(6, "the popular show"),
+			showTopRated: card(7, "the top rated show"),
+			showOnTheAir: card(8, "the show on the air"),
+		},
+		want: map[string][2]string{
+			"trending":   {"the trending show", "Trending this week"},
+			"popular":    {"the popular show", "Popular"},
+			"top_rated":  {"the top rated show", "Top rated"},
+			"in_release": {"the show on the air", "On the air this week"},
+		},
+	}} {
+		t.Run(c.media, func(t *testing.T) {
+			var body struct {
+				Rows []discoverRow `json:"rows"`
+			}
+			rec := getJSON(t, tvBrowseServer(t, c.browser), "/api/tmdb/discover?media="+c.media, &body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 — body was %s", rec.Code, rec.Body)
+			}
+			if len(body.Rows) != len(c.want) {
+				t.Fatalf("got %d rails, want %d", len(body.Rows), len(c.want))
+			}
+
+			for _, row := range body.Rows {
+				want, ok := c.want[row.ID]
+				if !ok {
+					t.Errorf("unexpected rail %q", row.ID)
+					continue
+				}
+				if !row.OK {
+					t.Errorf("%s: not ok — %s", row.ID, row.Error)
+					continue
+				}
+				if len(row.Results) != 1 {
+					t.Errorf("%s: got %d cards, want the one its source returned", row.ID, len(row.Results))
+					continue
+				}
+				if row.Results[0].Title != want[0] {
+					t.Errorf("%s drew %q, want %q — the rails are transposed",
+						row.ID, row.Results[0].Title, want[0])
+				}
+				if row.Title != want[1] {
+					t.Errorf("%s is headed %q, want %q", row.ID, row.Title, want[1])
+				}
+			}
+		})
 	}
 }
 
@@ -764,10 +897,17 @@ func TestAFailedRailIsWrittenForAHuman(t *testing.T) {
 	log, buffer := captured()
 	mux := http.NewServeMux()
 	srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, log).
+		// Every rail fails, because that is what a rejected key actually does —
+		// one key, one refusal, four rails. The loop below then holds for all of
+		// them rather than for whichever two the fake happened to arm.
 		WithBrowser(&fakeBrowser{
 			trendingErr: fmt.Errorf("tmdb trending: %w: Invalid API key: You must be granted a valid key.",
 				tmdb.ErrUnauthorized),
 			popularErr: fmt.Errorf("tmdb popular: %w: Invalid API key: You must be granted a valid key.",
+				tmdb.ErrUnauthorized),
+			topRatedErr: fmt.Errorf("tmdb top rated: %w: Invalid API key: You must be granted a valid key.",
+				tmdb.ErrUnauthorized),
+			nowPlayingErr: fmt.Errorf("tmdb now playing: %w: Invalid API key: You must be granted a valid key.",
 				tmdb.ErrUnauthorized),
 		})
 	srv.Register(mux)
@@ -799,8 +939,8 @@ func TestAFailedRailIsWrittenForAHuman(t *testing.T) {
 			t.Errorf("row %s does not say the key was refused: %q", row.ID, row.Error)
 		}
 		assertNoLeak(t, "row "+row.ID, row.Error, []string{
-			"tmdb trending:", "tmdb popular:", "api key rejected",
-			"Invalid API key", "You must be granted",
+			"tmdb trending:", "tmdb popular:", "tmdb top rated:", "tmdb now playing:",
+			"api key rejected", "Invalid API key", "You must be granted",
 		})
 	}
 

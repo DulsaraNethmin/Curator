@@ -80,6 +80,14 @@ func TestEveryEndpointScrubsTheAPIKey(t *testing.T) {
 			_, err := client.Popular(ctx)
 			return err
 		},
+		"TopRated": func(ctx context.Context) error {
+			_, err := client.TopRated(ctx)
+			return err
+		},
+		"NowPlaying": func(ctx context.Context) error {
+			_, err := client.NowPlaying(ctx)
+			return err
+		},
 		"SearchShow": func(ctx context.Context) error {
 			_, err := client.SearchShow(ctx, "Breaking Bad", 2008)
 			return err
@@ -98,6 +106,14 @@ func TestEveryEndpointScrubsTheAPIKey(t *testing.T) {
 		},
 		"PopularShows": func(ctx context.Context) error {
 			_, err := client.PopularShows(ctx)
+			return err
+		},
+		"TopRatedShows": func(ctx context.Context) error {
+			_, err := client.TopRatedShows(ctx)
+			return err
+		},
+		"OnTheAir": func(ctx context.Context) error {
+			_, err := client.OnTheAir(ctx)
 			return err
 		},
 	}
@@ -228,16 +244,33 @@ func TestMovieRejectsANonID(t *testing.T) {
 	}
 }
 
+// The film lists, and the PATHS they ask for.
+//
+// pathServer fails the test on any path not in this map, so the map is the
+// assertion: TMDB puts the media type in a different position for trending
+// (/trending/movie/week) than for everything else (/movie/popular,
+// /movie/top_rated, /movie/now_playing), and a method reaching for the wrong
+// shape is caught here rather than against the live API.
+//
+// top_rated and now_playing are served the popular fixture on purpose. The
+// envelope is identical — TMDB returns the same paged `results` of the same
+// movie objects for all four — so a third and fourth captured page would assert
+// nothing the first two do not, at the cost of two more files to keep. What is
+// NOT shared is the path each method asks for, and that is what this pins.
 func TestTrendingAndPopular(t *testing.T) {
 	client := browseClient(t, map[string]string{
 		"/trending/movie/week": "trending_week.json",
 		"/movie/popular":       "popular.json",
+		"/movie/top_rated":     "popular.json",
+		"/movie/now_playing":   "popular.json",
 	})
 	ctx := context.Background()
 
 	for name, call := range map[string]func() ([]Match, error){
-		"Trending": func() ([]Match, error) { return client.Trending(ctx) },
-		"Popular":  func() ([]Match, error) { return client.Popular(ctx) },
+		"Trending":   func() ([]Match, error) { return client.Trending(ctx) },
+		"Popular":    func() ([]Match, error) { return client.Popular(ctx) },
+		"TopRated":   func() ([]Match, error) { return client.TopRated(ctx) },
+		"NowPlaying": func() ([]Match, error) { return client.NowPlaying(ctx) },
 	} {
 		got, err := call()
 		if err != nil {
@@ -271,11 +304,15 @@ func TestBrowseReportsARejectedKey(t *testing.T) {
 		"Movie":         second(client.Movie(ctx, 299534)),
 		"Trending":      second(client.Trending(ctx)),
 		"Popular":       second(client.Popular(ctx)),
+		"TopRated":      second(client.TopRated(ctx)),
+		"NowPlaying":    second(client.NowPlaying(ctx)),
 		"SearchShow":    second(client.SearchShow(ctx, "Breaking Bad", 2008)),
 		"SearchShows":   second(client.SearchShows(ctx, "the office", 0)),
 		"Show":          second(client.Show(ctx, 1396)),
 		"TrendingShows": second(client.TrendingShows(ctx)),
 		"PopularShows":  second(client.PopularShows(ctx)),
+		"TopRatedShows": second(client.TopRatedShows(ctx)),
+		"OnTheAir":      second(client.OnTheAir(ctx)),
 	} {
 		if !errors.Is(err, ErrUnauthorized) {
 			t.Errorf("%s: err = %v, want ErrUnauthorized", name, err)

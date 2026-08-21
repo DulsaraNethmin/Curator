@@ -1,0 +1,55 @@
+{
+  "page": 1,
+  "results": [
+    {
+      "adult": false,
+      "backdrop_path": "/tv-top-rated-1-backdrop.jpg",
+      "genre_ids": [18, 80],
+      "id": 1396,
+      "origin_country": ["US"],
+      "original_language": "en",
+      "original_name": "Breaking Bad",
+      "overview": "A high school chemistry teacher diagnosed with inoperable lung cancer turns to manufacturing and selling methamphetamine.",
+      "popularity": 421.7,
+      "poster_path": "/tv-top-rated-1-poster.jpg",
+      "first_air_date": "2008-01-20",
+      "name": "Breaking Bad",
+      "vote_average": 8.923,
+      "vote_count": 15012
+    },
+    {
+      "adult": false,
+      "backdrop_path": "/tv-top-rated-2-backdrop.jpg",
+      "genre_ids": [18, 10765],
+      "id": 1399,
+      "origin_country": ["US"],
+      "original_language": "en",
+      "original_name": "Game of Thrones",
+      "overview": "Seven noble families fight for control of the mythical land of Westeros.",
+      "popularity": 388.2,
+      "poster_path": "/tv-top-rated-2-poster.jpg",
+      "first_air_date": "2011-04-17",
+      "name": "Game of Thrones",
+      "vote_average": 8.456,
+      "vote_count": 24310
+    },
+    {
+      "adult": false,
+      "backdrop_path": "/tv-top-rated-3-backdrop.jpg",
+      "genre_ids": [18, 80],
+      "id": 1438,
+      "origin_country": ["US"],
+      "original_language": "en",
+      "original_name": "The Wire",
+      "overview": "Told from the points of view of both the Baltimore homicide and narcotics detectives and their targets.",
+      "popularity": 172.4,
+      "poster_path": "/tv-top-rated-3-poster.jpg",
+      "first_air_date": "2002-06-02",
+      "name": "The Wire",
+      "vote_average": 8.633,
+      "vote_count": 2489
+    }
+  ],
+  "total_pages": 1,
+  "total_results": 3
+}

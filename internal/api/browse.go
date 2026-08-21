@@ -26,17 +26,21 @@ type Browser interface {
 	Movie(ctx context.Context, id int) (*tmdb.Details, error)
 	Trending(ctx context.Context) ([]tmdb.Match, error)
 	Popular(ctx context.Context) ([]tmdb.Match, error)
+	TopRated(ctx context.Context) ([]tmdb.Match, error)
+	NowPlaying(ctx context.Context) ([]tmdb.Match, error)
 
-	// Television's four, and they are FOUR MORE METHODS rather than a media
-	// type on the four above. TMDB has two endpoints per question — /search/tv
-	// beside /search/movie, /tv/{id} beside /movie/{id} — and one *tmdb.Client
-	// implements all eight, so the seam that would gain a branch here is the
+	// Television's six, and they are SIX MORE METHODS rather than a media type
+	// on the six above. TMDB has two endpoints per question — /search/tv beside
+	// /search/movie, /tv/{id} beside /movie/{id} — and one *tmdb.Client
+	// implements all twelve, so the seam that would gain a branch here is the
 	// only place the branch would not already exist. It also means a fake that
 	// answers films cannot silently answer shows with them.
 	SearchShows(ctx context.Context, query string, year int) ([]tmdb.Match, error)
 	Show(ctx context.Context, id int) (*tmdb.Details, error)
 	TrendingShows(ctx context.Context) ([]tmdb.Match, error)
 	PopularShows(ctx context.Context) ([]tmdb.Match, error)
+	TopRatedShows(ctx context.Context) ([]tmdb.Match, error)
+	OnTheAir(ctx context.Context) ([]tmdb.Match, error)
 }
 
 // WithBrowser attaches the catalogue and returns the server.
@@ -275,6 +279,54 @@ type discoverRow struct {
 	Results []movieCard `json:"results"`
 }
 
+// discoverRail is one rail's identity and where its cards come from.
+//
+// The id, the title and the call are ONE STRUCT rather than the parallel slices
+// this was written as, and that is the whole reason the type exists. Two slices
+// indexed in lockstep are correct while there are two rails and a transposition
+// waiting to happen once there are four: nothing about `fetch[i]` says it
+// belongs to `rows[i]`, so a rail inserted in one list and appended to the other
+// draws top-rated films under the heading "Trending this week" and passes every
+// test in this package, because both lists are still the right length.
+type discoverRail struct {
+	id    string
+	title string
+	fetch func(context.Context) ([]tmdb.Match, error)
+}
+
+// discoverRails is the home screen, in the order it is drawn. Callers must have
+// checked s.browser is non-nil.
+//
+// **The ids are shared across media types and the titles are not, and the split
+// is deliberate.** An id names a SLOT — the UI keys its rails on it and never
+// learns that television exists — while the title says what that slot holds
+// here. Three of the four mean the same thing on both sides, so they read the
+// same; the fourth does not, because "in cinemas" and "on the air" are two
+// different facts and not one fact said twice. That is the rule the original
+// comment was reaching for: the toggle already says Movies or Shows, so a title
+// must not repeat it, but it must still be true.
+//
+// The order is a claim about what a person came for. Trending leads because it
+// is the reason to open this screen at all; top rated sits third because it is
+// the only rail here that does not turn over weekly, and burying it under two
+// lists of the same new releases was what made the screen worth widening.
+func (s *Server) discoverRails(mediaType string) []discoverRail {
+	if mediaType == store.MediaTypeTV {
+		return []discoverRail{
+			{"trending", "Trending this week", s.browser.TrendingShows},
+			{"popular", "Popular", s.browser.PopularShows},
+			{"top_rated", "Top rated", s.browser.TopRatedShows},
+			{"in_release", "On the air this week", s.browser.OnTheAir},
+		}
+	}
+	return []discoverRail{
+		{"trending", "Trending this week", s.browser.Trending},
+		{"popular", "Popular", s.browser.Popular},
+		{"top_rated", "Top rated", s.browser.TopRated},
+		{"in_release", "In cinemas now", s.browser.NowPlaying},
+	}
+}
+
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	mediaType, ok := s.media(w, r)
 	if !ok {
@@ -285,36 +337,26 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows := []discoverRow{
-		{ID: "trending", Title: "Trending this week"},
-		{ID: "popular", Title: "Popular"},
-	}
-	// The rail ids and titles are the same for both media types — the screen
-	// asks one media type at a time, so "Trending this week" is unambiguous and
-	// a "Trending shows" title would be the toggle's job said twice.
-	fetch := []func(context.Context) ([]tmdb.Match, error){
-		s.browser.Trending,
-		s.browser.Popular,
-	}
-	if mediaType == store.MediaTypeTV {
-		fetch = []func(context.Context) ([]tmdb.Match, error){
-			s.browser.TrendingShows,
-			s.browser.PopularShows,
-		}
+	rails := s.discoverRails(mediaType)
+	rows := make([]discoverRow, len(rails))
+	for i, rail := range rails {
+		rows[i] = discoverRow{ID: rail.id, Title: rail.title}
 	}
 
-	// Concurrently: two sequential ten-second timeouts would be twenty seconds of
-	// home screen.
+	// Concurrently, and it matters more at four rails than it did at two: these
+	// are four sequential ten-second timeouts otherwise, which is forty seconds
+	// of home screen. The fan-out is bounded by the table above and TMDB is one
+	// host, so there is nothing here to rate-limit against.
 	var (
 		wg      sync.WaitGroup
-		results = make([][]tmdb.Match, len(rows))
-		errs    = make([]error, len(rows))
+		results = make([][]tmdb.Match, len(rails))
+		errs    = make([]error, len(rails))
 	)
-	for i := range rows {
+	for i := range rails {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			results[i], errs[i] = fetch[i](r.Context())
+			results[i], errs[i] = rails[i].fetch(r.Context())
 		}(i)
 	}
 	wg.Wait()

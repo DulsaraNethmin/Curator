@@ -190,6 +190,26 @@ func (c *Client) PopularShows(ctx context.Context) ([]Match, error) {
 	return c.listTV(ctx, "/tv/popular", "popular shows")
 }
 
+// TopRatedShows is TopRated's counterpart, over /tv/top_rated. Same reason it
+// exists: trending and popular both describe this week, and without a third rail
+// the television half of Discover is two views of the same dozen shows.
+func (c *Client) TopRatedShows(ctx context.Context) ([]Match, error) {
+	return c.listTV(ctx, "/tv/top_rated", "top rated shows")
+}
+
+// OnTheAir returns shows with an episode airing in the next seven days.
+//
+// /tv/on_the_air rather than /tv/airing_today, which is the same list narrowed
+// to one date. A show airing today is a show a person may well have missed on
+// Monday, and a rail that empties itself overnight is a rail that looks broken.
+//
+// This is television's counterpart to NowPlaying and it lands on the same
+// argument: both are "out now, and therefore findable", which is the only kind
+// of card a downloader can honour.
+func (c *Client) OnTheAir(ctx context.Context) ([]Match, error) {
+	return c.listTV(ctx, "/tv/on_the_air", "on the air")
+}
+
 // listTV is list over the television envelope. The only difference is which
 // struct decodes the page, and it converts before returning so the result is
 // the same []Match the film lists produce.
