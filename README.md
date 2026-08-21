@@ -164,7 +164,7 @@ docker compose pull && docker compose up -d
 ```
 
 curator never touches the Docker socket. A container cannot replace itself, and the alternative —
-mounting the socket into a process that parses untrusted HTML from three indexers — was refused
+mounting the socket into a process that parses untrusted HTML from public indexers — was refused
 outright. The `updater` profile holds that privilege instead, scoped to curator, and it does nothing
 at all until the button is pressed
 ([D44](docs/decisions.md#d44--curator-reads-the-version-something-else-installs-it)).

@@ -2550,3 +2550,80 @@ neither.
 identical apibay fetches under ten keys. That is the pre-existing shape of the season key, it costs
 one call to a source answering in milliseconds, and the fix — a key derived from the string each
 indexer actually queries — is a refactor rather than a line.
+
+---
+
+## D50 — An indexer may decline a query it cannot answer, and that is not a failure
+
+**Status:** decided and **built** (T97) · **Sits beside**
+[D48](#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)'s
+`MediaCapable`, which answers the neighbouring question and could not answer this one ·
+**Completes** the thought `Outcome.NotApplicable` started · **Feeds**
+[D49](#d49--a-season-narrows-after-the-fetch-and-a-pack-that-contains-the-episode-is-kept-below-it),
+whose tiers are only as good as the season each release is believed to be
+
+EZTV is a fourth indexer, and it is the first one that cannot be asked every question a media type
+implies. It is keyed by **IMDb id** and has no keyword search at all — the id *is* the query — so a
+television search carrying no id is not a narrower question it could answer badly. It is a question
+it has no way to put.
+
+`MediaCapable` cannot express that. It sees a media type and nothing else, and EZTV passes that test
+in full: television is all it has. So the capability check gained a sibling rather than a parameter.
+
+```go
+type QueryCapable interface{ Answers(q Query) bool }
+func answersQuery(ix Indexer, q Query) bool   // default true, exactly like handlesMedia
+```
+
+Both are asked in the aggregator's existing pre-fan-out skip, and both land in the same outcome:
+
+```go
+skip[i] = !handlesMedia(ix, q.Media) || !answersQuery(ix, q)
+```
+
+### Why declining, and not searching anyway
+
+Because searching anyway **succeeds**, and that is the whole argument. Measured against the live API
+on 2026-08-21, `get-torrents` with no `imdb_id` does not 400 and does not return nothing:
+
+```
+{"torrents_count":1075625, "torrents":[ … the newest uploads across every show on the site … ]}
+```
+
+HTTP 200, real releases, real seeders, and none of them about the show anybody asked for. A source
+that fails is visible. A source that returns a hundred plausible wrong rows is not — nothing on the
+screen would look wrong, which is the same class of defect
+[D20](#d20--the-film-comes-from-tmdb-the-search-box-only-finds-it) and `NormaliseQuery` exist to
+prevent, and worse than the `ok:true, count:0` case they were written for.
+
+### Why NotApplicable and not an error
+
+The three states already lead to three different actions and only one of them is anybody's to take.
+A **failed** indexer is something to retry. An **unconfigured** one is a container to start. This is
+neither: nothing is wrong, nothing is missing, and there is nothing to set up — the search simply
+did not carry a fact that one source needs. Reporting it as a failure would paint EZTV red on every
+release-name search from a screen that has no TMDB id to offer, forever.
+
+It costs no new UI. The three-state rendering YTS-on-television already needed
+(`web/components/releases.tsx`, `Indexers`) reads `not_applicable` and says the source was not
+searched at all.
+
+### The default is yes, and that is the design
+
+An indexer that declares nothing answers everything, so YTS, TPB and 1337x need no declaration and a
+fifth source costs one only if it genuinely has a limit. That default is also what lets `Cache`
+forward `Answers` the way it forwards `Handles` — a cache that always satisfies the interface still
+tells the truth whichever indexer is inside it. `ResolveMagnet` deliberately is **not** forwarded,
+and the difference is exactly this: it has no safe default.
+
+### What this decision does not settle
+
+**`?season=0` is still overloaded.** The API reads absent-or-0 as "no season constraint" while
+TMDB's `season_number: 0` is Specials, so the two cannot both be expressed. T98's picker draws no
+Specials button rather than mapping it onto "everything" — a wrong answer is worse than a missing
+control. Fixing it means giving `Query.Season` a separate "unset", which is a contract change and
+not this task's.
+
+**The page budget is a cap, not a promise.** Rows arrive newest-first and EZTV is asked for three
+pages, so a long-running show truncates to its most recent 300. The arithmetic is in
+`eztvMaxPages`' own comment, where the next person to raise it will be standing.

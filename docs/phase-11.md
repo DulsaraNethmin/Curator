@@ -37,6 +37,13 @@ the README promised before this phase.
 - **A fourth indexer.** EZTV has said *"TV, a later phase"* in `architecture.md` since phase 2 and
   is still later: TPB's TV categories and 1337x's keyword search are what this phase uses.
 
+  **Overturned on 2026-08-21 by [T97](tasks/T97-eztv.md), and the reason is D49 rather than this
+  paragraph being wrong.** What this phase shipped was a season control that narrowed nothing;
+  [D49](decisions.md#d49--a-season-narrows-after-the-fetch-and-a-pack-that-contains-the-episode-is-kept-below-it)
+  fixed that and made the season each release is *believed* to be load-bearing — and TPB and 1337x
+  publish a name to be read, where EZTV states the field. Left in place as a record: the scope call
+  was right for what phase 11 knew.
+
 ---
 
 ## The reading this is built on — **measured 2026-08-20**

@@ -8,7 +8,7 @@ file it into the library, and tell Jellyfin to pick it up.
 
 The Pi ran 13 containers. Nine of them existed to generalise across 500+ indexers, private trackers
 with ratio rules, custom format scoring and multi-user request queues — or to carry the torrent
-client and its VPN. The actual usage is one user, a few dozen movies and three public sources.
+client and its VPN. The actual usage is one user, a few dozen movies and four public sources.
 
 ```mermaid
 flowchart LR
@@ -206,7 +206,7 @@ than an empty result.
 | YTS | `movies-api.accel.li/api/v2` | films only | fast | Returns `quality`, `size_bytes`, `hash` as fields — no name parsing. **Not `yts.mx`**, which is NXDOMAIN ([D12](decisions.md#d12--yts-is-reached-at-movies-apiaccelli-not-ytsmx)); `yts.rs` and `yts.hn` are clone sites running a re-implemented API. The only `MediaCapable` implementation: it declines TV rather than answering it empty |
 | The Pirate Bay | `apibay.org/q.php` | both | fast | JSON; build magnet from `info_hash`, parse quality from the name. Television is `cat=205,208`, and the query stays the **bare title** — narrowing it to a season costs the best pack the show has |
 | 1337x | HTML via `minter` | both | ~9 s | Broadest catalogue. Behind Cloudflare, so it goes through minter. The one source the season *does* go into the query for, as `<title> S02` |
-| EZTV | `eztv.re/api` | — | — | Structured season/episode, and **still not used**. This row said *"TV, a later phase"* from phase 2 until phase 11 — and that phase arrived and did not need it: TPB's TV categories and 1337x's keyword search were enough, so a fourth indexer stayed deliberately out of scope ([phase-11.md](phase-11.md)) |
+| EZTV | `eztvx.to/api` | TV only | fast | **States `season` and `episode` as fields**, so D49's tiers get the season rather than a reading of the name — 270 of 270 Silo rows, measured. JSON, no Cloudflare, no minter. **Not `eztv.re`**, which this row named from phase 2 until T97 and which answers a 301. The only `QueryCapable` implementation: keyed by IMDb id with no keyword surface, so it *declines* a query carrying none rather than answering it with the newest uploads across the whole site ([D50](decisions.md#d50--an-indexer-may-decline-a-query-it-cannot-answer-and-that-is-not-a-failure)). Asked for three pages, 300 rows — rows arrive newest-first, so a long-running show truncates to its most recent ([T97](tasks/T97-eztv.md)) |
 
 Searching TPB for `severance` with `cat=205,208` returns 100 rows carrying season packs *and* single
 episodes — `Severance - Season 1 - Mp4 x264 AC3 1080p` at 844 seeders beside
