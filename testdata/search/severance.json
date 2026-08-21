@@ -1,0 +1,470 @@
+{
+ "search": "Severance, season 2",
+ "media": "tv",
+ "captured": "2026-08-21",
+ "indexers": [
+  {
+   "name": "yts",
+   "ok": false,
+   "count": 0,
+   "not_applicable": true
+  },
+  {
+   "name": "tpb",
+   "ok": true,
+   "count": 100
+  },
+  {
+   "name": "eztv",
+   "ok": false,
+   "count": 0,
+   "not_applicable": true
+  }
+ ],
+ "releases": [
+  {
+   "id": "87004b28ef591443",
+   "quality": "1080p",
+   "seeders": 716,
+   "match": "exact"
+  },
+  {
+   "id": "84a2e8cbcad4e3ca",
+   "quality": "1080p",
+   "seeders": 386,
+   "match": "exact"
+  },
+  {
+   "id": "b10273f8603ac397",
+   "quality": "1080p",
+   "seeders": 385,
+   "match": "exact"
+  },
+  {
+   "id": "3b94a61b523bc290",
+   "quality": "1080p",
+   "seeders": 372,
+   "match": "exact"
+  },
+  {
+   "id": "f92f463f2c73d99a",
+   "quality": "1080p",
+   "seeders": 343,
+   "match": "exact"
+  },
+  {
+   "id": "f228d0f45143d43e",
+   "quality": "1080p",
+   "seeders": 340,
+   "match": "exact"
+  },
+  {
+   "id": "d85e26f793fa632e",
+   "quality": "1080p",
+   "seeders": 337,
+   "match": "exact"
+  },
+  {
+   "id": "1d7b948c93405ed2",
+   "quality": "1080p",
+   "seeders": 164,
+   "match": "exact"
+  },
+  {
+   "id": "f97fd4ac9118e74e",
+   "quality": "1080p",
+   "seeders": 124,
+   "match": "exact"
+  },
+  {
+   "id": "046460c8cd9b62e7",
+   "quality": "1080p",
+   "seeders": 122,
+   "match": "exact"
+  },
+  {
+   "id": "0d2a82e16f977a4c",
+   "quality": "1080p",
+   "seeders": 122,
+   "match": "exact"
+  },
+  {
+   "id": "d4df2a95383343c5",
+   "quality": "1080p",
+   "seeders": 122,
+   "match": "exact"
+  },
+  {
+   "id": "a6355ff6272a2cae",
+   "quality": "1080p",
+   "seeders": 118,
+   "match": "exact"
+  },
+  {
+   "id": "e124cb0a88ffd3d8",
+   "quality": "1080p",
+   "seeders": 117,
+   "match": "exact"
+  },
+  {
+   "id": "64b7fa9f8b8557aa",
+   "quality": "1080p",
+   "seeders": 115,
+   "match": "exact"
+  },
+  {
+   "id": "6c86e05ebc0d68a5",
+   "quality": "1080p",
+   "seeders": 114,
+   "match": "exact"
+  },
+  {
+   "id": "f5d261645ea7bb1a",
+   "quality": "1080p",
+   "seeders": 103,
+   "match": "exact"
+  },
+  {
+   "id": "1db0792d5b30a747",
+   "quality": "1080p",
+   "seeders": 102,
+   "match": "exact"
+  },
+  {
+   "id": "bc0a785c4fd7bd1b",
+   "quality": "1080p",
+   "seeders": 97,
+   "match": "exact"
+  },
+  {
+   "id": "89a85d5024f041ef",
+   "quality": "1080p",
+   "seeders": 96,
+   "match": "exact"
+  },
+  {
+   "id": "619bf79af6164641",
+   "quality": "1080p",
+   "seeders": 94,
+   "match": "exact"
+  },
+  {
+   "id": "c612d09f0b3344ff",
+   "quality": "1080p",
+   "seeders": 92,
+   "match": "exact"
+  },
+  {
+   "id": "c035c4fe6819325e",
+   "quality": "1080p",
+   "seeders": 87,
+   "match": "exact"
+  },
+  {
+   "id": "dee8bcf6b4c8431a",
+   "quality": "1080p",
+   "seeders": 86,
+   "match": "exact"
+  },
+  {
+   "id": "da9c056cedf14d56",
+   "quality": "1080p",
+   "seeders": 76,
+   "match": "exact"
+  },
+  {
+   "id": "bcd49c6f66d45c59",
+   "quality": "1080p",
+   "seeders": 73,
+   "match": "exact"
+  },
+  {
+   "id": "9fc67d93fd815814",
+   "quality": "1080p",
+   "seeders": 71,
+   "match": "exact"
+  },
+  {
+   "id": "fd8c23e9e7f01c47",
+   "quality": "720p",
+   "seeders": 69,
+   "match": "exact"
+  },
+  {
+   "id": "420f83e3ce12597c",
+   "quality": "1080p",
+   "seeders": 67,
+   "match": "exact"
+  },
+  {
+   "id": "7188a50c1cf4f38e",
+   "quality": "1080p",
+   "seeders": 65,
+   "match": "exact"
+  },
+  {
+   "id": "09b54d3878f3feba",
+   "quality": "720p",
+   "seeders": 65,
+   "match": "exact"
+  },
+  {
+   "id": "12383b7aad5f37c2",
+   "quality": "1080p",
+   "seeders": 62,
+   "match": "exact"
+  },
+  {
+   "id": "7eabfa227c76c327",
+   "quality": "720p",
+   "seeders": 60,
+   "match": "exact"
+  },
+  {
+   "id": "22b3ae6771495102",
+   "quality": "1080p",
+   "seeders": 57,
+   "match": "exact"
+  },
+  {
+   "id": "21d68c61a7f7bc82",
+   "quality": "1080p",
+   "seeders": 56,
+   "match": "exact"
+  },
+  {
+   "id": "2f1fd0c1305578b6",
+   "quality": "720p",
+   "seeders": 54,
+   "match": "exact"
+  },
+  {
+   "id": "4985cc7cf5236ce2",
+   "quality": "1080p",
+   "seeders": 53,
+   "match": "exact"
+  },
+  {
+   "id": "b3e19974d21eed4d",
+   "quality": "1080p",
+   "seeders": 42,
+   "match": "exact"
+  },
+  {
+   "id": "e997e4522737e7c9",
+   "quality": "1080p",
+   "seeders": 41,
+   "match": "exact"
+  },
+  {
+   "id": "e1a4d336a91db94c",
+   "quality": "720p",
+   "seeders": 39,
+   "match": "exact"
+  },
+  {
+   "id": "bf076fcb394b6216",
+   "quality": "720p",
+   "seeders": 39,
+   "match": "exact"
+  },
+  {
+   "id": "2685d066f65c2091",
+   "quality": "1080p",
+   "seeders": 38,
+   "match": "exact"
+  },
+  {
+   "id": "60da9b99cf441267",
+   "quality": "1080p",
+   "seeders": 38,
+   "match": "exact"
+  },
+  {
+   "id": "a1e894ed33e121b8",
+   "quality": "720p",
+   "seeders": 38,
+   "match": "exact"
+  },
+  {
+   "id": "152e08a2155541c1",
+   "quality": "1080p",
+   "seeders": 37,
+   "match": "exact"
+  },
+  {
+   "id": "7d762eee9b16b078",
+   "quality": "1080p",
+   "seeders": 37,
+   "match": "exact"
+  },
+  {
+   "id": "1e9e5045b010fc63",
+   "quality": "1080p",
+   "seeders": 37,
+   "match": "exact"
+  },
+  {
+   "id": "0ba5d1aefdb41298",
+   "quality": "1080p",
+   "seeders": 35,
+   "match": "exact"
+  },
+  {
+   "id": "c4d1dde886914138",
+   "quality": "720p",
+   "seeders": 34,
+   "match": "exact"
+  },
+  {
+   "id": "53c4354de9ebd5be",
+   "quality": "1080p",
+   "seeders": 33,
+   "match": "exact"
+  },
+  {
+   "id": "6a8d0bd76dafa3c7",
+   "quality": "720p",
+   "seeders": 33,
+   "match": "exact"
+  },
+  {
+   "id": "b35ca12d74fc87d4",
+   "quality": "720p",
+   "seeders": 33,
+   "match": "exact"
+  },
+  {
+   "id": "ad5668aea998a135",
+   "quality": "1080p",
+   "seeders": 32,
+   "match": "exact"
+  },
+  {
+   "id": "d0467ed0e7a7837c",
+   "quality": "720p",
+   "seeders": 32,
+   "match": "exact"
+  },
+  {
+   "id": "277d791b3f1fb994",
+   "quality": "1080p",
+   "seeders": 31,
+   "match": "exact"
+  },
+  {
+   "id": "1983a3a4818b8610",
+   "quality": "480p",
+   "seeders": 31,
+   "match": "exact"
+  },
+  {
+   "id": "2a7a8dd4c348620d",
+   "quality": "1080p",
+   "seeders": 29,
+   "match": "exact"
+  },
+  {
+   "id": "9d5bf577759b502d",
+   "quality": "720p",
+   "seeders": 29,
+   "match": "exact"
+  },
+  {
+   "id": "06e332bf40fb1340",
+   "quality": "1080p",
+   "seeders": 28,
+   "match": "exact"
+  },
+  {
+   "id": "4c778154adf4d0d2",
+   "quality": "720p",
+   "seeders": 27,
+   "match": "exact"
+  },
+  {
+   "id": "c9661d7d1ca8e898",
+   "quality": "1080p",
+   "seeders": 25,
+   "match": "exact"
+  },
+  {
+   "id": "a6eb731721aab179",
+   "quality": "1080p",
+   "seeders": 24,
+   "match": "exact"
+  },
+  {
+   "id": "884ac97b23ddc60c",
+   "quality": "720p",
+   "seeders": 24,
+   "match": "exact"
+  },
+  {
+   "id": "e9ed2de08a074979",
+   "quality": "720p",
+   "seeders": 24,
+   "match": "exact"
+  },
+  {
+   "id": "a429638b3ed98242",
+   "quality": "1080p",
+   "seeders": 22,
+   "match": "exact"
+  },
+  {
+   "id": "2e9dede17cd5d2de",
+   "quality": "1080p",
+   "seeders": 21,
+   "match": "exact"
+  },
+  {
+   "id": "1ab2520d7d159f33",
+   "quality": "1080p",
+   "seeders": 21,
+   "match": "exact"
+  },
+  {
+   "id": "e60eae7b95906e0a",
+   "quality": "1080p",
+   "seeders": 21,
+   "match": "exact"
+  },
+  {
+   "id": "4c7caa392786e099",
+   "quality": "1080p",
+   "seeders": 20,
+   "match": "exact"
+  },
+  {
+   "id": "656405d3caeb670f",
+   "quality": "720p",
+   "seeders": 18,
+   "match": "exact"
+  },
+  {
+   "id": "c03a9e265fa63692",
+   "quality": "480p",
+   "seeders": 18,
+   "match": "exact"
+  },
+  {
+   "id": "1dacd875e22d8dab",
+   "quality": "1080p",
+   "seeders": 17,
+   "match": "exact"
+  },
+  {
+   "id": "dc74a4426f8a00d1",
+   "quality": "720p",
+   "seeders": 17,
+   "match": "exact"
+  },
+  {
+   "id": "ead397cfe6e52fba",
+   "quality": "1080p",
+   "seeders": 32,
+   "match": "unstated"
+  }
+ ]
+}

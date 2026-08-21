@@ -1,0 +1,68 @@
+{
+ "search": "Severance, season 2 ep 5",
+ "media": "tv",
+ "captured": "2026-08-21",
+ "indexers": [
+  {
+   "name": "yts",
+   "ok": false,
+   "count": 0,
+   "not_applicable": true
+  },
+  {
+   "name": "tpb",
+   "ok": true,
+   "count": 100
+  },
+  {
+   "name": "eztv",
+   "ok": false,
+   "count": 0,
+   "not_applicable": true
+  }
+ ],
+ "releases": [
+  {
+   "id": "84a2e8cbcad4e3ca",
+   "quality": "1080p",
+   "seeders": 386,
+   "match": "exact"
+  },
+  {
+   "id": "64b7fa9f8b8557aa",
+   "quality": "1080p",
+   "seeders": 115,
+   "match": "exact"
+  },
+  {
+   "id": "152e08a2155541c1",
+   "quality": "1080p",
+   "seeders": 37,
+   "match": "exact"
+  },
+  {
+   "id": "a6eb731721aab179",
+   "quality": "1080p",
+   "seeders": 24,
+   "match": "exact"
+  },
+  {
+   "id": "dc74a4426f8a00d1",
+   "quality": "720p",
+   "seeders": 17,
+   "match": "exact"
+  },
+  {
+   "id": "87004b28ef591443",
+   "quality": "1080p",
+   "seeders": 716,
+   "match": "pack"
+  },
+  {
+   "id": "ead397cfe6e52fba",
+   "quality": "1080p",
+   "seeders": 32,
+   "match": "unstated"
+  }
+ ]
+}
