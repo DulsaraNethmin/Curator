@@ -1541,8 +1541,10 @@ else. Only the total moves, to `14 of 91`.
 
 ### Still live going out
 
-- **The Pi is still on 0.3.0** and nothing here changes that. `compose.pi.yaml` remains staged at
-  `:0.4.0` with `LIBRARY_TV: /media/tv`, un-run.
+- ~~**The Pi is still on 0.3.0**~~ — **wrong by the time it was written.** The Pi is on **0.4.0**;
+  `compose.pi.yaml`'s staged pin was run. Television is live on it. The next pin to move is `:0.5.0`,
+  and that is a deploy rather than a release — the two are separate branches here, as
+  `release-0.4.0` and `deploy-0.4.0-to-the-pi` were.
 - **Three of `phase-11.md`'s eight verification steps still have no recorded run** — the three that
   need real hardware, unchanged by this task.
 - **No quality filter** — **done by [T100](tasks/T100-quality-filter.md) on 2026-08-21**, and taking
