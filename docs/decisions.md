@@ -2627,3 +2627,100 @@ not this task's.
 **The page budget is a cap, not a promise.** Rows arrive newest-first and EZTV is asked for three
 pages, so a long-running show truncates to its most recent 300. The arithmetic is in
 `eztvMaxPages`' own comment, where the next person to raise it will be standing.
+
+---
+
+## D51 — Quality sections are ordered by their best release, not by resolution
+
+**Status:** decided and **built** (T99) · **Extends**
+[D11](#d11--rank-by-seeders-quality-is-a-filter-not-a-score) one level up rather than reversing it ·
+**Nests inside** [D49](#d49--a-season-narrows-after-the-fetch-and-a-pack-that-contains-the-episode-is-kept-below-it)'s
+tiers · **Same posture as** D49's own "the tier does not reverse D11"
+
+The release table draws in **quality sections** by default, with a `Grouped | Flat` toggle. A
+section is a **(tier, quality)** pair, and the sections come out in the order their first release
+appeared in the ranked list — which is to say, ordered by their best-seeded member.
+
+### The obvious ordering is D11's rejected sentence with numbers on it
+
+Ordering sections best-resolution-first is what a reader expects, because then 2160p is always in
+the same place. Measured live on 2026-08-21, against the merged answer from YTS, TPB and EZTV:
+
+```
+Interstellar (2014)   91 releases   1080p best 1194 seeders   2160p best 262
+Dune Part Two (2024)  77 releases   1080p best 1142 seeders   2160p best 518
+```
+
+A resolution-ordered list of sections leads with the 262 and buries the 1194. That is exactly
+"a 1-seeder 2160p above a 500-seeder 1080p", which D11 exists to refuse — and putting it behind a
+section header does not make it a different answer to the only question a manual picker is asking.
+
+So the rows are ordered by seeders and **the best row orders the sections**. D11, applied one level
+up. The cost is real and is accepted: section positions move between searches, so 2160p is not
+always in the same place. It is worth less than the top row.
+
+The same rule is why "unknown sorts last" does not survive here. Silo's nine releases with no
+resolution in the name outseed its ten 480p ones, 6 to 4, and they sort above them on that evidence
+— `QualityRank` orders a tie-break inside `rank`, and it deliberately does not order these.
+
+### Grouped is a partition, and that is what makes it safe as a default
+
+Inside one tier the ranked list is seeders-descending, so its qualities **interleave** — drawing a
+header wherever the quality changed would have opened a section every few rows. The rows have to
+actually move, which makes grouping a re-ordering rather than decoration.
+
+It is a **stable** partition, and the two properties that follow are the whole argument for
+defaulting it on. The first row on screen is the same release either way — verified over all three
+live answers — and no two rows within one section ever swap. Grouping re-arranges the middle of the
+list and never the top of it.
+
+It rests on a tier being **contiguous** in the ranked list, which is true only because the tier is
+`rank`'s primary key. Nobody set out to provide that, so `TestRankKeepsATierContiguous` pins it:
+demoting the tier below seeders would make a tier reopen twenty rows down and draw its header twice,
+in a different package, with nothing in the diff to say so.
+
+### The header names its tier, or "1080p" means two things on one screen
+
+Quality nests inside the tier, so an episode query with packs beneath it has a 1080p section in both
+— and a bare `1080p` twenty rows under another bare `1080p` is two different claims wearing one
+label. The pair is the section key and the header says which: `1080p · 45 releases` against
+`1080p · season packs · 2 releases`.
+
+The tier is named only when it is not `exact`, which keeps the common case clean rather than
+uniform. Measured, Interstellar and Silo are 100% one tier, so a film search and a season-only
+search get bare resolution headers and no qualifier at all. The qualifier appears on the only screen
+that has more than one tier on it.
+
+D49's tier divider stays above them. It carries the sentence that explains a tier the first time you
+meet it — "season 2 packs, which contain episode 5" — and a section header names a section; they say
+different things and neither replaces the other.
+
+### No threshold, and the toggle is why
+
+Grouping pays enormously where the lists are long and costs where they are short, and both were
+measured on the same day:
+
+```
+Interstellar        91 releases → 4 sections
+Silo S01           102 releases → 4 sections
+Severance S02E05     9 releases → 5 sections, under 2 tier dividers
+```
+
+The last one is seven rows of chrome over nine rows of list, and three of its five sections hold a
+single release under a header naming the quality that release's own badge already states.
+
+There is no row-count threshold to suppress that, because any number chosen for one would be a
+number nobody measured — and this repo's constants come from measurements. The answers are the
+toggle, which is one click and does not reset when a new search arrives, and the rule that a list
+with **one** section is never grouped at all: there the two modes render identically, so neither the
+headers nor a control offering a choice with no second outcome is drawn.
+
+### What this decision does not settle
+
+**The quality filter is still `?quality=`, and no screen sends it.** D11 offered quality as a filter
+and `FilterFound` implements it; sections make the same information browsable without narrowing, so
+nothing here needed it. A control that actually filters is still unbuilt.
+
+**Grouped mode leaves the Quality column in place**, where it now repeats its own section header on
+every row. Dropping it under grouping would reclaim the width, and it would also make the column set
+change under a toggle — which is a bigger jar than the repetition, and was not worth trading blind.
