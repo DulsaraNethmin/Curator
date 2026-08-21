@@ -199,3 +199,39 @@ func TestRankIsSeedersFirstWhenNothingIsTiered(t *testing.T) {
 		t.Errorf("rank[0] = %q, want the 500-seeder even though it is the lower resolution", got[0].Title)
 	}
 }
+
+// A tier arrives in one run, never in two, and that is load-bearing outside this
+// package: the screen's quality sections (D51) are a STABLE PARTITION of this
+// list — walk it once and open a section the first time a (tier, quality) pair
+// is seen — so a tier that came back after another tier had started would draw
+// its header a second time, twenty rows down, meaning the same thing.
+//
+// It holds because the tier is rank's primary key, so it is not a property
+// anybody set out to provide. That is exactly why it is pinned here: removing
+// the tier from rank, or demoting it below seeders, breaks a screen in a
+// different package with nothing in the diff to say so.
+//
+// The seeders below are chosen so that a seeders-first ordering interleaves:
+// pack 900, unstated 800, exact 100, exact 50, pack 10 — pack at both ends.
+func TestRankKeepsATierContiguous(t *testing.T) {
+	q := Query{Title: "Severance", Media: MediaTV, Season: 2, Episode: 5}
+	got := rank([]Found{
+		{Release: tvRelease("pack, best seeded of all", 2, 0, 900)},
+		{Release: tvRelease("the episode asked for", 2, 5, 100)},
+		{Release: tvRelease("Severance COMPLETE", 0, 0, 800)},
+		{Release: tvRelease("a worse pack", 2, 0, 10)},
+		{Release: tvRelease("the episode again, thinly seeded", 2, 5, 50)},
+	}, q)
+
+	seen := map[int]bool{}
+	previous := -1
+	for i, f := range got {
+		tier := SeasonTier(f.Release, q)
+		if tier != previous && seen[tier] {
+			t.Errorf("tier %d reopens at rank[%d] (%q): the sections would draw its header twice",
+				tier, i, f.Title)
+		}
+		seen[tier] = true
+		previous = tier
+	}
+}
