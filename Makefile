@@ -9,7 +9,7 @@ SHELL := /bin/bash
 ARM   := GOOS=linux GOARCH=arm64
 
 .DEFAULT_GOAL := help
-.PHONY: help status check build ui lists go test race vet cross run restart ui-dev live live-tunnel live-rss clean
+.PHONY: help status check build ui lists go test race vet cross run restart ui-dev deploy-pi live live-tunnel live-rss clean
 
 help: ## the targets, and what they are for
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk -F':.*?## ' '{printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
@@ -78,6 +78,16 @@ restart: ui ## rebuild, put that binary on PORT (8090), wait until /healthz answ
 
 ui-dev: ## the UI alone against a running binary; output:'export' has no dev proxy
 	NEXT_PUBLIC_API_BASE=http://localhost:8090 npm --prefix web run dev
+
+# Deploys what compose.pi.yaml PINS — it does not move the pin, and it does not
+# touch git. The pin moves on a deploy-N-to-the-pi branch somebody reviews, the
+# same way release-N moves the constant; a script that edited it would make the
+# repo a record of what a script did. Not a GitHub workflow because a hosted
+# runner has no route to 192.168.1.26, and a self-hosted runner on a PUBLIC repo
+# lets a fork's pull request run code on the box holding the media and the VPN
+# credentials. See the header of scripts/deploy-pi.sh.
+deploy-pi: ## put compose.pi.yaml's pinned version on the Pi, and roll back if it does not come up
+	@./scripts/deploy-pi.sh
 
 ## ---------------------------------------------------------------------------
 
