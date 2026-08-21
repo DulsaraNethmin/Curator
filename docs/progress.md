@@ -1561,3 +1561,105 @@ else. Only the total moves, to `14 of 91`.
 - **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot`** is still unfiled and still
   unmeasured since T98 narrowed it to contention. It **passed at every gate run on this branch**.
 - **`?season=0` is still overloaded**, and the picker still draws no Specials button.
+
+---
+
+## T101 — `make deploy-pi`, and 0.5.0 on the box
+
+0.5.0 was released and deployed by hand, and then the deploy was made a command.
+[D53](decisions.md#d53--the-pi-deploy-is-a-script-run-from-a-laptop-not-a-github-workflow) is the
+decision; [T101](tasks/T101-deploy-pi.md) is the task.
+
+### The release, and the flake in front of it
+
+`v0.5.0`'s release run **failed the first time** on `TestDeleteTorrentRemovesItsOwnFiles` at
+**60.08 s**, while the identical commit `f42bff839e40` had passed `check` on `main` **29 seconds
+earlier**. That is T74's flake, and it fired in front of the v0.4.0 publish too — run `32447250968`,
+`TestDeleteTorrentRefusesAnotherCategory`, 60.07 s. Same package, same deadline, sibling test. A
+re-run went green in 18m56s and published.
+
+**The dump from `await` was different this time, and it excludes the reading v0.4.0's suggested.**
+
+```
+polled 2942 times over 1m0.02s; last poll returned 0s before the deadline
+awaited: peers active=2 seeders=2 | pieces complete=3 | read data=163840
+2 peer conns, both:  reqq: 2+0/(8/1024):0/1024, flags: i:e,v1:
+                     32/32 completed, good chunks: 5/5, dr: ~14,600 KiB/s
+                     last helpful: 0.00s ago, connected: 60.01s ago
+```
+
+progress.md's T96 entry set the test: *"a count in the tens next time means the observation starved,
+not the swarm."* **2,942 polls** against a healthy baseline of 2,868, with the last one 0 s before
+the deadline. The poller did not starve, so `TorrentByHash` was not blocking — which leaves the
+other half of that pair, **the client's accounting disagreeing with itself**, and `Progress:0` sat
+beside `pieces complete=3` again.
+
+**No `c` in the flags.** v0.4.0's occurrence showed `flags: :e,v1:c` and the trailing `c` was called
+the answer. This one is `i:e,v1:` on both conns — interested, two requests outstanding, peers
+holding 32/32 and reporting `last helpful: 0.00s ago`. The swarm looked healthy and sixty seconds
+produced 160 KB. **"Choked" does not cover this one**, and the mechanism is still not named.
+
+The log also carries `vpn: the tunnel went down under a running download` at 17:43:34, which is
+T87's teardown test in the same package. Whether a sibling test tearing down a socket explains this
+is a **hypothesis and not a finding** — but it rhymes with T98's conclusion that `internal/remux`'s
+flake was contention rather than the leak its message names. It also fired once locally during this
+task's own gate and passed on the immediate re-run.
+
+### The deploy, measured
+
+```
+0.5.0 pull on the Pi          18.97 s   arm64, cold
+answering /healthz             ~1 s
+reporting healthy               6 s
+tunnel up                      16 s     187.15.101.96 — the Pi's own endpoint
+```
+
+The Pi went 0.4.0 → 0.5.0 with jellyfin, portainer, watchtower and homepage untouched at 45 hours'
+uptime. Television answers on it: `/api/shows` → 200.
+
+**The Pi's `compose.yaml` was three days stale** and nobody had noticed — 100 lines behind, of which
+11 were functional: the entire `updater` service from T80 and curator's
+`com.centurylinklabs.watchtower.scope` label. `compose.pi.yaml` supplied everything actually in use,
+so nothing was broken and nothing said so. Both files are shipped and backed up now.
+
+### Why the deploy is a script and not a workflow
+
+The Pi is `192.168.1.26` behind NAT, and the `100.108.251.229` on it is **`nordlynx`** — NordVPN's
+own interface, outbound only. It looks like a Tailscale CGNAT address and is not one, which was
+checked rather than assumed. No hosted runner has a route.
+
+A self-hosted runner would work, because it polls. It was refused: **this repository is public**,
+and a fork's pull request can run code on a self-hosted runner — the box holds the media, the
+Jellyfin server D43 protects, and the NordVPN credentials. Event filters narrow that; they do not
+remove it, and what is bought is skipping one typed command.
+
+### The guard was verified by firing it
+
+Pinning a version that was never built and dry-running:
+
+```
+make deploy-pi: no manifest for curator:9.9.9 at ghcr.io.
+  Registry said: manifest unknown
+EXIT=1
+```
+
+`manifest unknown` is the answer for a tag that does not exist **and** for one whose release run has
+not finished building, and at the Pi those are indistinguishable — which is why the check is made
+from the laptop, and why it is the **arm64** half specifically: an amd64-only manifest pulls happily
+here and fails there.
+
+### Still live going out
+
+- **The Pi is on 0.5.0**, television live, six containers. Jellyfin untouched.
+- **Three of `phase-11.md`'s eight verification steps still have no recorded run** — the three that
+  need real hardware. Two downloads were in flight on the Pi during this task and neither was one of
+  them.
+- **T74's mechanism is still not named**, and this occurrence removed a hypothesis rather than
+  supplying one. The next dump should be compared against the two readings above, not just the
+  v0.4.0 one.
+- **D44's Update button cannot work on this Pi as configured.** Watchtower re-pulls the same tag and
+  the Pi pins an exact version, deliberately, so the host's own watchtower cannot take curator.
+  Making the button work means a floating tag, which is the protection the pin provides. Unreached
+  rather than rejected.
+- **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot`** is still unfiled.
+- **`?season=0` is still overloaded**, and the picker still draws no Specials button.
