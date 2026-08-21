@@ -1,42 +1,154 @@
-/* Five screens of tables. No utility framework: it would be one more build step
-   and one more thing that has to still install in two years for the binary to be
-   rebuildable. */
+/* Thirteen screens of tables and posters. No utility framework: it would be one
+   more build step and one more thing that has to still install in two years for
+   the binary to be rebuildable.
+
+   What changed at T102 is not that rule — it is that the values underneath it
+   were ad hoc. Every size in here used to be chosen at its call site, which is
+   how one file ended up with nine font sizes between .74rem and 1.02rem and no
+   two paddings agreeing. The scales below are the whole of the refresh: pick
+   from them, never invent a number beside them. If a value is not on a scale it
+   should say in a comment what it is measuring instead.
+
+   No webfont, and that is deliberate rather than an omission. curator is a
+   binary on a LAN — frequently one with no route to the internet at all — so a
+   Google Fonts <link> is a request that hangs and then falls back anyway. The
+   system stack is the only one guaranteed to be there.
+
+   Colour is checked, not eyeballed: every pair below clears WCAG AA in both
+   themes, text at 4.5:1 and control boundaries at 3:1. The numbers are in
+   docs/tasks/T102-more-rails-and-a-visual-refresh.md. Do not adjust one of these
+   hexes without re-running that check — several are within 0.2 of their floor. */
 
 :root {
-  --bg: #fbfbfa;
+  /* --- scales -------------------------------------------------------------
+     Spacing is a 4px grid. The names are the multiplier, so --sp-6 is 6×4px. */
+  --sp-1: .25rem;
+  --sp-2: .5rem;
+  --sp-3: .75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.25rem;
+  --sp-6: 1.5rem;
+  --sp-8: 2rem;
+  --sp-10: 2.5rem;
+  --sp-12: 3rem;
+
+  /* Type. --fs-base is the 15px body this has always used; the rest are a
+     ratio around it rather than a set of one-off decimals. */
+  --fs-2xs: .6875rem;  /* 11px — badges, the log level column */
+  --fs-xs: .75rem;     /* 12px — card meta, table headings */
+  --fs-sm: .8125rem;   /* 13px — small print, the log body */
+  --fs-md: .875rem;    /* 14px — controls, table cells */
+  --fs-base: .9375rem; /* 15px — body */
+  --fs-lg: 1.0625rem;  /* 17px — h2 */
+  --fs-xl: 1.375rem;   /* 22px — h1 */
+  --fs-2xl: 1.75rem;   /* 28px — the hero's title */
+
+  --lh-tight: 1.25;
+  --lh-snug: 1.4;
+  --lh-body: 1.55;
+
+  /* Negative tracking on large text only: at 15px it closes up the counters and
+     costs legibility, at 28px it is the difference between a heading and a
+     paragraph in bold. */
+  --track-tight: -.018em;
+  --track-wide: .045em;
+
+  --r-xs: 4px;
+  --r-sm: 7px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-full: 999px;
+  --radius: var(--r-md);
+
+  /* Motion. One curve, two durations. --dur-slow belongs to the progress bar,
+     where the width is data and a snappy tween reads as a jump. */
+  --ease: cubic-bezier(.2, .7, .3, 1);
+  --dur-fast: 110ms;
+  --dur: 190ms;
+  --dur-slow: 400ms;
+
+  /* --- colour: light ------------------------------------------------------ */
+  --bg: #f7f6f3;
+  --bg-sunk: #eeece6;
   --panel: #ffffff;
-  --border: #e4e4e2;
-  --text: #1a1a19;
-  --muted: #6b6b68;
-  --accent: #2f6f4e;
-  --accent-soft: #e8f2ec;
-  --warn: #8a5a12;
-  --warn-soft: #fdf3e0;
-  --error: #a33232;
-  --error-soft: #fbeceb;
-  --radius: 8px;
+  --panel-2: #faf9f6;
+
+  /* Two borders, and the split is an accessibility rule rather than taste.
+     --border rules a table and edges a panel: decoration, which WCAG asks
+     nothing of. --border-control is the outline of an input or a button, which
+     is the entire thing telling somebody a control is there, and it owes 3:1
+     against every surface it sits on (WCAG 1.4.11). Using --border for an input
+     is the mistake this pair exists to stop; it is what the file did before. */
+  --border: #e3e0d8;
+  --border-strong: #cbc7bc;
+  --border-control: #8a877f;
+
+  --text: #16181b;
+  --text-2: #43474d;
+  --muted: #64686f;
+
+  --accent: #136c4c;
+  --accent-hover: #0d5239;
+  --accent-soft: #e0efe7;
+  --accent-ink: #ffffff; /* what is legible ON --accent — see .primary */
+
+  --warn: #87560f;
+  --warn-soft: #fbf0da;
+  --error: #a32b2b;
+  --error-soft: #fbe9e8;
+
+  /* Elevation, warm-tinted rather than pure black so a shadow on a paper ground
+     does not read as grey haze. */
+  --shadow-1: 0 1px 2px rgba(40, 34, 22, .05);
+  --shadow-2: 0 1px 2px rgba(40, 34, 22, .05), 0 4px 12px rgba(40, 34, 22, .07);
+  --shadow-3: 0 2px 4px rgba(40, 34, 22, .06), 0 12px 28px rgba(40, 34, 22, .11);
+
   /* The page's own background, at the opacity that keeps --text legible over a
      film still. It is a colour rather than a filter because both themes write
      text on it. */
-  --scrim: rgba(251, 251, 250, .9);
-  --scrim-edge: rgba(251, 251, 250, .45);
+  --scrim: rgba(247, 246, 243, .92);
+  --scrim-edge: rgba(247, 246, 243, .45);
+
+  color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #131314;
-    --panel: #1a1a1c;
-    --border: #2c2c2f;
-    --text: #e8e8e6;
-    --muted: #97979a;
-    --accent: #6cc394;
-    --accent-soft: #1c2a23;
-    --warn: #d9a441;
-    --warn-soft: #2a2318;
-    --error: #e0736c;
-    --error-soft: #2b1c1c;
-    --scrim: rgba(19, 19, 20, .9);
-    --scrim-edge: rgba(19, 19, 20, .4);
+    --bg: #0d0e10;
+    --bg-sunk: #141619;
+    --panel: #16181c;
+    --panel-2: #1c1f24;
+
+    --border: #282c32;
+    --border-strong: #3b4048;
+    --border-control: #666b73;
+
+    --text: #e9eaed;
+    --text-2: #b2b7be;
+    --muted: #888e96;
+
+    --accent: #57cf9a;
+    --accent-hover: #7adeb0;
+    --accent-soft: #12291e;
+    /* Dark text on the accent, not white: #57cf9a is a light colour, and white
+       on it is 1.6:1. The button's label flips with the theme where every other
+       pairing in this file does not. */
+    --accent-ink: #0d0e10;
+
+    --warn: #e0ad4e;
+    --warn-soft: #2a2216;
+    --error: #f0837a;
+    --error-soft: #2c1a19;
+
+    /* Black, and deeper. A shadow on a near-black ground does almost nothing at
+       light-mode opacities, so the lift on a poster comes mostly from the
+       hovered ring rather than from this. */
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, .4);
+    --shadow-2: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 14px rgba(0, 0, 0, .45);
+    --shadow-3: 0 2px 6px rgba(0, 0, 0, .5), 0 14px 32px rgba(0, 0, 0, .55);
+
+    --scrim: rgba(13, 14, 16, .92);
+    --scrim-edge: rgba(13, 14, 16, .4);
   }
 }
 
@@ -47,55 +159,119 @@ html, body {
   padding: 0;
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: var(--fs-base);
+  line-height: var(--lh-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 a { color: inherit; }
 
-.shell { max-width: 74rem; margin: 0 auto; padding: 0 1.25rem 4rem; }
+::selection { background: var(--accent-soft); color: var(--accent); }
+
+/* One focus ring for the whole application.
+   This used to exist on inputs and buttons only, which left every LINK without
+   one: tabbing the poster grid, the nav, or the counters strip moved an
+   invisible cursor. `:focus-visible` rather than `:focus` so a mouse click does
+   not draw it, and the offset keeps it clear of a poster's own edge. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+/* A card inside a rail is in an overflow-x container, so a ring drawn at the
+   scroll edge is clipped. Scrolling it into view with room for the ring is the
+   fix; without this the focused card is technically visible and practically
+   half-cut. */
+.rail > *, .grid > * { scroll-margin: var(--sp-2); }
+
+/* Everything that moves, stops. The progress bar is the only animation here
+   carrying information, and it still lands on the right width instantly. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.shell { max-width: 76rem; margin: 0 auto; padding: 0 var(--sp-5) var(--sp-12); }
 
 /* --- nav ---------------------------------------------------------------- */
 
 .topbar {
   border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  /* The bar sits over scrolling posters, so a flat fill reads as a lid. The
+     blur is progressively enhanced: without support the color-mix above is
+     still 88% opaque, which is legible on its own. */
+  backdrop-filter: saturate(1.6) blur(12px);
+  -webkit-backdrop-filter: saturate(1.6) blur(12px);
   position: sticky;
   top: 0;
   z-index: 10;
 }
 .topbar-inner {
-  max-width: 74rem;
+  max-width: 76rem;
   margin: 0 auto;
-  padding: 0 1.25rem;
+  padding: 0 var(--sp-5);
   display: flex;
   align-items: center;
-  gap: 1.5rem;
-  min-height: 3.4rem;
+  gap: var(--sp-6);
+  min-height: 3.5rem;
   flex-wrap: wrap;
 }
 .brand {
-  font-weight: 650;
-  letter-spacing: -0.01em;
+  font-weight: 660;
+  font-size: var(--fs-lg);
+  letter-spacing: var(--track-tight);
   text-decoration: none;
-  margin-right: .25rem;
+  margin-right: var(--sp-1);
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
 }
-.brand span { color: var(--muted); font-weight: 400; font-size: .82rem; margin-left: .45rem; }
-nav { display: flex; gap: .35rem; flex-wrap: wrap; }
+.brand span {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: var(--fs-xs);
+  letter-spacing: 0;
+  margin-left: 0;
+  /* A rule instead of a gap: at 12px beside a 17px wordmark the tagline was
+     reading as part of the name. */
+  padding-left: var(--sp-2);
+  border-left: 1px solid var(--border);
+}
+nav { display: flex; gap: var(--sp-1); flex-wrap: wrap; }
 nav a {
   text-decoration: none;
   color: var(--muted);
-  padding: .35rem .7rem;
-  border-radius: 6px;
-  font-size: .92rem;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-nav a:hover { background: var(--bg); color: var(--text); }
-nav a[data-active="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 550; }
+nav a:hover { background: var(--bg-sunk); color: var(--text); }
+nav a[data-active="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 
 /* --- headings ----------------------------------------------------------- */
 
-h1 { font-size: 1.45rem; letter-spacing: -0.015em; margin: 1.9rem 0 .2rem; }
-h2 { font-size: 1.02rem; margin: 2rem 0 .6rem; }
-.lede { color: var(--muted); margin: 0 0 1.5rem; font-size: .94rem; max-width: 52rem; }
+h1 {
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+  letter-spacing: var(--track-tight);
+  margin: var(--sp-8) 0 var(--sp-1);
+}
+h2 {
+  font-size: var(--fs-lg);
+  line-height: var(--lh-snug);
+  letter-spacing: -.008em;
+  margin: var(--sp-8) 0 var(--sp-3);
+}
+.lede { color: var(--text-2); margin: 0 0 var(--sp-6); font-size: var(--fs-base); max-width: 52rem; }
 
 /* --- panels and tables --------------------------------------------------- */
 
@@ -104,24 +280,27 @@ h2 { font-size: 1.02rem; margin: 2rem 0 .6rem; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
+  box-shadow: var(--shadow-1);
 }
-.panel + .panel { margin-top: 1rem; }
+.panel + .panel { margin-top: var(--sp-4); }
 
-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
 th {
   text-align: left;
-  font-weight: 550;
-  font-size: .78rem;
-  letter-spacing: .04em;
+  font-weight: 600;
+  font-size: var(--fs-2xs);
+  letter-spacing: var(--track-wide);
   text-transform: uppercase;
   color: var(--muted);
-  padding: .6rem .85rem;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--panel-2);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
-td { padding: .6rem .85rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
+td { padding: var(--sp-3) var(--sp-4); border-bottom: 1px solid var(--border); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
-tbody tr:hover { background: var(--bg); }
+tbody tr { transition: background var(--dur-fast) var(--ease); }
+tbody tr:hover { background: var(--bg-sunk); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td.tight { white-space: nowrap; }
 
@@ -129,18 +308,34 @@ td.tight { white-space: nowrap; }
 
 button, .button {
   font: inherit;
-  font-size: .9rem;
-  padding: .45rem .9rem;
-  border-radius: 6px;
-  border: 1px solid var(--border);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-control);
   background: var(--panel);
   color: var(--text);
   cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
-button:hover:not(:disabled) { border-color: var(--muted); }
+button:hover:not(:disabled) { background: var(--bg-sunk); border-color: var(--text-2); }
+/* A press that moves. One pixel is enough to feel and small enough that a
+   mis-click does not shift the layout under the next one. */
+button:active:not(:disabled) { transform: translateY(1px); }
 button:disabled { opacity: .5; cursor: not-allowed; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-1);
+}
+button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  box-shadow: var(--shadow-2);
+}
 
 /* The opposite of .primary: an action that has to be findable without competing
    with the one somebody actually came for. "Not this film?" sits beside Watch
@@ -151,8 +346,13 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); }
   border-color: transparent;
   background: transparent;
   color: var(--muted);
+  box-shadow: none;
 }
-.quiet:hover, button.quiet:hover:not(:disabled) { color: var(--text); border-color: var(--border); }
+.quiet:hover, button.quiet:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-sunk);
+  border-color: var(--border);
+}
 
 /* A button that reads as a link: it changes what the screen does rather than
    where it goes, so it must not be an <a> with a fake href. */
@@ -163,9 +363,12 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); }
   font: inherit;
   color: var(--accent);
   text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
+  box-shadow: none;
 }
-.linkbutton:hover:not(:disabled) { filter: brightness(1.15); }
+.linkbutton:hover:not(:disabled) { color: var(--accent-hover); background: none; }
+.linkbutton:active:not(:disabled) { transform: none; }
 .linkbutton:disabled { color: var(--muted); text-decoration: none; }
 
 /* The Movies | Shows switch. Deliberately the nav's vocabulary rather than a
@@ -176,41 +379,59 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 /* Wraps, for the episode row: a 22-episode season is ordinary and a row that
    refuses to wrap would push the page sideways. The two-button media switch
    above never reaches the edge, so this costs it nothing. */
-.switch { display: inline-flex; flex-wrap: wrap; gap: .2rem; padding: .15rem; border-radius: 8px; background: var(--bg); }
+.switch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  padding: var(--sp-1);
+  border-radius: var(--r-md);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+}
 .switch button {
   border-color: transparent;
   background: transparent;
   color: var(--muted);
-  padding: .3rem .8rem;
-  font-size: .88rem;
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-md);
+  box-shadow: none;
 }
-.switch button:hover:not(:disabled) { border-color: transparent; color: var(--text); }
+.switch button:hover:not(:disabled) { border-color: transparent; background: var(--panel); color: var(--text); }
 .switch button[data-active="true"] {
   background: var(--accent-soft);
   color: var(--accent);
-  font-weight: 550;
+  font-weight: 600;
 }
 
 input, select, textarea {
   font: inherit;
-  font-size: .92rem;
-  padding: .45rem .6rem;
-  border-radius: 6px;
-  border: 1px solid var(--border);
+  font-size: var(--fs-md);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-control);
   background: var(--panel);
   color: var(--text);
   min-width: 0;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-input:focus, select:focus, textarea:focus, button:focus-visible {
+input:hover:not(:disabled), select:hover:not(:disabled), textarea:hover:not(:disabled) {
+  border-color: var(--text-2);
+}
+/* The ring is the shared :focus-visible rule above; a field also takes it on a
+   plain :focus, because a click into a text box is exactly when somebody wants
+   to see which box they are in. */
+input:focus, select:focus, textarea:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+  border-color: var(--accent);
 }
 /* A disabled field on the Settings screen is not a broken one — it is a value
    the environment owns, and the note beside it says which variable. So it dims
    rather than greys out: it has to stay readable, because reading it is the
    entire reason it is drawn. */
 input:disabled, select:disabled, textarea:disabled {
-  background: var(--bg);
+  background: var(--bg-sunk);
+  border-color: var(--border);
   color: var(--muted);
   cursor: not-allowed;
 }
@@ -223,70 +444,113 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
    Playback choices, the Jellyfin ending and Copyable — ended up passing an
    inline `gap` to something that was not a flex container at all, and drawing
    their buttons against each other. */
-.row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
-form.row { margin-bottom: 1.1rem; }
+.row { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; }
+form.row { margin-bottom: var(--sp-4); }
 form.row input[name="title"] { flex: 1 1 20rem; }
 
 /* --- status --------------------------------------------------------------- */
 
 .badge {
   display: inline-block;
-  font-size: .74rem;
-  font-weight: 550;
+  font-size: var(--fs-2xs);
+  font-weight: 600;
   letter-spacing: .02em;
-  padding: .15rem .5rem;
-  border-radius: 999px;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-full);
   border: 1px solid var(--border);
   color: var(--muted);
   white-space: nowrap;
+  line-height: var(--lh-tight);
 }
 .badge.ok { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .badge.bad { background: var(--error-soft); color: var(--error); border-color: transparent; }
 
+/* A banner is ruled on its leading edge rather than boxed. The border-box
+   version read as a second panel; the rule says "this is a note about what is
+   below it" at a glance and in one element. */
 .banner {
-  border-radius: var(--radius);
-  padding: .75rem 1rem;
-  margin: 0 0 1rem;
-  font-size: .92rem;
+  border-radius: var(--r-sm);
+  padding: var(--sp-3) var(--sp-4);
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-md);
   border: 1px solid transparent;
+  border-left-width: 3px;
 }
-.banner.error { background: var(--error-soft); color: var(--error); }
-.banner.warn { background: var(--warn-soft); color: var(--warn); }
-.banner.info { background: var(--accent-soft); color: var(--accent); }
-.banner strong { display: block; margin-bottom: .15rem; }
-.banner button { margin-top: .55rem; }
+.banner.error { background: var(--error-soft); color: var(--error); border-left-color: var(--error); }
+.banner.warn { background: var(--warn-soft); color: var(--warn); border-left-color: var(--warn); }
+.banner.info { background: var(--accent-soft); color: var(--accent); border-left-color: var(--accent); }
+.banner strong { display: block; margin-bottom: var(--sp-1); }
+.banner button { margin-top: var(--sp-2); }
 
 .muted { color: var(--muted); }
-.small { font-size: .85rem; }
+.small { font-size: var(--fs-sm); }
+
+/* Present to a screen reader, absent to everyone else. The Discover screen's
+   own <h1> is the only user: since the billboard took the top of that page there
+   is no visible page title, and a document whose first heading is an <h2> makes
+   the outline start halfway down. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 
 /* The stall reason, under its badge. It is a sentence rather than a word, so it
    is given a width to wrap inside: left alone it stretches the State column
    across the table and squeezes the release name it is explaining. */
-.reason { max-width: 24rem; margin-top: .3rem; line-height: 1.35; }
+.reason { max-width: 24rem; margin-top: var(--sp-1); line-height: var(--lh-snug); }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
 
-.empty { padding: 2.5rem 1rem; text-align: center; color: var(--muted); }
+.empty { padding: var(--sp-10) var(--sp-4); text-align: center; color: var(--muted); }
 
 /* --- progress ------------------------------------------------------------- */
 
-.bar { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; min-width: 5rem; }
-.bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+.bar {
+  height: 6px;
+  border-radius: var(--r-full);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  min-width: 5rem;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: var(--r-full);
+  transition: width var(--dur-slow) var(--ease);
+}
 
 /* --- cards ---------------------------------------------------------------- */
 
-.cards { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+.cards { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
 .card {
   display: block;
   text-decoration: none;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1rem 1.1rem;
+  padding: var(--sp-4) var(--sp-5);
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
 }
-.card:hover { border-color: var(--muted); }
-.card b { display: block; font-size: 1.6rem; font-weight: 600; letter-spacing: -0.02em; }
-.card span { color: var(--muted); font-size: .88rem; }
+.card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+.card b {
+  display: block;
+  font-size: var(--fs-2xl);
+  font-weight: 620;
+  letter-spacing: var(--track-tight);
+  font-variant-numeric: tabular-nums;
+}
+.card span { color: var(--muted); font-size: var(--fs-md); }
 
 /* --- the counters strip ---------------------------------------------------- */
 
@@ -294,46 +558,300 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: .5rem 1.9rem;
-  padding: .8rem 1.1rem;
+  gap: var(--sp-2) var(--sp-8);
+  padding: var(--sp-3) var(--sp-5);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
 }
-.strip a { display: flex; align-items: baseline; gap: .45rem; text-decoration: none; }
+.strip a {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  text-decoration: none;
+  transition: color var(--dur-fast) var(--ease);
+}
 .strip a:hover span { color: var(--text); }
-.strip b { font-size: 1.2rem; font-weight: 600; letter-spacing: -0.01em; }
-.strip span { color: var(--muted); font-size: .88rem; }
+.strip b {
+  font-size: var(--fs-xl);
+  font-weight: 620;
+  letter-spacing: var(--track-tight);
+  /* The three counters change under a poll, and proportional digits make the
+     row twitch sideways every time one does. */
+  font-variant-numeric: tabular-nums;
+}
+.strip span { color: var(--muted); font-size: var(--fs-md); }
 /* Pushed to the far end: it is the one link here that is an action rather than
    a count, and reading as a fourth number would be a lie about it. */
 .strip a.push { margin-left: auto; }
-.strip a.push span { color: var(--accent); }
+.strip a.push span { color: var(--accent); font-weight: 550; }
+.strip a.push:hover span { color: var(--accent-hover); }
+
+/* --- the billboard ---------------------------------------------------------- */
+
+/* Full-bleed, out of the shell it is nested in.
+   `margin-inline: calc(50% - 50vw)` is the standard break-out: 50% of the
+   parent's width minus half the viewport is exactly the distance from the
+   shell's edge to the window's.
+
+   **`100vw` includes the scrollbar and `clientWidth` does not**, so the break-out
+   overhangs by half the scrollbar on each side — measured at 8px on a 1440px
+   window with a classic scrollbar. `overflow-x: clip` is what absorbs it, and it
+   goes on BOTH html and body: the scrollbar lives on the document element, so
+   clipping only the body leaves the overhang scrollable. clip and NOT hidden,
+   because hidden makes the element a scroll container and the sticky topbar
+   stops sticking. */
+html, body { overflow-x: clip; }
+
+.billboard {
+  position: relative;
+  margin-inline: calc(50% - 50vw);
+  width: 100vw;
+  max-width: 100vw;
+  margin-top: 0;
+  margin-bottom: var(--sp-8);
+  /* Tall enough to be the screen rather than a banner, capped so a short
+     window is not entirely hero with the first rail below the fold. */
+  min-height: clamp(21rem, 58vh, 30rem);
+  display: flex;
+  /* stretch, NOT flex-end. With flex-end the scrim shrink-wraps its text and the
+     gradient starts a third of the way down the image, which draws a visible
+     horizontal seam across the backdrop. The scrim fills the box and puts its
+     own text at the bottom instead. */
+  align-items: stretch;
+  background-color: #0d0e10;
+  background-position: center 18%;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+
+/* The billboard dissolves into the page instead of ending at a line.
+   It fades to --bg and therefore flips with the theme, which is the one part of
+   this element that is not fixed dark — it has to be, because what it is fading
+   INTO is the page. Pointer-events are off so the last row of the scrim stays
+   clickable. */
+.billboard::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 5rem;
+  pointer-events: none;
+  background: linear-gradient(to top, var(--bg) 0%, transparent 100%);
+}
+
+/* The one dark-in-both-themes surface in the file.
+   Everything else paints --text on --panel and flips with the system. This
+   paints white on a photograph, because the background is not ours to choose —
+   it is an arbitrary film still — and a scrim dark enough for ONE known text
+   colour is honest where one trying to serve two is a guess. The gradient is
+   opaque where the words are and clears by the right edge so the image is
+   actually visible; the bottom stop is what carries the last line over a bright
+   sky. */
+.billboard-scrim {
+  position: relative;
+  z-index: 1; /* over ::after, so the button is not sitting under the fade */
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  padding: var(--sp-12) var(--sp-5) var(--sp-10);
+  background:
+    linear-gradient(to top, rgba(6, 7, 8, .92) 0%, rgba(6, 7, 8, .55) 45%, rgba(6, 7, 8, .1) 100%),
+    linear-gradient(to right, rgba(6, 7, 8, .88) 0%, rgba(6, 7, 8, .55) 45%, rgba(6, 7, 8, 0) 85%);
+}
+.billboard-text { max-width: 40rem; margin: 0 auto; width: 100%; }
+/* The shell is 76rem wide with 1.25rem of padding, and the billboard is not
+   inside it any more — so the text is re-aligned to where the rails below it
+   start, or the hero and the first row of posters would not share a left edge. */
+@media (min-width: 78.5rem) {
+  .billboard-scrim { padding-inline: calc((100vw - 76rem) / 2 + var(--sp-5)); }
+  .billboard-text { margin: 0; }
+}
+
+.billboard-eyebrow {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: #8fe3ba;
+}
+.billboard-title {
+  margin: 0;
+  font-size: clamp(1.9rem, 5vw, 3rem);
+  line-height: 1.05;
+  letter-spacing: -.03em;
+  font-weight: 700;
+  color: #fff;
+  text-wrap: balance;
+}
+.billboard-meta {
+  display: flex;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: var(--sp-3);
+  font-size: var(--fs-md);
+  color: rgba(255, 255, 255, .82);
+  font-variant-numeric: tabular-nums;
+}
+/* The badge keeps its own colours — "in library" is the same green here as on
+   every poster, and re-tinting it for the dark surface would teach the mark
+   twice. */
+.billboard-meta .badge { border-color: transparent; }
+
+/* Three lines. TMDB overviews run to a full paragraph and a billboard is a
+   glance, not a synopsis. */
+.billboard-overview {
+  margin: var(--sp-3) 0 0;
+  max-width: 34rem;
+  font-size: var(--fs-base);
+  line-height: var(--lh-snug);
+  color: rgba(255, 255, 255, .88);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.billboard-actions { margin-top: var(--sp-5); display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+/* An <a> wearing .button, so it needs the padding a <button> gets from its own
+   rule and the line-height an anchor does not have. */
+.billboard-actions .button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  padding: var(--sp-3) var(--sp-6);
+  font-size: var(--fs-base);
+  font-weight: 600;
+  border-radius: var(--r-sm);
+}
+.billboard-actions .button.primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--accent-ink);
+  transition: background var(--dur-fast) var(--ease);
+}
+.billboard-actions .button.primary:hover { background: var(--accent-hover); }
+
+@media (max-width: 40rem) {
+  .billboard { min-height: 19rem; }
+  .billboard-scrim { padding: var(--sp-10) var(--sp-4) var(--sp-6); }
+}
 
 /* --- discover rails --------------------------------------------------------- */
+
+/* Twelve rails since T102, so the gap between one and the next is doing real
+   work — it is what stops the screen reading as one long strip of posters. */
+.rail-section { margin-bottom: var(--sp-8); }
+.rail-section h2 { margin-top: 0; margin-bottom: var(--sp-3); }
+
+/* The arrows sit on the wrapper, not the strip: a button inside an overflow-x
+   container scrolls away with the content it is meant to move. */
+.rail-wrap { position: relative; }
 
 /* A rail scrolls sideways rather than wrapping: twenty films wrapped into a
    grid is the Library screen, and Discover is meant to be glanced at. */
 .rail {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: 9.5rem;
-  gap: 1rem;
+  grid-auto-columns: 10.5rem;
+  gap: var(--sp-4);
   overflow-x: auto;
-  padding-bottom: .5rem;
+  /* Room for the hover lift. A card that grows inside a clipping container is
+     shaved off at the top and bottom without this, which looks like a bug in
+     the artwork rather than an effect. */
+  padding: var(--sp-2) 0 var(--sp-3);
   scroll-snap-type: x proximity;
+  scroll-padding-left: var(--sp-1);
   overscroll-behavior-x: contain;
   /* macOS draws a full-width white bar here when "always show scrollbars" is
      set, which is louder than the posters above it. */
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color var(--dur) var(--ease);
 }
+.rail-wrap:hover .rail { scrollbar-color: var(--border-strong) transparent; }
 .rail > * { scroll-snap-align: start; }
+.rail::-webkit-scrollbar { height: 8px; }
+.rail::-webkit-scrollbar-track { background: transparent; }
+.rail::-webkit-scrollbar-thumb { background: transparent; border-radius: var(--r-full); }
+.rail-wrap:hover .rail::-webkit-scrollbar-thumb { background: var(--border-strong); }
+
+/* The edge fade: a rail that continues past the viewport says so.
+   It is drawn on the wrapper and pointer-events:none, so it never eats a click
+   meant for the poster underneath it. Each side disappears when that end is
+   reached — data-start and data-end come from the component, which measures the
+   strip rather than guessing. */
+.rail-wrap::before,
+.rail-wrap::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: var(--sp-3);
+  width: 3.5rem;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 1;
+  transition: opacity var(--dur) var(--ease);
+}
+.rail-wrap::before {
+  left: 0;
+  background: linear-gradient(to right, var(--bg) 15%, transparent 100%);
+}
+.rail-wrap::after {
+  right: 0;
+  background: linear-gradient(to left, var(--bg) 15%, transparent 100%);
+}
+.rail-wrap[data-start='true']::before { opacity: 0; }
+.rail-wrap[data-end='true']::after { opacity: 0; }
+
+/* The arrows. Hidden until the rail is hovered, which is the streaming-service
+   convention and is safe here because they are aria-hidden and duplicate scroll
+   somebody already has — nothing is lost to a reader who never sees them. */
+.rail-arrow {
+  position: absolute;
+  top: 0;
+  bottom: var(--sp-3);
+  z-index: 2;
+  width: 2.75rem;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.75rem;
+  line-height: 1;
+  border: none;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  color: var(--text);
+  box-shadow: var(--shadow-2);
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease), background var(--dur-fast) var(--ease);
+}
+.rail-arrow.left { left: 0; }
+.rail-arrow.right { right: 0; }
+.rail-wrap:hover .rail-arrow { opacity: 1; }
+.rail-arrow:hover { background: var(--panel); }
+.rail-arrow:active:not(:disabled) { transform: none; }
+/* At an end there is nothing to scroll to, so the arrow goes with the fade it
+   sits on rather than becoming a button that does nothing. */
+.rail-wrap[data-start='true'] .rail-arrow.left,
+.rail-wrap[data-end='true'] .rail-arrow.right { opacity: 0; pointer-events: none; }
+
+/* A touch device has no hover to reveal them and no need for them either — the
+   strip is already a drag. */
+@media (hover: none) {
+  .rail-arrow { display: none; }
+}
 
 /* --- library grid --------------------------------------------------------- */
 
 .grid {
   display: grid;
-  gap: 1rem;
+  gap: var(--sp-4) var(--sp-4);
   grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr));
 }
 /* A card is a link or a button, never a <div>: since T61 every Library row has
@@ -345,7 +863,17 @@ form.row input[name="title"] { flex: 1 1 20rem; }
    is not clickable, and it should not look as though it is. */
 .movie { display: block; text-decoration: none; color: inherit; }
 a.movie:hover img, a.movie:hover .noposter,
-button.movie:hover img, button.movie:hover .noposter { border-color: var(--muted); }
+button.movie:hover img, button.movie:hover .noposter,
+a.movie:focus-visible img, a.movie:focus-visible .noposter {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-3);
+  /* Grows rather than only lifting, which is the streaming-service gesture and
+     the reason .rail carries vertical padding: without the room the top of the
+     card is shaved off by the scroll container. Kept under 1.05 because a poster
+     that jumps a long way pushes its neighbours' apparent position and makes a
+     rail hard to aim at. */
+  transform: scale(1.04) translateY(-2px);
+}
 a.movie:hover .title, button.movie:hover .title { color: var(--accent); }
 /* A button carries none of an anchor's inherited typography, and it centres its
    text where every other card is left-aligned. */
@@ -357,22 +885,31 @@ button.movie {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  box-shadow: none;
 }
+button.movie:hover:not(:disabled) { background: none; }
+button.movie:active:not(:disabled) { transform: none; }
 
 /* The Library card's wrapper. Delete has to be OUTSIDE the anchor — a <button>
    inside an <a> is invalid and double-fires — so the grid child is this and the
    two are siblings. It carries the spacing the button used to set inline. */
 .movie-cell { display: flex; flex-direction: column; }
-.movie-cell > button { margin-top: .4rem; width: 100%; }
+.movie-cell > button { margin-top: var(--sp-1); width: 100%; }
 
+/* The posters are the content of this application, and everything above is
+   frame around them. They get the only real elevation in the file, and they are
+   the one place the hover does more than tint a border. */
 .movie img, .movie .noposter {
   width: 100%;
   aspect-ratio: 2 / 3;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   object-fit: cover;
   display: block;
-  background: var(--panel);
+  background: var(--bg-sunk);
   border: 1px solid var(--border);
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
 }
 /* Not scoped to .movie: the hero uses the same fallback, and left-aligned text
    in the top corner of an empty box reads as a broken image rather than a
@@ -382,26 +919,35 @@ button.movie {
   place-items: center;
   text-align: center;
   color: var(--muted);
-  font-size: .74rem;
-  padding: .5rem;
-  line-height: 1.35;
+  font-size: var(--fs-xs);
+  padding: var(--sp-2);
+  line-height: var(--lh-snug);
 }
 /* Two lines, always. A one-line title beside a two-line one would push its
    metadata row out of alignment with the rest of the grid — "Tom Clancy's Jack
    Ryan - Ghost War" is the fixture's proof that this happens with real data.
    Reserving the space costs nothing and keeps every row's meta on one line. */
 .movie .title {
-  font-size: .87rem;
-  margin-top: .45rem;
-  font-weight: 500;
-  line-height: 1.3;
-  min-height: 2.6em;
+  font-size: var(--fs-md);
+  margin-top: var(--sp-2);
+  font-weight: 550;
+  line-height: var(--lh-tight);
+  min-height: 2.5em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  transition: color var(--dur-fast) var(--ease);
 }
-.movie .meta { font-size: .78rem; color: var(--muted); display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
+.movie .meta {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  display: flex;
+  gap: var(--sp-1);
+  flex-wrap: wrap;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
 
 /* --- the movie screen ------------------------------------------------------ */
 
@@ -409,21 +955,22 @@ button.movie {
    over it in one element. It is set inline from TMDB's path, which is why there
    is no url() here. */
 .hero {
-  margin: 1.6rem 0 1.2rem;
+  margin: var(--sp-6) 0 var(--sp-5);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--r-lg);
   overflow: hidden;
   background: var(--panel) center 20% / cover no-repeat;
+  box-shadow: var(--shadow-2);
 }
 
 /* Both themes have to stay readable over an arbitrary film still, and the text
    colour is not ours to choose — it is --text, which flips. So the scrim is the
-   page's own background at 88%, fading out on the right where nothing is
+   page's own background at 92%, fading out on the right where nothing is
    written. A fixed dark overlay would put dark text on dark in light mode. */
 .hero-scrim {
   display: flex;
-  gap: 1.5rem;
-  padding: 1.6rem;
+  gap: var(--sp-6);
+  padding: var(--sp-6);
   background: linear-gradient(
     to right,
     var(--scrim) 0%,
@@ -436,27 +983,38 @@ button.movie {
   width: 11rem;
   flex: none;
   aspect-ratio: 2 / 3;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   object-fit: cover;
   border: 1px solid var(--border);
-  background: var(--panel);
+  background: var(--bg-sunk);
+  box-shadow: var(--shadow-2);
 }
 .hero-text { min-width: 0; }
-.hero-text h1 { margin: 0 0 .5rem; font-size: 1.75rem; }
-.hero-text h1 .year { color: var(--muted); font-weight: 400; }
+.hero-text h1 {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-2xl);
+  letter-spacing: var(--track-tight);
+  line-height: var(--lh-tight);
+}
+.hero-text h1 .year { color: var(--muted); font-weight: 400; letter-spacing: 0; }
 .hero-text .meta {
   display: flex;
-  gap: .6rem;
+  gap: var(--sp-3);
   flex-wrap: wrap;
   align-items: center;
   color: var(--muted);
-  font-size: .88rem;
+  font-size: var(--fs-md);
 }
-.hero-text .tagline { margin: .7rem 0 0; font-style: italic; color: var(--muted); }
-.hero-text .overview { margin: .55rem 0 1rem; max-width: 46rem; font-size: .94rem; }
+.hero-text .tagline {
+  margin: var(--sp-3) 0 0;
+  font-style: italic;
+  color: var(--text-2);
+  font-size: var(--fs-base);
+}
+.hero-text .overview { margin: var(--sp-2) 0 var(--sp-4); max-width: 46rem; font-size: var(--fs-base); }
 
 @media (max-width: 40rem) {
-  .hero-scrim { flex-direction: column; }
+  .hero-scrim { flex-direction: column; padding: var(--sp-4); }
   .hero-poster { width: 8rem; }
 }
 
@@ -466,7 +1024,7 @@ button.movie {
    scan of a 1975 film is otherwise taller than the viewport and the controls
    land below the fold — where a play button that cannot be seen is the same as
    one that is not there. */
-.player { margin: 0 0 1.5rem; }
+.player { margin: 0 0 var(--sp-6); }
 .player .film {
   width: 100%;
   max-height: 70vh;
@@ -474,26 +1032,27 @@ button.movie {
   background: #000;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
 }
-.player .banner { margin-top: .75rem; }
+.player .banner { margin-top: var(--sp-3); }
 
-.actions { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+.actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; }
 
 /* The manual matcher (T67). It sits below the actions on /library/film/ and
    borrows the grid, so the posters are the same size they are everywhere else. */
-.matcher { margin-top: 1.5rem; }
-.matcher h2 { margin: 0 0 .3rem; }
-.matcher .grid { margin-top: 1rem; }
-.matcher-search { display: flex; gap: .5rem; flex-wrap: wrap; margin: .8rem 0; }
+.matcher { margin-top: var(--sp-6); }
+.matcher h2 { margin: 0 0 var(--sp-1); }
+.matcher .grid { margin-top: var(--sp-4); }
+.matcher-search { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin: var(--sp-3) 0; }
 /* The title grows and the year does not: a year is four characters and an input
    sized for it says so without a label taking a line of its own. */
 .matcher-search input:first-child { flex: 1 1 16rem; }
 .matcher-search input:nth-child(2) { flex: 0 0 5rem; }
 
-.vlc { margin-top: .75rem; padding: 1rem 1.1rem; }
-.vlc h3 { margin: 0 0 .3rem; font-size: 1rem; }
-.vlc p { margin: .4rem 0 0; max-width: 46rem; }
-.vlc-url { display: flex; gap: .5rem; margin-top: .7rem; }
+.vlc { margin-top: var(--sp-3); padding: var(--sp-4) var(--sp-5); }
+.vlc h3 { margin: 0 0 var(--sp-1); font-size: var(--fs-base); font-weight: 600; }
+.vlc p { margin: var(--sp-2) 0 0; max-width: 46rem; }
+.vlc-url { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); }
 /* Monospace and full width: this is a URL somebody is about to check by eye
    before pasting it into a player, and a proportional font hides the
    difference between a 1 and an l in a signed token. */
@@ -501,12 +1060,12 @@ button.movie {
   flex: 1;
   min-width: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: .82rem;
-  padding: .45rem .6rem;
+  font-size: var(--fs-sm);
+  padding: var(--sp-2) var(--sp-3);
   color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: var(--bg-sunk);
+  border: 1px solid var(--border-control);
+  border-radius: var(--r-sm);
 }
 
 /* Three columns at full width, not five: "English, Japanese, Xhosa" and a
@@ -514,75 +1073,75 @@ button.movie {
    them mid-list reads as damage. */
 .facts {
   display: grid;
-  gap: .1rem 2rem;
+  gap: 0 var(--sp-8);
   grid-template-columns: repeat(auto-fit, minmax(21rem, 1fr));
-  margin: 0 0 1.5rem;
-  font-size: .88rem;
+  margin: 0 0 var(--sp-6);
+  font-size: var(--fs-md);
 }
-.facts > div { display: flex; gap: .5rem; padding: .3rem 0; border-bottom: 1px solid var(--border); }
+.facts > div { display: flex; gap: var(--sp-2); padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); }
 .facts dt { color: var(--muted); flex: none; min-width: 8.5rem; }
 .facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
 /* --- the settings form ------------------------------------------------------ */
 
-.section { padding: 0; margin-bottom: 1.1rem; }
-.section-head { padding: 1rem 1.1rem .2rem; }
-.section-head h2 { margin: 0 0 .25rem; }
-.section-head p { margin: 0; max-width: 52rem; }
-.section-warning { margin: .9rem 1.1rem 0; }
+.section { padding: 0; margin-bottom: var(--sp-4); }
+.section-head { padding: var(--sp-4) var(--sp-5) var(--sp-1); }
+.section-head h2 { margin: 0 0 var(--sp-1); }
+.section-head p { margin: 0; max-width: 52rem; color: var(--text-2); }
+.section-warning { margin: var(--sp-3) var(--sp-5) 0; }
 
-.section-fields { padding: .4rem 1.1rem 0; }
+.section-fields { padding: var(--sp-2) var(--sp-5) 0; }
 
 /* Label left, control right, and the label column wide enough for the longest
    variable (QBIT_DOWNLOADS_PATH) so no name wraps mid-word. */
 .field {
   display: grid;
   grid-template-columns: 15rem 1fr;
-  gap: .35rem 1.25rem;
-  padding: .8rem 0;
+  gap: var(--sp-1) var(--sp-5);
+  padding: var(--sp-3) 0;
   border-bottom: 1px solid var(--border);
   align-items: start;
 }
 .field:last-child { border-bottom: none; }
-.field-name label { display: block; font-weight: 550; overflow-wrap: anywhere; }
-.field-badges { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .35rem; }
+.field-name label { display: block; font-weight: 600; overflow-wrap: anywhere; }
+.field-badges { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-top: var(--sp-1); }
 
-.field-control { display: flex; flex-direction: column; gap: .45rem; min-width: 0; }
+.field-control { display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
 .field-control > input,
 .field-control > select,
 .field-control > textarea { width: 100%; max-width: 34rem; }
-.field-control textarea { resize: vertical; line-height: 1.45; }
-.field-control .check { display: flex; align-items: center; gap: .5rem; }
-.field-control .check input { width: auto; }
+.field-control textarea { resize: vertical; line-height: var(--lh-snug); }
+.field-control .check { display: flex; align-items: center; gap: var(--sp-2); }
+.field-control .check input { width: auto; accent-color: var(--accent); }
 
-.field-notes { display: flex; flex-direction: column; gap: .3rem; max-width: 46rem; }
+.field-notes { display: flex; flex-direction: column; gap: var(--sp-1); max-width: 46rem; color: var(--muted); }
 .field-notes p { margin: 0; }
 .field-error { color: var(--error); }
 
-.section-failure { margin: .4rem 1.1rem 0; }
+.section-failure { margin: var(--sp-2) var(--sp-5) 0; }
 .section-save {
   display: flex;
   align-items: center;
-  gap: .75rem;
+  gap: var(--sp-3);
   flex-wrap: wrap;
-  padding: .85rem 1.1rem;
+  padding: var(--sp-3) var(--sp-5);
   border-top: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--panel-2);
 }
 
-h2.running { margin-top: 2.6rem; }
+h2.running { margin-top: var(--sp-10); }
 
 @media (max-width: 46rem) {
-  .field { grid-template-columns: 1fr; gap: .5rem; }
+  .field { grid-template-columns: 1fr; gap: var(--sp-2); }
 }
 
 /* --- the login gate --------------------------------------------------------- */
 
-.gate { max-width: 30rem; margin: 3rem auto 0; }
+.gate { max-width: 30rem; margin: var(--sp-12) auto 0; }
 .gate h1 { margin-top: 0; }
-.gate-form { display: flex; flex-direction: column; gap: .5rem; padding: 1.1rem; }
-.gate-form label { font-weight: 550; font-size: .9rem; }
-.gate-note { margin: .9rem 0 0; }
+.gate-form { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-5); }
+.gate-form label { font-weight: 600; font-size: var(--fs-md); }
+.gate-note { margin: var(--sp-3) 0 0; }
 
 /* --- logs ------------------------------------------------------------------ */
 
@@ -590,61 +1149,64 @@ h2.running { margin-top: 2.6rem; }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: .5rem 0;
+  box-shadow: var(--shadow-1);
+  padding: var(--sp-2) 0;
   max-height: 70vh;
   overflow-y: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: .8rem;
-  line-height: 1.55;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-body);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
 .logline {
   display: grid;
   grid-template-columns: 5.5rem 3.4rem 1fr;
-  gap: .6rem;
-  padding: .12rem .85rem;
+  gap: var(--sp-3);
+  padding: 2px var(--sp-4);
   align-items: baseline;
 }
-.logline:hover { background: var(--bg); }
-.logline .when { color: var(--muted); white-space: nowrap; }
-.logline .lvl { font-weight: 600; font-size: .72rem; letter-spacing: .03em; }
+.logline:hover { background: var(--bg-sunk); }
+.logline .when { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.logline .lvl { font-weight: 700; font-size: var(--fs-2xs); letter-spacing: var(--track-wide); }
 .logline .lvl.DEBUG { color: var(--muted); }
 .logline .lvl.INFO  { color: var(--accent); }
 .logline .lvl.WARN  { color: var(--warn); }
 .logline .lvl.ERROR { color: var(--error); }
 .logline .body { word-break: break-word; }
-.logline .attr { color: var(--muted); margin-left: .5rem; }
-.logline .attr b { font-weight: 500; color: var(--text); opacity: .75; }
+.logline .attr { color: var(--muted); margin-left: var(--sp-2); }
+.logline .attr b { font-weight: 500; color: var(--text-2); opacity: 1; }
 
 /* The Playback screen (T65).
    Its own block rather than reusing .field, because this is a flow with an
    ending and not a row of the registry: the labels sit above their inputs so a
    two-sentence explanation can follow each one, which is what the read-only
    library path and the guessed public URL both need. */
-.playback-ask { padding: 1.1rem; }
-.playback-ask h2 { margin-bottom: .35rem; }
-.playback-ask > .banner { margin-top: .9rem; }
+.playback-ask { padding: var(--sp-5); }
+.playback-ask h2 { margin-bottom: var(--sp-1); }
+.playback-ask > .banner { margin-top: var(--sp-3); }
 
 .playback-choices {
   display: grid;
   grid-template-columns: 14rem 1fr;
-  gap: .4rem 1.25rem;
-  margin: 1.1rem 0 0;
-  padding-top: .9rem;
+  gap: var(--sp-2) var(--sp-5);
+  margin: var(--sp-4) 0 0;
+  padding-top: var(--sp-3);
   border-top: 1px solid var(--border);
 }
-.playback-choices dt { font-weight: 550; }
-.playback-choices dd { margin: 0; }
+.playback-choices dt { font-weight: 600; }
+.playback-choices dd { margin: 0; color: var(--text-2); }
 /* The ending panel puts a button after the list, and a grid row is not a
    margin: without this it sits against the last line of prose. */
-.playback-choices + button { margin-top: 1.1rem; }
+.playback-choices + button { margin-top: var(--sp-4); }
 
-.playback-form { display: flex; flex-direction: column; gap: 1rem; margin-top: 1rem; }
-.playback-form label { display: flex; flex-direction: column; gap: .35rem; }
-.playback-form label > span:first-child { font-weight: 550; }
+.playback-form { display: flex; flex-direction: column; gap: var(--sp-4); margin-top: var(--sp-4); }
+.playback-form label { display: flex; flex-direction: column; gap: var(--sp-1); }
+.playback-form label > span:first-child { font-weight: 600; }
 .playback-form input { max-width: 34rem; }
 .playback-form button { align-self: flex-start; }
-.playback-form ol { margin: .5rem 0 0; padding-left: 1.2rem; }
-.playback-form li { margin-bottom: .25rem; }
+.playback-form ol { margin: var(--sp-2) 0 0; padding-left: var(--sp-5); }
+.playback-form li { margin-bottom: var(--sp-1); }
 
 /* The first run (T50).
    The steps that write a setting are <Section>s and are already styled; this is
@@ -652,13 +1214,13 @@ h2.running { margin-top: 2.6rem; }
    two boxes of a password that is not a registry field on this page. Same
    padding as .playback-ask so a page alternating between the three does not
    step in and out. */
-.firstrun-step { padding: 1.1rem; }
-.firstrun-step h2 { margin: 0 0 .35rem; }
-.firstrun-step p { margin: 0 0 .7rem; max-width: 46rem; }
+.firstrun-step { padding: var(--sp-5); }
+.firstrun-step h2 { margin: 0 0 var(--sp-1); }
+.firstrun-step p { margin: 0 0 var(--sp-3); max-width: 46rem; }
 .firstrun-step p:last-child { margin-bottom: 0; }
-.firstrun-step > .banner { margin: .9rem 0; }
+.firstrun-step > .banner { margin: var(--sp-3) 0; }
 
-.firstrun-password { display: flex; flex-direction: column; gap: .5rem; margin-top: .9rem; }
+.firstrun-password { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-3); }
 .firstrun-password input { max-width: 22rem; }
 .firstrun-password p { margin: 0; }
 
@@ -668,28 +1230,32 @@ h2.running { margin-top: 2.6rem; }
    the world. Reusing .field would have put it in the grid and made it look like
    a seventh setting. */
 .minter-status {
-  margin: .2rem 1.1rem 0;
-  padding: .9rem 0 .2rem;
+  margin: var(--sp-1) var(--sp-5) 0;
+  padding: var(--sp-3) 0 var(--sp-1);
   border-top: 1px solid var(--border);
 }
-.minter-status h3 { margin: 0 0 .35rem; font-weight: 600; }
-.minter-status p { margin: 0 0 .7rem; }
-.minter-status .banner { margin-bottom: .3rem; }
+.minter-status h3 { margin: 0 0 var(--sp-1); font-size: var(--fs-base); font-weight: 600; }
+.minter-status p { margin: 0 0 var(--sp-3); }
+.minter-status .banner { margin-bottom: var(--sp-1); }
 
 /* The pasted line. Selectable and wrapping: on a LAN address there is no
    secure context, so navigator.clipboard is undefined and selecting it by hand
    is the fallback the copy button falls back to. */
 .command {
   display: inline-block;
-  padding: .45rem .6rem;
-  background: var(--panel-2, var(--bg));
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--bg-sunk);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--r-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-sm);
   overflow-wrap: anywhere;
   user-select: all;
 }
 
 @media (max-width: 40rem) {
   .playback-choices { grid-template-columns: 1fr; }
-  .playback-choices dd { margin-bottom: .6rem; }
+  .playback-choices dd { margin-bottom: var(--sp-2); }
+  .shell { padding-left: var(--sp-4); padding-right: var(--sp-4); }
+  .topbar-inner { padding-left: var(--sp-4); padding-right: var(--sp-4); }
 }
