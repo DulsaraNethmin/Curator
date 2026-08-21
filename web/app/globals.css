@@ -168,6 +168,26 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 .linkbutton:hover:not(:disabled) { filter: brightness(1.15); }
 .linkbutton:disabled { color: var(--muted); text-decoration: none; }
 
+/* The Movies | Shows switch. Deliberately the nav's vocabulary rather than a
+   pair of ordinary buttons: it selects which of two things a screen is showing,
+   which is what the nav does, and reusing the accent-soft "you are here" mark
+   means a reader learns it once. It is drawn only where television is on, so it
+   never appears as a switch with one working side. */
+.switch { display: inline-flex; gap: .2rem; padding: .15rem; border-radius: 8px; background: var(--bg); }
+.switch button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: .3rem .8rem;
+  font-size: .88rem;
+}
+.switch button:hover:not(:disabled) { border-color: transparent; color: var(--text); }
+.switch button[data-active="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 550;
+}
+
 input, select, textarea {
   font: inherit;
   font-size: .92rem;

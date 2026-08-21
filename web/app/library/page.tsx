@@ -1,12 +1,55 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { api, formatBytes, posterURL, type Deletion, type Movie, type ScanResult } from '@/lib/api';
+import {
+  api,
+  formatBytes,
+  posterURL,
+  type Deletion,
+  type MediaType,
+  type Movie,
+  type ScanResult,
+} from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
+import { MediaSwitch, mediaFromParams, useTelevision } from '@/components/media-switch';
 
-export default function Library() {
-  const [movies, setMovies] = useState<Movie[] | null>(null);
+/**
+ * The library, in one of two halves: /library/ and /library/?media=tv.
+ *
+ * The half rides in a query string rather than a path segment for D21's reason —
+ * `output: 'export'` builds one page per static route and there is no
+ * `/library/[media]/` to enumerate — and it rides in the URL at all so that the
+ * Shows half survives a reload and a shared link. `useSearchParams()` without a
+ * <Suspense> boundary fails the build, which is the toolchain remembering D21 so
+ * nobody has to.
+ *
+ * **The Shows half does not exist when LIBRARY_TV is unset.** No switch, and a
+ * ?media=tv typed by hand falls back to films rather than asking a route that
+ * answers 503. That is D48's opt-in, and it is the difference between a feature
+ * that is off and one that is broken.
+ */
+export default function LibraryPage() {
+  return (
+    <Suspense fallback={<p className="lede">Loading…</p>}>
+      <Library />
+    </Suspense>
+  );
+}
+
+function Library() {
+  const params = useSearchParams();
+  const television = useTelevision();
+
+  const [chosen, setChosen] = useState<MediaType | null>(null);
+  // The URL decides until somebody presses the switch, and television being off
+  // overrides both: a bookmark to ?media=tv on an install that has since turned
+  // television off is a films page, not a 503.
+  const media: MediaType = television.on ? (chosen ?? mediaFromParams(params.get('media'))) : 'movie';
+  const tv = media === 'tv';
+
+  const [rows, setRows] = useState<Movie[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [scanning, setScanning] = useState(false);
   const [scan, setScan] = useState<ScanResult | null>(null);
@@ -15,26 +58,41 @@ export default function Library() {
   const [deleting, setDeleting] = useState(false);
   const [deleted, setDeleted] = useState<Deletion | null>(null);
 
-  async function load() {
+  async function load(kind: MediaType) {
     setError(null);
     try {
-      setMovies(await api.movies());
+      setRows(kind === 'tv' ? await api.shows() : await api.movies());
     } catch (e) {
       setError(e);
     }
   }
 
+  // Held until useTelevision has answered, so the films list is not fetched and
+  // then thrown away a beat later on an install where the URL asked for shows.
   useEffect(() => {
-    void load();
-  }, []);
+    if (!television.known) return;
+    setRows(null);
+    void load(media);
+  }, [media, television.known]);
+
+  function choose(next: MediaType) {
+    setChosen(next);
+    setOnlyUnmatched(false);
+    // Next supports window.history for query-only updates and keeps
+    // useSearchParams in step. The URL is the shareable half of this screen.
+    window.history.replaceState(null, '', next === 'tv' ? '/library/?media=tv' : '/library/');
+  }
 
   async function rescan() {
     setScanning(true);
     setScan(null);
     setError(null);
     try {
+      // One scan, both roots. It is deliberately not scoped to the half being
+      // shown — there is one prune over both, and a scan that walked only one
+      // would be a different operation wearing the same button.
       setScan(await api.scan());
-      await load();
+      await load(media);
     } catch (e) {
       setError(e);
     } finally {
@@ -42,15 +100,18 @@ export default function Library() {
     }
   }
 
-  // A null tmdb_id is the row that wants human attention. D6 made the column
-  // nullable rather than dropping the folder precisely so this list can exist,
-  // so hiding it would defeat the point of recording it.
-  const unmatched = movies?.filter((m) => m.tmdb_id === null) ?? [];
+  // The row that wants human attention, and **which column says so depends on
+  // the media type**: a show's tmdb_id is NULL by construction, because its id
+  // lives in tmdb_tv_id — TMDB numbers films and shows independently (D48).
+  // Reading tmdb_id here would report every show as unmatched, for ever.
+  const isUnmatched = (row: Movie) => (tv ? row.tmdb_tv_id === null : row.tmdb_id === null);
+
+  const unmatched = rows?.filter(isUnmatched) ?? [];
   // library_path is null until an import or a scan puts the film on disk, so a
   // wanted row is emphatically NOT "on disk" and must not be counted as one.
-  const onDisk = movies?.filter((m) => m.library_path !== null) ?? [];
-  const wanted = movies?.filter((m) => m.library_path === null) ?? [];
-  const shown = onlyUnmatched ? unmatched : (movies ?? []);
+  const onDisk = rows?.filter((m) => m.library_path !== null) ?? [];
+  const wanted = rows?.filter((m) => m.library_path === null) ?? [];
+  const shown = onlyUnmatched ? unmatched : (rows ?? []);
 
   async function remove(movie: Movie) {
     setDeleting(true);
@@ -58,7 +119,7 @@ export default function Library() {
     try {
       setDeleted(await api.deleteMovie(movie.id));
       setConfirming(null);
-      await load();
+      await load(media);
     } catch (e) {
       setError(e);
       setConfirming(null);
@@ -71,10 +132,30 @@ export default function Library() {
     <>
       <h1>Library</h1>
       <p className="lede">
-        One folder per film, named <span className="mono">Title (Year)</span>. Scanning re-reads the
-        disk and never writes to it — a folder with no film in it loses its entry here, and stays
-        exactly where it is on disk.
+        {tv ? (
+          <>
+            One folder per show, named <span className="mono">Show (Year)</span>, with a{' '}
+            <span className="mono">Season NN</span> under it per season. Scanning re-reads the disk
+            and never writes to it — a folder with no episode in it loses its entry here, and stays
+            exactly where it is on disk.
+          </>
+        ) : (
+          <>
+            One folder per film, named <span className="mono">Title (Year)</span>. Scanning re-reads
+            the disk and never writes to it — a folder with no film in it loses its entry here, and
+            stays exactly where it is on disk.
+          </>
+        )}
       </p>
+
+      {/* Absent, not disabled, when LIBRARY_TV is unset. There is no second half
+          to switch to on that install, and a switch with one working side is
+          worse than no switch. */}
+      {television.on && (
+        <div className="row" style={{ margin: '0 0 1.1rem' }}>
+          <MediaSwitch media={media} onChange={choose} disabled={scanning} />
+        </div>
+      )}
 
       <form className="row" onSubmit={(e) => (e.preventDefault(), rescan())}>
         <button className="primary" disabled={scanning}>
@@ -82,11 +163,11 @@ export default function Library() {
         </button>
         {unmatched.length > 0 && (
           <button type="button" onClick={() => setOnlyUnmatched((v) => !v)}>
-            {onlyUnmatched ? `Show all ${movies?.length ?? 0}` : `Show ${unmatched.length} unmatched`}
+            {onlyUnmatched ? `Show all ${rows?.length ?? 0}` : `Show ${unmatched.length} unmatched`}
           </button>
         )}
         <span className="small muted">
-          {movies ? `${onDisk.length} on disk` : 'loading…'}
+          {rows ? `${onDisk.length} on disk` : 'loading…'}
           {wanted.length > 0 && ` · ${wanted.length} wanted, not yet imported`}
           {unmatched.length > 0 && ` · ${unmatched.length} unmatched by TMDB`}
         </span>
@@ -94,7 +175,11 @@ export default function Library() {
 
       {scanning && (
         <Working
-          what="Walking the library and asking TMDB"
+          what={
+            television.on
+              ? 'Walking both libraries and asking TMDB'
+              : 'Walking the library and asking TMDB'
+          }
           hint="A cold scan of 29 folders takes about nine seconds. A rescan makes no TMDB calls at all and is instant."
         />
       )}
@@ -111,19 +196,42 @@ export default function Library() {
               : `${scan.added} new folder${scan.added === 1 ? '' : 's'}.`}
             {scan.unmatched > 0 && ` ${scan.unmatched} still unmatched by TMDB.`}
           </span>
+
+          {/* The television half of the same pass, and it is drawn on the
+              CONFIGURED state rather than on `scan.shows > 0`. All six counters
+              are zero when LIBRARY_TV is unset, so a zero there is a root that
+              was never walked — but with television on, "0 shows" is a real
+              finding and the one somebody needs to see after pointing the
+              variable at the wrong directory. */}
+          {television.on && (
+            <span className="small">
+              {scan.shows} show{scan.shows === 1 ? '' : 's'} holding {scan.episodes} episode
+              {scan.episodes === 1 ? '' : 's'}, added {scan.shows_added}, matched{' '}
+              {scan.shows_matched}.
+              {scan.shows_unmatched > 0 && ` ${scan.shows_unmatched} still unmatched by TMDB.`}
+            </span>
+          )}
+
           {/* Removed and missing are the two the scan must never do quietly:
-              one deleted a row, the other could not account for one. */}
+              one deleted a row, the other could not account for one. Both count
+              BOTH media types — there is one prune over both roots. */}
           {scan.empty > 0 && (
             <span className="small muted">
               {scan.empty} folder{scan.empty === 1 ? '' : 's'} on disk hold no film and{' '}
               {scan.empty === 1 ? 'was' : 'were'} not recorded.
             </span>
           )}
+          {television.on && scan.shows_empty > 0 && (
+            <span className="small muted">
+              {scan.shows_empty} folder{scan.shows_empty === 1 ? '' : 's'} under{' '}
+              <span className="mono">LIBRARY_TV</span> hold no episode and{' '}
+              {scan.shows_empty === 1 ? 'was' : 'were'} not recorded.
+            </span>
+          )}
           {scan.removed > 0 && (
             <span className="small muted">
-              {scan.removed} entr{scan.removed === 1 ? 'y' : 'ies'} removed — no film there, or a
-              path outside <span className="mono">LIBRARY_MOVIES</span>. The folders were left on
-              disk.
+              {scan.removed} entr{scan.removed === 1 ? 'y' : 'ies'} removed — nothing there, or a
+              path outside the library root that owns it. The folders were left on disk.
             </span>
           )}
           {scan.missing > 0 && (
@@ -136,7 +244,7 @@ export default function Library() {
         </div>
       )}
 
-      {error !== null && <Failure error={error} onRetry={load} />}
+      {error !== null && <Failure error={error} onRetry={() => load(media)} />}
 
       {deleted && (
         <div className="banner info">
@@ -152,11 +260,11 @@ export default function Library() {
           </span>
           {/* The row is gone either way, but saying the folder was removed when
               it was not is the kind of small lie that costs an hour later. A
-              path outside LIBRARY_MOVIES is not curator's to delete. */}
+              path outside the library root is not curator's to delete. */}
           {deleted.folder_left && (
             <span className="small muted">
-              The folder <span className="mono">{deleted.folder_left}</span> is outside{' '}
-              <span className="mono">LIBRARY_MOVIES</span>, so it was left on disk.
+              The folder <span className="mono">{deleted.folder_left}</span> is outside the library
+              root, so it was left on disk.
             </span>
           )}
         </div>
@@ -165,23 +273,44 @@ export default function Library() {
       {confirming && (
         <ConfirmDelete
           movie={confirming}
+          media={media}
           busy={deleting}
           onCancel={() => setConfirming(null)}
           onConfirm={() => remove(confirming)}
         />
       )}
 
-      {movies && shown.length === 0 && (
+      {rows && shown.length === 0 && (
         <Empty>
-          {onlyUnmatched
-            ? 'Every film is matched.'
-            : 'Nothing here yet. Search for something, or point LIBRARY_MOVIES at a library and scan.'}
+          {onlyUnmatched ? (
+            tv ? (
+              'Every show is matched.'
+            ) : (
+              'Every film is matched.'
+            )
+          ) : tv ? (
+            <>
+              No shows yet. Find one from <Link href="/search/?media=tv">Search</Link>, or point{' '}
+              <span className="mono">LIBRARY_TV</span> at a television library and scan.
+            </>
+          ) : (
+            <>
+              Nothing here yet. Search for something, or point{' '}
+              <span className="mono">LIBRARY_MOVIES</span> at a library and scan.
+            </>
+          )}
         </Empty>
       )}
 
       <div className="grid">
-        {shown.map((movie) => (
-          <Card key={movie.id} movie={movie} onDelete={() => setConfirming(movie)} />
+        {shown.map((row) => (
+          <Card
+            key={row.id}
+            movie={row}
+            media={media}
+            unmatched={isUnmatched(row)}
+            onDelete={() => setConfirming(row)}
+          />
         ))}
       </div>
     </>
@@ -193,15 +322,18 @@ export default function Library() {
 // and there is no authentication in front of it (docs/decisions.md D19).
 function ConfirmDelete({
   movie,
+  media,
   busy,
   onCancel,
   onConfirm,
 }: {
   movie: Movie;
+  media: MediaType;
   busy: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const tv = media === 'tv';
   return (
     <div className="banner error" role="alertdialog">
       <strong>
@@ -209,19 +341,27 @@ function ConfirmDelete({
         {movie.year ? ` (${movie.year})` : ''}?
       </strong>
       <span className="small">
-        This removes the film from the library <em>and from the disk</em>, and cannot be undone.
+        This removes the {tv ? 'show' : 'film'} from the library <em>and from the disk</em>, and
+        cannot be undone.
       </span>
       <ul className="small" style={{ margin: '.5rem 0 0', paddingLeft: '1.1rem' }}>
         {movie.library_path && (
           <li>
             the folder <span className="mono">{movie.library_path}</span>
+            {/* Said out loud, because a show folder holds every season anyone
+                ever grabbed and the row gives no hint of how many that is. */}
+            {tv && ', and every season under it'}
           </li>
         )}
         <li>
-          the downloaded file, deleted by qBittorrent, freeing{' '}
+          {tv
+            ? 'every downloaded season pack, deleted by the torrent backend, freeing '
+            : 'the downloaded file, deleted by qBittorrent, freeing '}
           <strong>{formatBytes(movie.size_bytes)}</strong>
         </li>
-        <li>the torrent stops seeding and is removed from qBittorrent</li>
+        <li>
+          {tv ? 'every torrent for it stops seeding and is removed' : 'the torrent stops seeding and is removed from qBittorrent'}
+        </li>
       </ul>
       <div>
         <button onClick={onConfirm} disabled={busy}>
@@ -235,8 +375,19 @@ function ConfirmDelete({
   );
 }
 
-function Card({ movie, onDelete }: { movie: Movie; onDelete: () => void }) {
+function Card({
+  movie,
+  media,
+  unmatched,
+  onDelete,
+}: {
+  movie: Movie;
+  media: MediaType;
+  unmatched: boolean;
+  onDelete: () => void;
+}) {
   const poster = posterURL(movie.poster_path);
+  const tv = media === 'tv';
 
   const body = (
     <>
@@ -259,7 +410,7 @@ function Card({ movie, onDelete }: { movie: Movie; onDelete: () => void }) {
         <span>·</span>
         <span>{movie.library_path === null ? 'not on disk' : formatBytes(movie.size_bytes)}</span>
         {movie.quality && <span className="badge">{movie.quality}</span>}
-        {movie.tmdb_id === null && (
+        {unmatched && (
           <span className="badge warn" title="TMDB could not match this folder; it is recorded rather than guessed at">
             unmatched
           </span>
@@ -269,27 +420,43 @@ function Card({ movie, onDelete }: { movie: Movie; onDelete: () => void }) {
     </>
   );
 
+  /**
+   * Where this card goes, and there are three answers rather than two.
+   *
+   * A matched film opens its TMDB page, addressed by the TMDB id (D21); an
+   * unmatched film opens a page about the ROW, addressed by curator's own
+   * movies.id (D35). A matched show opens /show/?id= with the **tv** id, which
+   * is a different number in a different id space and never movies.id.
+   *
+   * An unmatched show has no third page to open, and this deliberately links
+   * nowhere rather than somewhere broken: `/library/film/` is addressed by
+   * movies.id but asks `GET /api/movies/{id}`, which answers 404 for a show on
+   * purpose — one table, two media types, and a route that quietly served the
+   * other kind is how a screen draws a show as a film. The card still says
+   * everything the list knows about the row.
+   */
+  const href = tv
+    ? movie.tmdb_tv_id === null
+      ? null
+      : `/show/?id=${movie.tmdb_tv_id}`
+    : movie.tmdb_id === null
+      ? `/library/film/?id=${movie.id}`
+      : `/movie/?id=${movie.tmdb_id}`;
+
   return (
     // A wrapper, not a <Link> around everything: a <button> nested inside an <a>
     // is invalid HTML and double-fires, and Delete is the one destructive
     // control on this screen. So Delete is the anchor's SIBLING.
     <div className="movie-cell">
-      {/* Two addressing modes, and which one a card uses is decided by whether
-          the film HAS a catalogue entry rather than by preference. A matched
-          row opens its TMDB page, which is the richer one and is addressed by
-          the TMDB id (D21). An unmatched row opens a page about the ROW,
-          addressed by curator's own movies.id (D35) — it has no catalogue entry
-          to open and it is still a film that plays. */}
-      <Link
-        className="movie"
-        href={
-          movie.tmdb_id === null
-            ? `/library/film/?id=${movie.id}`
-            : `/movie/?id=${movie.tmdb_id}`
-        }
-      >
-        {body}
-      </Link>
+      {href ? (
+        <Link className="movie" href={href}>
+          {body}
+        </Link>
+      ) : (
+        <div className="movie" title="No TMDB match, so there is no page to open. The row and the episodes are unaffected.">
+          {body}
+        </div>
+      )}
       <button className="small" onClick={onDelete}>
         Delete
       </button>
