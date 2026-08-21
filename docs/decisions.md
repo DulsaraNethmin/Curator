@@ -2837,3 +2837,78 @@ chip's absence either.
 
 **Nothing is persisted.** The selection survives a new search and not a reload, exactly as D51's
 toggle does, and for the same reason: no view preference in this repo outlives the page.
+
+---
+
+## D53 — The Pi deploy is a script run from a laptop, not a GitHub workflow
+
+**Status:** decided and **built** (T101) · **Asked for** after 0.5.0's deploy was typed by hand ·
+**Constrained by** [D43](#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader)'s
+six containers · **Does not replace**
+[D44](#d44--curator-reads-the-version-something-else-installs-it), which is the in-app path
+
+`make deploy-pi` puts the version `compose.pi.yaml` pins onto the Pi, waits for that version to
+answer, and restores the previous compose files if it does not. It is `scripts/deploy-pi.sh`, run
+from a laptop over ssh.
+
+### GitHub Actions cannot reach the Pi, and the runner that could is a bad trade
+
+The Pi is `192.168.1.26` on a home LAN behind NAT. The `100.108.251.229` address on it is
+**`nordlynx`** — NordVPN's own WireGuard interface, outbound only — and not a mesh network, so
+there is no route from a hosted runner. Measured rather than assumed; it looks like a Tailscale
+CGNAT address and is not one.
+
+A **self-hosted runner** solves that, because the runner polls GitHub and needs no inbound path. It
+was refused. This repository has been **public since phase 9**, and a fork's pull request can run
+code on a self-hosted runner — that is GitHub's own documented warning, not a hypothetical. The box
+in question holds the media library, the Jellyfin server D43 says must not be touched, and the
+NordVPN credentials. Event filters narrow that surface; they do not remove it, and what is bought is
+skipping one typed command.
+
+So the deploy runs where the operator already is. `scripts/restart.sh` is the same shape for the
+local dev loop and the precedent for the "wait until it answers" ending.
+
+### It checks the one thing that is indistinguishable at the far end
+
+`docker pull` answers **`manifest unknown`** both for a tag that does not exist and for one whose
+release run has not finished building — `compose.pi.yaml`'s own comment already warned that a
+healthy box gets diagnosed for a missing letter it does not have. From the laptop the two are
+separable, so the **arm64 half of the manifest** is verified before the running container is touched,
+and the release run's conclusion is read as a weaker second opinion. Verified by pinning a version
+that was never built: it refuses with `manifest unknown` and exit 1, having changed nothing.
+
+The arm64 half specifically, because an amd64-only manifest pulls happily on a laptop and fails on
+the Pi.
+
+### Waiting for the version is the difference between a deploy and a no-op
+
+The old container answers `/healthz` perfectly well. A deploy that silently did nothing — an
+unmoved pin, a pull that resolved to the same digest — is indistinguishable from one that worked if
+the check is "does it answer". So the wait is for the **expected version string**, and after it the
+container's own healthcheck, because a curator answering `/healthz` while its healthcheck fails is a
+box that looks fine and is not.
+
+Failure restores both backups and brings the previous container back. Both files, because the Pi's
+`compose.yaml` was three days stale at 0.5.0 — missing the whole `updater` service and curator's
+watchtower scope label — and nobody had noticed.
+
+### It reads the pin and never writes it
+
+`compose.pi.yaml` is the input, not the output. The pin moves on a `deploy-N-to-the-pi` branch that
+somebody reviews and merges, exactly as `release-N` moves the constant in `cmd/curator/version.go`.
+A script that edited the pin would make the repository a record of what a script did rather than of
+a decision somebody made — and the two-branch shape is what already keeps "cut a release" and "put
+it on the box" separable.
+
+### What this does not settle
+
+**D44's in-app updater is still the other answer**, and it is unreached rather than rejected. The
+Updates card, `/api/update` and the `updater` profile all exist. They are unusable on this Pi as
+configured, because watchtower re-pulls the **same tag** and `compose.pi.yaml` pins an exact
+version — deliberately, so the host's own watchtower cannot take curator. Making the button work
+means moving the Pi to a floating tag, which is the protection the pin exists to provide. That
+trade is not made here.
+
+**Nothing is automatic.** D44 already refused unattended updating on a timer; this refuses it again
+by being a command somebody runs. `DRY_RUN=1` exists because the question "would this work" is most
+wanted exactly when the answer is expensive — mid-download, or in front of a release.
