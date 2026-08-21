@@ -2721,6 +2721,119 @@ headers nor a control offering a choice with no second outcome is drawn.
 and `FilterFound` implements it; sections make the same information browsable without narrowing, so
 nothing here needed it. A control that actually filters is still unbuilt.
 
+> **Built in T100 — see [D52](#d52--the-quality-filter-narrows-the-rendered-list-and-its-chips-are-ordered-by-resolution).**
+> It does not send `?quality=` either, and the reason is sharper than latency: `FilterQuality`
+> compares the em dash as `—p`, so the server cannot express the "no resolution in the name" chip
+> that holds 22 of Interstellar's 91 releases. The filter narrows the rendered list instead, and its
+> chips are ordered by resolution — which is this decision's rejected table, used where it buries
+> nothing.
+
 **Grouped mode leaves the Quality column in place**, where it now repeats its own section header on
 every row. Dropping it under grouping would reclaim the width, and it would also make the column set
 change under a toggle — which is a bigger jar than the repetition, and was not worth trading blind.
+
+---
+
+## D52 — The quality filter narrows the rendered list, and its chips are ordered by resolution
+
+**Status:** decided and **built** (T100) · **Completes**
+[D11](#d11--rank-by-seeders-quality-is-a-filter-not-a-score), whose other half never shipped ·
+**Sits beside** [D51](#d51--quality-sections-are-ordered-by-their-best-release-not-by-resolution)
+without reversing it · **Bound by**
+[D49](#d49--a-season-narrows-after-the-fetch-and-a-pack-that-contains-the-episode-is-kept-below-it)
+
+The movie and show screens draw a row of quality chips above the release table — `All 91`, `2160p
+14`, `1080p 45`, `720p 10`, `— 22` — and clicking one narrows the list already on screen. It does
+not re-run the search.
+
+D11 decided that quality is "a filter, not a score", and its argument was explicitly that **a filter
+plus an honest sort** beats a scoring heuristic. The honest sort shipped in phase 2. `?quality=`
+shipped with it and `/search` grew a `<select>` in phase 5. The two screens where releases are
+actually chosen never got either, and D51 closed by naming that gap. This is it.
+
+### Client, not the server, and the second reason is the load-bearing one
+
+Latency is the obvious argument and it is real: quality is **not part of the search cache key**
+(`cacheKey`, internal/indexer/cache.go:55) and the cache wraps only 1337x, so a chip that re-ran the
+search would re-fetch YTS, TPB and EZTV live on every click — 7.08 s for a film, up to 13 s for a
+cold television search.
+
+The argument that actually decides it is that **the server cannot express the last chip.**
+`FilterQuality` lowercases each wanted spelling and appends a `p` to anything lacking one, so
+`QualityUnknown`'s em dash is compared as `—p` and matches nothing; an empty quality can never
+satisfy `keep[r.Quality]` either. "No resolution in the name" is **22 of Interstellar's 91
+releases** — the second-largest group in that answer — and it is filterable on the client and
+nowhere else. A server-side control would have silently offered four of five chips.
+
+### The chips are resolution-ordered, which is the table D51 refused
+
+D51 spent a decision establishing that ordering quality **sections** best-resolution-first is D11
+reversed, because it leads Interstellar with a 262-seeder 2160p and buries the 1194-seeder 1080p.
+The chips use exactly that order anyway, and the two are visible on one screen disagreeing:
+
+```
+Interstellar chips     2160p · 1080p · 720p · —
+Interstellar sections  1080p · 2160p · 720p · —
+```
+
+They may differ because only one of them ranks releases. **Section position decides which release is
+read first; chip position decides where a button sits**, and the rows behind it stay seeders-ordered
+whichever chip is lit. A chip buries nothing.
+
+What a menu owes its reader instead is to hold still. Section positions move between searches — that
+is D51's accepted cost, paid for the top row — and a filter whose buttons reshuffled under the
+pointer would spend that cost a second time on a control that exists to be clicked rather than read.
+So `—` sorts last here as the residual bucket, even though D51 established that Silo's
+no-resolution releases outseed its 480p ones and sort **above** them as a section.
+
+The risk this creates is that a `resolutionOrder` table now exists in TypeScript, one import from
+the function that must never use one. Both modules carry the warning from their own side, and
+`make lists` fails four assertions if anyone applies it to the sections.
+
+### Two properties, so the control cannot turn on itself
+
+**The chips are built from the unfiltered answer.** Deriving them from the visible rows is the
+standard way a filter row eats itself — pick 1080p, the other chips vanish because no visible row
+carries them, and the only way back to the full list is a new search.
+
+**The selection is resolved, not stored back.** It survives a new search, because somebody browsing
+at 1080p is usually about to want 1080p again; but it is read against the options in hand, so a
+2160p choice stands down to `All` for a film that has none instead of drawing an empty table under a
+lit chip. Nothing is written, so the choice returns by itself on the next answer that carries it.
+
+Together these make the "your filter matched nothing" state **unreachable rather than handled**:
+every chip is built by counting at least one release, and the only other selection keeps everything.
+
+### The per-indexer counts are not recounted, and were never what they look like
+
+The row reads `91 releases for Interstellar (2014) · yts 5 · tpb 88 · eztv not searched`, and under
+a filter only the total moves — to `14 of 91`. The per-indexer numbers report what each source
+returned for this search, which a client-side view control does not change.
+
+They are also **not a count of the rows below**, and never were: `Count` is `len(s.releases)` at
+internal/indexer/aggregate.go:266, taken before `dedupe`, `narrow` and `rank`. Recounting them
+against the filtered list would leave the row looking identical while meaning something else — the
+rows one source contributed to what is drawn — which is a worse number than the honest one.
+
+### A filter opens on its tier's best, not the answer's best
+
+Filtering to one quality does not surface that quality's best-seeded release. Measured on the
+Severance S02E05 fixture: filtered to 1080p the list opens on a **386**-seeder exact episode match
+with a **716**-seeder season pack below it. That is D49 working — the tier is `rank`'s primary key,
+and a pack is a worse answer to "get me episode 5" whatever its swarm — but it reads like a sorting
+bug, and the first version of the guard asserted the global maximum and went red on it. `make lists`
+now pins seeders descending **within a tier**, which is the property that is actually true.
+
+### What this decision does not settle
+
+**One chip at a time.** `?quality=` takes a comma list and `splitQuality` parses one, so
+"1080p and 2160p" is expressible on the wire and is not offered here. Every switch in this UI is
+single-select, and a second interaction pattern was not worth the one query it answers.
+
+**A single-quality answer draws no row at all**, by the same rule that hides the layout toggle for a
+one-section list. If a stored selection stands down on such an answer, the explanatory sentence goes
+with the row — the list is complete and nothing on screen contradicts it, but nothing explains the
+chip's absence either.
+
+**Nothing is persisted.** The selection survives a new search and not a reload, exactly as D51's
+toggle does, and for the same reason: no view preference in this repo outlives the page.
