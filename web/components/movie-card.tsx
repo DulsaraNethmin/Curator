@@ -1,14 +1,22 @@
 'use client';
 
 import Link from 'next/link';
-import { posterURL, type LibraryState, type MovieSummary } from '@/lib/api';
+import { posterURL, type LibraryState, type MediaType, type MovieSummary } from '@/lib/api';
 
 /**
- * MovieCard is one film in a grid or a rail, and a link to its page.
+ * MovieCard is one film — or one show — in a grid or a rail, and a link to its
+ * page.
  *
  * The href is /movie/?id= and not /movie/{id}/ because the UI is a static
  * export: `output: 'export'` cannot build a dynamic route without
  * generateStaticParams, and TMDB ids cannot be enumerated at build time (D21).
+ *
+ * **`media` decides WHICH page, and it is not cosmetic.** TMDB's movie and tv
+ * id sequences overlap, so /movie/?id=95396 and /show/?id=95396 are two
+ * different titles that both exist (D48). A show card that took the default
+ * would open a film, with a straight face — which is exactly the failure the
+ * server-side split of these routes was built to make impossible, and it would
+ * be reintroduced here.
  *
  * **With `onPick` it is a button instead** (T67). The manual matcher shows the
  * same grid of the same posters to answer a different question — "which of
@@ -18,7 +26,15 @@ import { posterURL, type LibraryState, type MovieSummary } from '@/lib/api';
  * the card, the poster fallback and the library badge included, is the same
  * question answered the same way.
  */
-export function MovieCard({ film, onPick }: { film: MovieSummary; onPick?: (film: MovieSummary) => void }) {
+export function MovieCard({
+  film,
+  media = 'movie',
+  onPick,
+}: {
+  film: MovieSummary;
+  media?: MediaType;
+  onPick?: (film: MovieSummary) => void;
+}) {
   const poster = posterURL(film.poster_path);
 
   const inside = (
@@ -37,8 +53,9 @@ export function MovieCard({ film, onPick }: { film: MovieSummary; onPick?: (film
         {film.title}
       </div>
       <div className="meta">
-        {/* A film with no release date has year 0. It is not a folder curator
-            can write, and saying "no date" is the honest version of that. */}
+        {/* A film with no release date has year 0, and so does a show with no
+            first air date. Neither is a folder curator can write, and saying
+            "no date" is the honest version of that. */}
         <span>{film.year || 'no date'}</span>
         {film.vote_average > 0 && <span>★ {film.vote_average.toFixed(1)}</span>}
         {film.library && <LibraryBadge library={film.library} />}
@@ -55,15 +72,23 @@ export function MovieCard({ film, onPick }: { film: MovieSummary; onPick?: (film
   }
 
   return (
-    <Link className="movie" href={`/movie/?id=${film.tmdb_id}`}>
+    <Link
+      className="movie"
+      href={media === 'tv' ? `/show/?id=${film.tmdb_id}` : `/movie/?id=${film.tmdb_id}`}
+    >
       {inside}
     </Link>
   );
 }
 
 /**
- * LibraryBadge is the green check on a poster: curator already has this film,
- * or is fetching it.
+ * LibraryBadge is the green check on a poster: curator already has this film or
+ * this show, or is fetching it.
+ *
+ * It needs no media type of its own. `library` is only ever non-null when the
+ * server matched this card against a row of the SAME media type — the map it
+ * comes from is scoped, precisely so that Severance's poster is not badged with
+ * the film holding movie id 95396.
  */
 export function LibraryBadge({ library }: { library: LibraryState }) {
   switch (library.state) {
