@@ -1447,3 +1447,115 @@ diff to suggest a screen broke. Verified failing for exactly that reason before 
 - **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot`** is still unfiled and still
   unmeasured since T98 narrowed it to contention rather than a slot leak.
 - **`?season=0` is still overloaded**, and the picker still draws no Specials button.
+
+---
+
+## T100 — a quality filter, on the list already in hand
+
+The movie and show screens draw a row of quality chips above the release table, and clicking one
+narrows the list already on screen. `/search` has had a quality `<select>` since phase 5; the two
+screens where releases are actually chosen never got one.
+[D52](decisions.md#d52--the-quality-filter-narrows-the-rendered-list-and-its-chips-are-ordered-by-resolution)
+is the decision; [T100](tasks/T100-quality-filter.md) is the task. It completes
+[D11](decisions.md#d11--rank-by-seeders-quality-is-a-filter-not-a-score), which decided quality was
+"a filter, not a score" and argued for *a filter plus an honest sort* — the sort shipped in phase 2
+and the filter never reached these screens.
+
+Nothing on the wire changed. `quality` was already per-release; the filter is a view.
+
+```
+Quality  [All 91] [2160p 14] [1080p 45] [720p 10] [— 22]
+Layout   [Grouped] Flat        Sections in the order of their best-seeded release —
+                               the top row is the same either way.
+
+14 of 91 releases for Interstellar (2014) · yts 5 · tpb 88 · eztv not searched
+```
+
+### Measured live, 2026-08-21 — do not re-derive
+
+YTS + TPB, curator 0.4.0 on `:8099`, no tunnel, `INDEXER_1337X=false`. Five searches in **4 s**:
+
+| search | releases | chips |
+|---|---|---|
+| Interstellar (2014) | 91 | 2160p 14 · 1080p 45 · 720p 10 · **— 22** |
+| Dune Part Two (2024) | 77 | 2160p 20 · 1080p 43 · 720p 13 · — 1 |
+| Silo, season 1 | 19 | 1080p 18 · 720p 1 |
+| Severance, season 2 | 74 | 1080p 55 · 720p 17 · 480p 2 |
+| Severance, season 2 ep 5 | 7 | 1080p 6 · 720p 1 |
+
+**Interstellar and Dune reproduce T99's counts exactly** — 91 and 77 releases, and Interstellar's
+1080p 45 · 2160p 14 · 720p 10 · none 22. Silo and Severance are lower than T99's 102 and 107 because
+**EZTV reported `not_applicable`**: it is keyed by IMDb id, has no keyword surface, and declines a
+search carrying no `imdb_id`. None was passed. This is a different indexer set, not a regression.
+
+**The bolded chip is why this is a client-side filter.** `FilterQuality` lowercases a wanted
+spelling and appends a `p` to anything lacking one, so the em dash is compared as `—p` and matches
+nothing, and an empty quality never satisfies `keep[r.Quality]`. The server cannot express "no
+resolution in the name" — 22 of Interstellar's 91 releases — at all. Latency is the other half and
+is also real: quality is not in the search cache key (`internal/indexer/cache.go:55`) and the cache
+wraps only 1337x, so a re-running chip would cost 7.08 s a film, up to 13 s on a cold TV search.
+
+**The chip order and the section order differ on one screen**, and that is the decision:
+
+```
+Interstellar chips     2160p · 1080p · 720p · —
+Interstellar sections  1080p · 2160p · 720p · —
+```
+
+D51 refuses resolution order for **sections** because section position decides which release is read
+first. A chip buries nothing — the rows behind it stay seeders-ordered whichever is lit — and a menu
+owes its reader stillness, which sections deliberately do not provide.
+
+### The gate runs TypeScript now
+
+T99 could not pin its rule: *"there is no test that fails when this is done, because the rule lives
+in TypeScript and nothing here runs TypeScript tests."* T100 added a second ordering rule and a
+`resolutionOrder` table one import from the function that must never use one, so the comment stopped
+being enough.
+
+`make lists` imports the **shipped** modules — a transliterated copy would pass while the real thing
+broke — and runs them over five captures in `testdata/search/`. No framework, no dependency: node's
+`--experimental-strip-types` runs the `.ts` directly, CI already pins the same 22.21.1 from the
+Dockerfile's `ARG NODE_VERSION`, and it writes nothing to stderr. Sorting `qualitySections` by
+resolution turns **four** assertions red, verified before the guard was kept.
+
+The fixtures are trimmed to `id`, `quality`, `seeders`, `match`. Magnets and release names are
+dropped because this repository is public and a magnet carries a tracker list (T86) — 259 KB
+untrimmed against 24.6 KB kept.
+
+### What was discovered rather than decided
+
+**A filter opens on its tier's best, not the answer's best.** Filtered to 1080p, Severance S02E05
+leads with a **386**-seeder exact episode and puts a **716**-seeder season pack below it. That is D49
+working — the tier is `rank`'s primary key — and it reads like a sorting bug. The guard's first
+version asserted the global maximum and went red on it; the code was right and the assertion was
+wrong. It now pins seeders descending **within a tier**.
+
+**The per-indexer counts were never a count of the rows below.** `Count` is `len(s.releases)` at
+`internal/indexer/aggregate.go:266`, taken before `dedupe`, `narrow` and `rank`. So they are not
+recounted against the filter — that would leave the row looking identical while meaning something
+else. Only the total moves, to `14 of 91`.
+
+**The grouping toggle's label is now `Layout`.** A control that only re-arranges cannot keep the word
+"Quality" while sitting directly under one that filters on it.
+
+### Still live going out
+
+- **The Pi is still on 0.3.0** and nothing here changes that. `compose.pi.yaml` remains staged at
+  `:0.4.0` with `LIBRARY_TV: /media/tv`, un-run.
+- **Three of `phase-11.md`'s eight verification steps still have no recorded run** — the three that
+  need real hardware, unchanged by this task.
+- **No quality filter** — **done by [T100](tasks/T100-quality-filter.md) on 2026-08-21**, and taking
+  D52. It does not send `?quality=` upstream, which the line above assumed it would: the server
+  cannot express the em-dash chip, so the filter narrows the rendered list instead.
+- **The filter is single-select**, though `?quality=` takes a comma list and `splitQuality` parses
+  one. Every switch in this UI is single-select and a second interaction pattern was not worth it.
+- **A single-quality answer draws no chip row**, by the rule that hides the layout toggle for a
+  one-section list — so a stood-down selection loses its explanatory sentence there. The list is
+  complete and nothing on screen contradicts it; nothing explains it either.
+- **Grouped mode leaves the Quality column in place**, and a selected chip now repeats itself on
+  every row too. Same trade as T99 recorded, in a second place: a column set that changes under a
+  control is the bigger jar.
+- **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot`** is still unfiled and still
+  unmeasured since T98 narrowed it to contention. It **passed at every gate run on this branch**.
+- **`?season=0` is still overloaded**, and the picker still draws no Specials button.

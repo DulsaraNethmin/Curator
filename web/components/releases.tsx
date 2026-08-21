@@ -13,6 +13,13 @@ import {
 } from '@/lib/api';
 import { Empty, Failure } from '@/components/states';
 import { qualitySections, type Section } from '@/lib/sections';
+import {
+  AnyQuality,
+  filterByQuality,
+  qualityOptions,
+  resolveQuality,
+  UnknownQuality,
+} from '@/lib/quality';
 
 /**
  * Film is what dispatch sends: the thing a release is for.
@@ -141,7 +148,45 @@ export function Releases({
    */
   const [groupSections, setGroupSections] = useState(true);
 
-  const sections = useMemo(() => qualitySections(result?.releases ?? []), [result]);
+  /**
+   * The quality the list is narrowed to, and `AnyQuality` for all of them.
+   *
+   * Kept across a new search for the same reason the toggle above is: somebody
+   * browsing at 1080p is usually about to want 1080p again. What makes that
+   * safe is that it is never read directly — `activeQuality` below decides what
+   * a stored selection means for the list actually in hand.
+   */
+  const [quality, setQuality] = useState(AnyQuality);
+
+  // Built from the WHOLE answer, before any narrowing. Chips derived from the
+  // visible rows would delete themselves on the first click and strand the list
+  // at one quality until the next search — see qualityOptions.
+  const options = useMemo(() => qualityOptions(result?.releases ?? []), [result]);
+
+  // What the stored selection amounts to here, which is `AnyQuality` when this
+  // search has no such release. Derived rather than written back, so the choice
+  // returns by itself on the next search that can honour it.
+  const activeQuality = resolveQuality(options, quality);
+
+  // Asked for a quality this answer does not have. Worth one sentence, because
+  // the chip moving on its own is otherwise unexplained.
+  const droppedQuality = quality !== AnyQuality && activeQuality === AnyQuality;
+
+  /**
+   * The releases the filter keeps — the list every other derivation below reads.
+   *
+   * It can only be empty when the search itself was, which is a property rather
+   * than a coincidence: `activeQuality` is either `AnyQuality` or a value taken
+   * from `options`, and every option was built by counting at least one release.
+   * There is no "your filter matched nothing" state to draw because the two
+   * halves of this design make it unreachable.
+   */
+  const visible = useMemo(
+    () => filterByQuality(result?.releases ?? [], activeQuality),
+    [result, activeQuality],
+  );
+
+  const sections = useMemo(() => qualitySections(visible), [visible]);
 
   // One section is the whole list, so grouping it changes nothing — no headers,
   // and no control offering a choice that has no second outcome.
@@ -162,9 +207,9 @@ export function Releases({
       return sections.flatMap((section) => section.releases.map((release) => ({ release, section })));
     }
     const flat: { release: Release; section?: Section }[] = [];
-    for (const release of result?.releases ?? []) flat.push({ release, section: undefined });
+    for (const release of visible) flat.push({ release, section: undefined });
     return flat;
-  }, [grouped, sections, result]);
+  }, [grouped, sections, visible]);
 
   // Why dispatch is refused, in the API's own words rather than this file's
   // guess. The backend is a choice (docs/decisions.md D22), so the sentence that
@@ -272,45 +317,100 @@ export function Releases({
         />
       )}
 
-      {result && <Indexers result={result} />}
+      {result && <Indexers result={result} shown={visible.length} />}
 
       {result && result.releases.length === 0 && empty && <Empty>{empty}</Empty>}
 
-      {result && sections.length > 1 && (
-        <div className="row" style={{ margin: '0 0 .7rem' }}>
-          <span className="small muted" style={{ minWidth: '4.2rem' }}>
-            Quality
-          </span>
-          <div className="switch" role="group" aria-label="Quality grouping">
-            <button
-              type="button"
-              data-active={groupSections}
-              aria-pressed={groupSections}
-              onClick={() => setGroupSections(true)}
-            >
-              Grouped
-            </button>
-            <button
-              type="button"
-              data-active={!groupSections}
-              aria-pressed={!groupSections}
-              onClick={() => setGroupSections(false)}
-            >
-              Flat
-            </button>
-          </div>
-          {/* Says the property rather than the mechanism, because the property
-              is the reason it is safe to leave on: the sections re-arrange the
-              middle of the list and never the top of it. */}
-          <span className="small muted">
-            {grouped
-              ? 'Sections in the order of their best-seeded release — the top row is the same either way.'
-              : 'One list, best-seeded first.'}
-          </span>
+      {result && (options.length > 1 || sections.length > 1) && (
+        <div style={{ margin: '0 0 .7rem' }}>
+          {/* One quality is no choice at all, so no row — the same rule the
+              layout toggle below has always used. */}
+          {options.length > 1 && (
+            <div className="row" style={{ marginBottom: '.4rem' }}>
+              <span className="small muted" style={{ minWidth: '4.2rem' }}>
+                Quality
+              </span>
+              <div className="switch" role="group" aria-label="Quality">
+                <button
+                  type="button"
+                  data-active={activeQuality === AnyQuality}
+                  aria-pressed={activeQuality === AnyQuality}
+                  onClick={() => setQuality(AnyQuality)}
+                >
+                  All {result.releases.length}
+                </button>
+                {options.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    data-active={activeQuality === option.value}
+                    aria-pressed={activeQuality === option.value}
+                    // NOT disabled while a search runs, and that is the whole
+                    // visible difference from the season row above it. That one
+                    // fires a request per click and has to wait; this one
+                    // re-reads a list already in memory, so there is nothing to
+                    // wait for and disabling it would only invent a delay.
+                    title={
+                      option.value === UnknownQuality
+                        ? `${option.count} with no resolution in the name`
+                        : `${option.count} at ${option.value}`
+                    }
+                    onClick={() => setQuality(option.value)}
+                  >
+                    {option.label} {option.count}
+                  </button>
+                ))}
+              </div>
+              {droppedQuality && (
+                <span className="small muted">
+                  Nothing here at {quality} — showing all of them. It comes back on a search that
+                  has it.
+                </span>
+              )}
+            </div>
+          )}
+
+          {sections.length > 1 && (
+            <div className="row">
+              {/* "Layout", because the row above it took the word Quality and
+                  meant it. This said Quality until T100, when a control that
+                  actually filters on quality landed directly above a control
+                  that only re-arranges. */}
+              <span className="small muted" style={{ minWidth: '4.2rem' }}>
+                Layout
+              </span>
+              <div className="switch" role="group" aria-label="Quality grouping">
+                <button
+                  type="button"
+                  data-active={groupSections}
+                  aria-pressed={groupSections}
+                  onClick={() => setGroupSections(true)}
+                >
+                  Grouped
+                </button>
+                <button
+                  type="button"
+                  data-active={!groupSections}
+                  aria-pressed={!groupSections}
+                  onClick={() => setGroupSections(false)}
+                >
+                  Flat
+                </button>
+              </div>
+              {/* Says the property rather than the mechanism, because the property
+                  is the reason it is safe to leave on: the sections re-arrange the
+                  middle of the list and never the top of it. */}
+              <span className="small muted">
+                {grouped
+                  ? 'Sections in the order of their best-seeded release — the top row is the same either way.'
+                  : 'One list, best-seeded first.'}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
-      {result && result.releases.length > 0 && (
+      {result && visible.length > 0 && (
         <div className="panel">
           <table>
             <thead>
@@ -597,7 +697,7 @@ function SeasonPicker({
  * and painted the third red with no message under it, on every television
  * search YTS was configured for.
  */
-function Indexers({ result }: { result: SearchResult }) {
+function Indexers({ result, shown }: { result: SearchResult; shown: number }) {
   const broken = result.indexers.filter((i) => !i.ok);
   const notApplicable = broken.filter((i) => i.not_applicable);
   // not_applicable first, and excluded from both lists below: an indexer that
@@ -608,6 +708,17 @@ function Indexers({ result }: { result: SearchResult }) {
   return (
     <>
       <p className="small muted" style={{ margin: '0 0 .75rem' }}>
+        {/* "14 of 91" only while a filter is narrowing, so the unfiltered case
+            reads exactly as it did before T100.
+
+            The per-indexer counts beside it are deliberately NOT recounted
+            against the filter. They report what each source returned for this
+            search, which a client-side view control does not change — and they
+            were never a count of the rows below in the first place: Count is
+            len(s.releases) at internal/indexer/aggregate.go:266, taken before
+            dedupe, narrow and rank. Recounting them here would leave the row
+            looking the same while meaning something else. */}
+        {shown < result.releases.length && `${shown} of `}
         {result.releases.length} release{result.releases.length === 1 ? '' : 's'} for{' '}
         {/* Shown exactly as it will be written to the library, so a sloppy
             search term is visible before it becomes a folder name. */}

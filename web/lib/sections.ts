@@ -76,6 +76,12 @@ export function sectionLabel(release: Release, count: number): string {
  * predictable place. The predictability is real and it is worth less than the
  * top row.
  *
+ * **Since T100 that table exists in TypeScript too** — `resolutionOrder` in
+ * ./quality.ts — and it is one import away from here. It orders the FILTER
+ * CHIPS, where holding still is the whole point and no release is buried by a
+ * button's position. Reaching for it from this function is the exact mistake
+ * the paragraph above measures; its own comment says so from the other side.
+ *
  * It lives in `lib` rather than beside the component because it is the only
  * part of the sections that can be checked without a browser, and it was —
  * see docs/tasks/T99-quality-sections.md for the run against live data.

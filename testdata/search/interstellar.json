@@ -1,0 +1,480 @@
+{
+ "search": "Interstellar (2014)",
+ "media": "movie",
+ "captured": "2026-08-21",
+ "indexers": [
+  {
+   "name": "yts",
+   "ok": true,
+   "count": 5
+  },
+  {
+   "name": "tpb",
+   "ok": true,
+   "count": 88
+  },
+  {
+   "name": "eztv",
+   "ok": false,
+   "count": 0,
+   "not_applicable": true
+  }
+ ],
+ "releases": [
+  {
+   "id": "1bef38e4319fbb03",
+   "quality": "1080p",
+   "seeders": 1194
+  },
+  {
+   "id": "ee0026d40bc63b7c",
+   "quality": "1080p",
+   "seeders": 580
+  },
+  {
+   "id": "72b4c24175393561",
+   "quality": "2160p",
+   "seeders": 262
+  },
+  {
+   "id": "1cb8434dfd148f6d",
+   "quality": "2160p",
+   "seeders": 168
+  },
+  {
+   "id": "0a261d4c398f88a3",
+   "quality": "2160p",
+   "seeders": 167
+  },
+  {
+   "id": "81f2822ded733839",
+   "quality": "720p",
+   "seeders": 130
+  },
+  {
+   "id": "0a5673b1bf264e3f",
+   "quality": "1080p",
+   "seeders": 121
+  },
+  {
+   "id": "8b30c1d76187f0b5",
+   "quality": "2160p",
+   "seeders": 113
+  },
+  {
+   "id": "d524a83a50f6d849",
+   "quality": "2160p",
+   "seeders": 100
+  },
+  {
+   "id": "01ffc1744294307f",
+   "quality": "2160p",
+   "seeders": 91
+  },
+  {
+   "id": "43f11295ef400fe1",
+   "quality": "1080p",
+   "seeders": 59
+  },
+  {
+   "id": "8bd9e8c882c23447",
+   "quality": "1080p",
+   "seeders": 52
+  },
+  {
+   "id": "1ea1fbedc678330a",
+   "quality": "1080p",
+   "seeders": 38
+  },
+  {
+   "id": "7d2e2fe3b6d91d4f",
+   "quality": "2160p",
+   "seeders": 32
+  },
+  {
+   "id": "74a7903b6b71e076",
+   "quality": "1080p",
+   "seeders": 26
+  },
+  {
+   "id": "82f0b3d3cf5f3c34",
+   "quality": "2160p",
+   "seeders": 22
+  },
+  {
+   "id": "9a570776c04fdde8",
+   "quality": "2160p",
+   "seeders": 21
+  },
+  {
+   "id": "acc237941c2ed751",
+   "quality": "1080p",
+   "seeders": 20
+  },
+  {
+   "id": "0ee76a2577666d7e",
+   "quality": "2160p",
+   "seeders": 16
+  },
+  {
+   "id": "72aa9b79953ed8c5",
+   "quality": "2160p",
+   "seeders": 16
+  },
+  {
+   "id": "fe20ed0a9a4ca25d",
+   "quality": "1080p",
+   "seeders": 16
+  },
+  {
+   "id": "a11673b6862ce965",
+   "quality": "1080p",
+   "seeders": 15
+  },
+  {
+   "id": "0459f182dc6f3eeb",
+   "quality": "1080p",
+   "seeders": 14
+  },
+  {
+   "id": "876c0ce5a9b33416",
+   "quality": "1080p",
+   "seeders": 14
+  },
+  {
+   "id": "ce5a68e4efc68ef7",
+   "quality": "1080p",
+   "seeders": 14
+  },
+  {
+   "id": "1f8c401248922aec",
+   "quality": "1080p",
+   "seeders": 11
+  },
+  {
+   "id": "95d7ecaf63d19c8e",
+   "quality": "1080p",
+   "seeders": 10
+  },
+  {
+   "id": "f48a892a4289df2d",
+   "quality": "1080p",
+   "seeders": 8
+  },
+  {
+   "id": "893906e646270e26",
+   "quality": "1080p",
+   "seeders": 8
+  },
+  {
+   "id": "9400ef3e2d53bb58",
+   "quality": "1080p",
+   "seeders": 8
+  },
+  {
+   "id": "284330018dc2b59e",
+   "quality": "1080p",
+   "seeders": 8
+  },
+  {
+   "id": "6f866403be0c86b0",
+   "quality": "720p",
+   "seeders": 8
+  },
+  {
+   "id": "ce072b4f32f6b22a",
+   "quality": "1080p",
+   "seeders": 6
+  },
+  {
+   "id": "2d54f2adbbc88022",
+   "quality": "1080p",
+   "seeders": 6
+  },
+  {
+   "id": "f8c373a85ccea54b",
+   "quality": "1080p",
+   "seeders": 6
+  },
+  {
+   "id": "49b32de8eb4928b3",
+   "quality": "2160p",
+   "seeders": 5
+  },
+  {
+   "id": "abb6e14cae2d2e03",
+   "quality": "1080p",
+   "seeders": 5
+  },
+  {
+   "id": "0e800e56721d0ddf",
+   "quality": "720p",
+   "seeders": 5
+  },
+  {
+   "id": "53c3f243256197c9",
+   "quality": "\u2014",
+   "seeders": 5
+  },
+  {
+   "id": "862ffd7253b86861",
+   "quality": "2160p",
+   "seeders": 4
+  },
+  {
+   "id": "3de3d6a1997a66f9",
+   "quality": "1080p",
+   "seeders": 4
+  },
+  {
+   "id": "f97c32084438b583",
+   "quality": "1080p",
+   "seeders": 4
+  },
+  {
+   "id": "33e4846e8853319d",
+   "quality": "2160p",
+   "seeders": 2
+  },
+  {
+   "id": "1e08419ad07e5c9d",
+   "quality": "1080p",
+   "seeders": 2
+  },
+  {
+   "id": "25f884ffccbe1011",
+   "quality": "1080p",
+   "seeders": 2
+  },
+  {
+   "id": "efe2ae20dcb69e88",
+   "quality": "1080p",
+   "seeders": 2
+  },
+  {
+   "id": "9581f0702f73875e",
+   "quality": "1080p",
+   "seeders": 2
+  },
+  {
+   "id": "5b16fe28a37e9ebb",
+   "quality": "1080p",
+   "seeders": 2
+  },
+  {
+   "id": "b8a789961c55339b",
+   "quality": "1080p",
+   "seeders": 2
+  },
+  {
+   "id": "1352de4b74cd7ac7",
+   "quality": "\u2014",
+   "seeders": 2
+  },
+  {
+   "id": "6d13271fc82265c3",
+   "quality": "\u2014",
+   "seeders": 2
+  },
+  {
+   "id": "e7c6d17920dccc02",
+   "quality": "\u2014",
+   "seeders": 2
+  },
+  {
+   "id": "49d867d12f81ea29",
+   "quality": "1080p",
+   "seeders": 1
+  },
+  {
+   "id": "13f0e52cabad46c9",
+   "quality": "1080p",
+   "seeders": 1
+  },
+  {
+   "id": "9fa9501a3c8f8745",
+   "quality": "1080p",
+   "seeders": 1
+  },
+  {
+   "id": "ad156f05859d649a",
+   "quality": "1080p",
+   "seeders": 1
+  },
+  {
+   "id": "fb739e4b0311b098",
+   "quality": "1080p",
+   "seeders": 1
+  },
+  {
+   "id": "1dc0f3640ba40314",
+   "quality": "1080p",
+   "seeders": 1
+  },
+  {
+   "id": "f79848ae8f66aaa8",
+   "quality": "1080p",
+   "seeders": 1
+  },
+  {
+   "id": "48b4d8571688af80",
+   "quality": "1080p",
+   "seeders": 1
+  },
+  {
+   "id": "539b8f9ede3bc777",
+   "quality": "1080p",
+   "seeders": 1
+  },
+  {
+   "id": "af07ab7a78c7e70d",
+   "quality": "720p",
+   "seeders": 1
+  },
+  {
+   "id": "8d611f9c8a803724",
+   "quality": "720p",
+   "seeders": 1
+  },
+  {
+   "id": "02bc35a6e0df4fcc",
+   "quality": "720p",
+   "seeders": 1
+  },
+  {
+   "id": "70f49ecca022b0e3",
+   "quality": "720p",
+   "seeders": 1
+  },
+  {
+   "id": "e95883e3b04b44b3",
+   "quality": "\u2014",
+   "seeders": 1
+  },
+  {
+   "id": "0b3ae2e042c7f77d",
+   "quality": "\u2014",
+   "seeders": 1
+  },
+  {
+   "id": "c4deb5643ee11285",
+   "quality": "\u2014",
+   "seeders": 1
+  },
+  {
+   "id": "c0bf03e259e9edaf",
+   "quality": "1080p",
+   "seeders": 0
+  },
+  {
+   "id": "afab878db2b3f39c",
+   "quality": "1080p",
+   "seeders": 0
+  },
+  {
+   "id": "f9675ef4e106b010",
+   "quality": "1080p",
+   "seeders": 0
+  },
+  {
+   "id": "f7d0a7a53810fd80",
+   "quality": "1080p",
+   "seeders": 0
+  },
+  {
+   "id": "9f87157ac24bf2ac",
+   "quality": "1080p",
+   "seeders": 0
+  },
+  {
+   "id": "3c3703dda78037ad",
+   "quality": "720p",
+   "seeders": 0
+  },
+  {
+   "id": "aaff42a6b57640e5",
+   "quality": "720p",
+   "seeders": 0
+  },
+  {
+   "id": "ca1aae644a6c87df",
+   "quality": "720p",
+   "seeders": 0
+  },
+  {
+   "id": "4ec6c2ad406b0341",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "5af6d0714428712a",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "92f05b727f091d63",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "24df411f9c864f61",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "4299eee115bd12b5",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "0e30b01a2eda376e",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "59e157c65bb5c8e9",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "d2b706622ca7f328",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "7ecbd520febdae4f",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "eda1a5e1eab19cf9",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "0d55af48624a365c",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "2e8d41224e89da39",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "b802af3ae5cf59ec",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "5bf5e8c0e76a6b70",
+   "quality": "\u2014",
+   "seeders": 0
+  },
+  {
+   "id": "750b1d7c396477dd",
+   "quality": "\u2014",
+   "seeders": 0
+  }
+ ]
+}

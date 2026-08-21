@@ -9,7 +9,7 @@ SHELL := /bin/bash
 ARM   := GOOS=linux GOARCH=arm64
 
 .DEFAULT_GOAL := help
-.PHONY: help status check build ui go test race vet cross run restart ui-dev live live-tunnel live-rss clean
+.PHONY: help status check build ui lists go test race vet cross run restart ui-dev live live-tunnel live-rss clean
 
 help: ## the targets, and what they are for
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk -F':.*?## ' '{printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
@@ -19,13 +19,21 @@ status: ## where the build is, derived from the repo
 
 ## ---------------------------------------------------------------------------
 
-check: ui go vet race cross ## the per-commit gate: build, vet, test -race, cross-compile
+check: ui lists go vet race cross ## the per-commit gate: build, vet, test -race, cross-compile
 	@echo "  ok — this commit stands on its own"
 
 build: ui go ## the UI export, then the binary that embeds it
 
 ui: ## the Next.js static export into internal/web/dist
 	npm --prefix web run build
+
+# The release table's ordering rules are TypeScript, and until T100 the gate ran
+# none. Both of them — the sections' order (D51) and the filter chips' — are one
+# plausible tidy-up away from reversing D11, and the guard used to be a comment
+# saying so. Needs no test framework and no dependency: node runs the shipped
+# .ts modules directly, against captured answers in testdata/search/.
+lists: ## the release-list rules (TypeScript), against captured answers
+	node --experimental-strip-types web/scripts/check-lists.mjs
 
 go: ## the Go binary (embeds whatever dist/ currently holds)
 	go build ./...

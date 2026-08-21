@@ -1,0 +1,140 @@
+{
+ "search": "Silo, season 1",
+ "media": "tv",
+ "captured": "2026-08-21",
+ "indexers": [
+  {
+   "name": "yts",
+   "ok": false,
+   "count": 0,
+   "not_applicable": true
+  },
+  {
+   "name": "tpb",
+   "ok": true,
+   "count": 100
+  },
+  {
+   "name": "eztv",
+   "ok": false,
+   "count": 0,
+   "not_applicable": true
+  }
+ ],
+ "releases": [
+  {
+   "id": "c1b6048b0d449f51",
+   "quality": "1080p",
+   "seeders": 858,
+   "match": "exact"
+  },
+  {
+   "id": "1e63269c160aca33",
+   "quality": "720p",
+   "seeders": 523,
+   "match": "exact"
+  },
+  {
+   "id": "f7e536068de02c0a",
+   "quality": "1080p",
+   "seeders": 233,
+   "match": "exact"
+  },
+  {
+   "id": "59d7eca0f7e268a4",
+   "quality": "1080p",
+   "seeders": 165,
+   "match": "exact"
+  },
+  {
+   "id": "55774a56c68db95e",
+   "quality": "1080p",
+   "seeders": 89,
+   "match": "exact"
+  },
+  {
+   "id": "eb6558db93aab6a9",
+   "quality": "1080p",
+   "seeders": 83,
+   "match": "exact"
+  },
+  {
+   "id": "bc6f4bad7564053a",
+   "quality": "1080p",
+   "seeders": 79,
+   "match": "exact"
+  },
+  {
+   "id": "c0c0ea20faa708c4",
+   "quality": "1080p",
+   "seeders": 76,
+   "match": "exact"
+  },
+  {
+   "id": "76472562d3ee9538",
+   "quality": "1080p",
+   "seeders": 72,
+   "match": "exact"
+  },
+  {
+   "id": "3e99b1cd309d93c2",
+   "quality": "1080p",
+   "seeders": 71,
+   "match": "exact"
+  },
+  {
+   "id": "e0dcb9c8cfa7a4a6",
+   "quality": "1080p",
+   "seeders": 68,
+   "match": "exact"
+  },
+  {
+   "id": "27a77bc4ea0a1c48",
+   "quality": "1080p",
+   "seeders": 65,
+   "match": "exact"
+  },
+  {
+   "id": "b95244b42995f12c",
+   "quality": "1080p",
+   "seeders": 62,
+   "match": "exact"
+  },
+  {
+   "id": "0a4e02c50151fabd",
+   "quality": "1080p",
+   "seeders": 55,
+   "match": "exact"
+  },
+  {
+   "id": "facf024b809a8a38",
+   "quality": "1080p",
+   "seeders": 52,
+   "match": "exact"
+  },
+  {
+   "id": "77d91d7d2da5c494",
+   "quality": "1080p",
+   "seeders": 49,
+   "match": "exact"
+  },
+  {
+   "id": "aae90a7fe6e63e3d",
+   "quality": "1080p",
+   "seeders": 49,
+   "match": "exact"
+  },
+  {
+   "id": "f6c5340687f76049",
+   "quality": "1080p",
+   "seeders": 48,
+   "match": "exact"
+  },
+  {
+   "id": "9ce10a5e0d2703a8",
+   "quality": "1080p",
+   "seeders": 46,
+   "match": "exact"
+  }
+ ]
+}
