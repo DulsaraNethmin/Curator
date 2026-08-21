@@ -395,6 +395,19 @@ func TestSearchQuery(t *testing.T) {
 		{"a show with no season is the bare title", Query{Title: "Severance", Media: MediaTV}, "Severance"},
 		{"a show's year never reaches the query", Query{Title: "Severance", Year: 2022, Media: MediaTV, Season: 2}, "Severance S02"},
 		{"a show's year with no season either", Query{Title: "Severance", Year: 2022, Media: MediaTV}, "Severance"},
+
+		// One token, S02E05, because that is what a scene name carries and
+		// 1337x matches keywords against those names.
+		{"an episode joins its season", Query{Title: "Severance", Media: MediaTV, Season: 2, Episode: 5}, "Severance S02E05"},
+		{"both are padded to two digits", Query{Title: "Severance", Media: MediaTV, Season: 1, Episode: 1}, "Severance S01E01"},
+		{"a three-digit episode is unpadded", Query{Title: "Bluey", Media: MediaTV, Season: 3, Episode: 104}, "Bluey S03E104"},
+
+		// The contract Query.Episode documents and internal/api refuses at the
+		// edge: without a season there is nothing to attach it to, and a bare
+		// E05 matches no release name in the wild. Ignored here rather than
+		// half-applied.
+		{"an episode with no season is ignored", Query{Title: "Severance", Media: MediaTV, Episode: 5}, "Severance"},
+		{"an episode never reaches a film query", Query{Title: "Dune", Year: 2021, Media: MediaMovie, Episode: 5}, "Dune 2021"},
 	} {
 		t.Run(tt.label, func(t *testing.T) {
 			if got := searchQuery(tt.query); got != tt.want {

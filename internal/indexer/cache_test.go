@@ -268,6 +268,12 @@ func TestCacheKeyingBySeason(t *testing.T) {
 		{label: "the same season is one entry", second: Query{Title: "Severance", Media: MediaTV, Season: 2}, wantCalls: 1},
 		{label: "another season is another entry", second: Query{Title: "Severance", Media: MediaTV, Season: 1}, wantCalls: 2},
 		{label: "no season at all is another entry", second: Query{Title: "Severance", Media: MediaTV}, wantCalls: 2},
+
+		// The episode is in the key for exactly the reason the season is:
+		// 1337x is sent "Severance S02E05", so serving episode 5's page to a
+		// query asking episode 6 would be a wrong answer rather than a stale
+		// one.
+		{label: "an episode of the same season is another entry", second: Query{Title: "Severance", Media: MediaTV, Season: 2, Episode: 5}, wantCalls: 2},
 	} {
 		t.Run(tt.label, func(t *testing.T) {
 			c, stub, _ := newCacheForTest(time.Hour)
@@ -545,5 +551,27 @@ func TestCacheDefaultsToWallClock(t *testing.T) {
 	}
 	if d := time.Since(c.now()); d < 0 || d > time.Minute {
 		t.Errorf("default clock is %v away from now, want time.Now", d)
+	}
+}
+
+// TestCacheKeyingByEpisode pins the episode component directly, including the
+// pair that must NOT collide and the pair that must.
+func TestCacheKeyingByEpisode(t *testing.T) {
+	tv := func(season, episode int) Query {
+		return Query{Title: "Severance", Media: MediaTV, Season: season, Episode: episode}
+	}
+	if cacheKeyFor("1337x", tv(2, 5)) == cacheKeyFor("1337x", tv(2, 6)) {
+		t.Error("two episodes of one season share a key; 1337x is sent a different string for each")
+	}
+	if cacheKeyFor("1337x", tv(2, 5)) == cacheKeyFor("1337x", tv(3, 5)) {
+		t.Error("episode 5 of two different seasons shares a key")
+	}
+	if cacheKeyFor("1337x", tv(2, 5)) != cacheKeyFor("1337x", tv(2, 5)) {
+		t.Error("the same season and episode is not one entry")
+	}
+	// Episode 0 is "the whole season" and is the same question as naming no
+	// episode at all, which is what the zero value already means.
+	if cacheKeyFor("1337x", tv(2, 0)) != cacheKeyFor("1337x", Query{Title: "Severance", Media: MediaTV, Season: 2}) {
+		t.Error("episode 0 and no episode are two entries for one identical fetch")
 	}
 }

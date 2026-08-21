@@ -42,10 +42,15 @@ func (s *Server) RegisterSearch(mux *http.ServeMux) {
 // to tell the answer to "season 2" from the answer to "season 3" still in
 // flight, and the response is the only place that fact exists.
 type searchResponse struct {
-	Title    string        `json:"title"`
-	Year     int           `json:"year"`
-	Media    string        `json:"media"`
-	Season   int           `json:"season,omitempty"`
+	Title  string `json:"title"`
+	Year   int    `json:"year"`
+	Media  string `json:"media"`
+	Season int    `json:"season,omitempty"`
+
+	// Episode echoes the episode asked for, for the same reason Season does:
+	// walking a season one episode at a time fires a request per change, and
+	// this is the only place the answer says which episode it is the answer to.
+	Episode  int           `json:"episode,omitempty"`
 	Releases []releaseBody `json:"releases"`
 	Indexers []indexerBody `json:"indexers"`
 }
@@ -72,6 +77,36 @@ type releaseBody struct {
 	// and because 0 here means "the name does not say" rather than season 0.
 	Season  int `json:"season,omitempty"`
 	Episode int `json:"episode,omitempty"`
+
+	// Match is how directly this release answers the search: "exact", "pack" for
+	// a season pack offered against a single-episode query, or "unstated" for a
+	// name that claims no season at all. Empty when the search named no season,
+	// because then there is nothing for a release to be a near-miss of.
+	//
+	// Sent rather than left for the screen to work out. The rule has three cases
+	// and a fourth that is dropped before it ever gets here, and a client
+	// re-deriving "a pack is one whose episode is 0" is a second copy that
+	// agrees today and drifts the first time the rule gains a case.
+	// indexer.SeasonTier is the one definition; this is it, spelled for JSON.
+	Match string `json:"match,omitempty"`
+}
+
+// matchName spells indexer's tier for the API. The tiers are an ordering
+// internal to ranking; these are a vocabulary a screen groups on, and keeping
+// them separate means the order can gain a tier without changing the wire.
+func matchName(tier int) string {
+	switch tier {
+	case indexer.TierExact:
+		return "exact"
+	case indexer.TierPack:
+		return "pack"
+	case indexer.TierUnstated:
+		return "unstated"
+	default:
+		// TierWrong is filtered out before the API sees it, so this is
+		// unreachable rather than a case with a meaning. Empty, not a guess.
+		return ""
+	}
 }
 
 // indexerBody is one indexer's report.
@@ -122,17 +157,24 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, err)
 		return
 	}
+	episode, err := parseEpisode(r.URL.Query().Get("episode"), season, mediaType)
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
 
 	// The media type is spelled out rather than left to the zero value, even
 	// though the zero value means the same thing: it is what decides TPB's
 	// cat= and the keyword string 1337x is handed, and neither is recoverable
 	// from a title however it is spelled (internal/indexer, Query).
-	result, err := s.searcher.Search(r.Context(), indexer.Query{
-		Title:  title,
-		Year:   year,
-		Media:  mediaType,
-		Season: season,
-	})
+	query := indexer.Query{
+		Title:   title,
+		Year:    year,
+		Media:   mediaType,
+		Season:  season,
+		Episode: episode,
+	}
+	result, err := s.searcher.Search(r.Context(), query)
 	if err != nil {
 		// Only the caller's own context failing gets here: an indexer failing —
 		// even all of them — comes back as a reported outcome, not an error.
@@ -147,6 +189,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Year:     year,
 		Media:    mediaType,
 		Season:   season,
+		Episode:  episode,
 		Releases: make([]releaseBody, 0, len(releases)),
 		Indexers: make([]indexerBody, 0, len(result.Outcomes)),
 	}
@@ -163,6 +206,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			Season:    f.Season,
 			Episode:   f.Episode,
 		}
+		// Only when a season was named. Without one every release is TierExact
+		// by definition, and stamping "exact" on a film's releases would be
+		// noise on every search that has nothing to do with television.
+		if season > 0 {
+			body.Match = matchName(indexer.SeasonTier(f.Release, query))
+		}
 		if f.Magnet != "" {
 			magnet := f.Magnet
 			body.Magnet = &magnet
@@ -178,7 +227,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.log.Info("search complete", "title", title, "year", year,
-		"media", mediaType, "season", season, "releases", len(out.Releases))
+		"media", mediaType, "season", season, "episode", episode, "releases", len(out.Releases))
 	s.respond(w, http.StatusOK, out)
 }
 
@@ -257,6 +306,39 @@ func validateSeason(season int, mediaType string) error {
 		return fmt.Errorf("season %d: only television has seasons", season)
 	}
 	return nil
+}
+
+// parseEpisode reads the optional episode, which is parseSeason's shape with one
+// extra rule: an episode needs the season it belongs to.
+//
+// **An episode without a season is a 400 rather than a search for "episode 5 of
+// any season".** No release names itself that way — the convention is S02E05 and
+// a bare E05 matches nothing — so honouring it would mean a query that reliably
+// finds nothing while reporting ok:true, count:0, which is the exact failure
+// mode D20 and NormaliseQuery already exist to prevent. indexer.Query documents
+// the same rule from its side and simply ignores the field; the refusal lives
+// here because this is the edge where a caller can still be told.
+//
+// Episode 0 is accepted for the same reason season 0 is: it constrains nothing.
+func parseEpisode(raw string, season int, mediaType string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	episode, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("episode %q: not a number", raw)
+	}
+	if episode < 0 {
+		return 0, fmt.Errorf("episode %d: not an episode", episode)
+	}
+	if episode > 0 && mediaType != store.MediaTypeTV {
+		return 0, fmt.Errorf("episode %d: only television has episodes", episode)
+	}
+	if episode > 0 && season == 0 {
+		return 0, fmt.Errorf("episode %d: name a season too — an episode number means nothing without one", episode)
+	}
+	return episode, nil
 }
 
 // splitQuality parses ?quality=1080p,2160p. The spellings themselves are

@@ -60,6 +60,21 @@ func newSearchServer(t *testing.T, s Searcher) http.Handler {
 }
 
 // searchFound builds a merged release the way the aggregator would hand one over.
+// newTVSearchServer is newSearchServer with television switched on, which is
+// what an install with LIBRARY_TV set has. Without it every media=tv request
+// answers 503 naming the variable (D48), and a test asserting a 400 would pass
+// or fail for the wrong reason.
+func newTVSearchServer(t *testing.T, s Searcher) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, quiet()).
+		WithSearch(s).
+		WithTV(TV{Root: tvFixtureRoot, Scanner: tvFixtureScanner()})
+	srv.Register(mux)
+	srv.RegisterSearch(mux)
+	return mux
+}
+
 func searchFound(id, title, quality string, seeders int, magnet string, indexers ...string) indexer.Found {
 	return indexer.Found{
 		Release: indexer.Release{
@@ -464,5 +479,103 @@ func TestSearchEchoesTheCanonicalTitleColonIncluded(t *testing.T) {
 	// aggregator's job, one layer down, where the cache key is decided.
 	if fake.gotTitle != "Avengers: Endgame" {
 		t.Errorf("the searcher was asked %q, want the title verbatim", fake.gotTitle)
+	}
+}
+
+// TestSearchPassesTheEpisodeDown pins the happy path: the number reaches the
+// indexers and comes back out in the echo, which is the only place the answer
+// records which episode it is the answer to.
+func TestSearchPassesTheEpisodeDown(t *testing.T) {
+	fake := &fakeSearcher{}
+	got := decodeSearch(t, do(t, newTVSearchServer(t, fake), http.MethodGet,
+		"/api/search?title=Severance&media=tv&season=2&episode=5"))
+
+	if fake.gotQuery.Season != 2 || fake.gotQuery.Episode != 5 {
+		t.Errorf("searched season %d episode %d, want 2/5",
+			fake.gotQuery.Season, fake.gotQuery.Episode)
+	}
+	if got.Season != 2 || got.Episode != 5 {
+		t.Errorf("echoed season %d episode %d, want 2/5", got.Season, got.Episode)
+	}
+}
+
+// TestSearchRefusesAnEpisodeItCannotHonour is the guard, and the middle case is
+// the one worth having.
+//
+// An episode with no season is not a narrower search, it is a search that finds
+// NOTHING while reporting ok:true, count:0 — no release names itself "E05", the
+// convention is S02E05. That is the same silent-empty failure D20 and
+// NormaliseQuery exist to prevent, and the only place a caller can still be told
+// is here.
+func TestSearchRefusesAnEpisodeItCannotHonour(t *testing.T) {
+	for _, tt := range []struct {
+		label string
+		url   string
+	}{
+		{"an episode on a film", "/api/search?title=Interstellar&year=2014&episode=5"},
+		{"an episode with no season", "/api/search?title=Severance&media=tv&episode=5"},
+		{"an episode that is not a number", "/api/search?title=Severance&media=tv&season=2&episode=five"},
+		{"a negative episode", "/api/search?title=Severance&media=tv&season=2&episode=-1"},
+	} {
+		t.Run(tt.label, func(t *testing.T) {
+			fake := &fakeSearcher{}
+			rec := do(t, newTVSearchServer(t, fake), http.MethodGet, tt.url)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			// And the search must not have been made at all. A 400 that still
+			// launched a browser behind minter would cost thirteen seconds to
+			// return an error it knew before it started.
+			if fake.gotQuery.Title != "" {
+				t.Errorf("the indexers were searched anyway, with %+v", fake.gotQuery)
+			}
+		})
+	}
+}
+
+// TestSearchStampsTheMatchTier proves the screen is told which releases are the
+// thing asked for and which merely contain it, rather than re-deriving it.
+func TestSearchStampsTheMatchTier(t *testing.T) {
+	pack := searchFound("aaaa000000000000", "Severance - Season 2 - Mp4 x264 AC3 1080p", "1080p", 727, "magnet:?xt=urn:btih:aa", "tpb")
+	pack.Release.Season = 2
+	episode := searchFound("bbbb000000000000", "Severance S02E05 1080p ATVP WEB-DL", "1080p", 381, "magnet:?xt=urn:btih:bb", "tpb")
+	episode.Release.Season, episode.Release.Episode = 2, 5
+	unstated := searchFound("cccc000000000000", "Severance COMPLETE 1080p WEB-DL", "1080p", 90, "magnet:?xt=urn:btih:cc", "tpb")
+
+	fake := &fakeSearcher{result: indexer.SearchResult{
+		Releases: []indexer.Found{episode, pack, unstated},
+	}}
+	got := decodeSearch(t, do(t, newTVSearchServer(t, fake), http.MethodGet,
+		"/api/search?title=Severance&media=tv&season=2&episode=5"))
+
+	want := []string{"exact", "pack", "unstated"}
+	if len(got.Releases) != len(want) {
+		t.Fatalf("releases = %d, want %d", len(got.Releases), len(want))
+	}
+	for i, w := range want {
+		if got.Releases[i].Match != w {
+			t.Errorf("release %d (%q) match = %q, want %q",
+				i, got.Releases[i].Title, got.Releases[i].Match, w)
+		}
+	}
+}
+
+// TestSearchStampsNoTierWithoutASeason: without a season every release is exact
+// by definition, and stamping "exact" on a film's releases would put a key on
+// every search that has nothing to do with television.
+func TestSearchStampsNoTierWithoutASeason(t *testing.T) {
+	fake := &fakeSearcher{result: indexer.SearchResult{
+		Releases: []indexer.Found{
+			searchFound("3f2a9c1b7d4e5a60", "Interstellar.2014.1080p", "1080p", 512, "magnet:?xt=urn:btih:aa", "yts"),
+		},
+	}}
+	got := decodeSearch(t, do(t, newSearchServer(t, fake), http.MethodGet,
+		"/api/search?title=Interstellar&year=2014"))
+
+	if len(got.Releases) != 1 {
+		t.Fatalf("releases = %d, want 1", len(got.Releases))
+	}
+	if got.Releases[0].Match != "" {
+		t.Errorf("match = %q on a film search, want it absent", got.Releases[0].Match)
 	}
 }

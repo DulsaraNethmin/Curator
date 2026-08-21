@@ -58,6 +58,7 @@ type cacheKey struct {
 	year    int
 	media   string
 	season  int
+	episode int
 }
 
 // cacheEntry is one remembered search: the releases exactly as the wrapped indexer
@@ -190,6 +191,19 @@ func (c *Cache) pruneLocked(now time.Time) {
 // The media type is taken through Query.mediaType, so a Query that leaves it
 // blank and one that spells out MediaMovie are one entry rather than two names
 // for one identical fetch.
+//
+// The season and the episode are both in the key because 1337x SENDS them — its
+// keyword string is "<title> S02E05" — so serving episode 5's rows for a query
+// asking episode 6 would be a wrong answer rather than a stale one.
+//
+// The cost lands on TPB, which sends neither: its query is the bare title
+// whatever season or episode is asked for (see tpbCategories for the
+// measurement), so walking episodes 1 through 10 of one season is ten identical
+// apibay fetches under ten keys. That is the pre-existing shape of the season
+// key rather than something the episode introduced, and the alternative — a key
+// derived from the string each indexer actually queries — is a real refactor
+// that buys one HTTP call against a source that answers in milliseconds. Left
+// as-is deliberately; revisit if a fourth indexer makes the fan-out expensive.
 func cacheKeyFor(indexerName string, q Query) cacheKey {
 	return cacheKey{
 		indexer: indexerName,
@@ -197,6 +211,7 @@ func cacheKeyFor(indexerName string, q Query) cacheKey {
 		year:    q.Year,
 		media:   q.mediaType(),
 		season:  q.Season,
+		episode: q.Episode,
 	}
 }
 
