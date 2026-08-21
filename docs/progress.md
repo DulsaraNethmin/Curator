@@ -3,18 +3,23 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-20 · **All ten phases are done.** Phases 1–9 built and verified on a
-laptop; **phase 10, the cutover, executed on the Pi on 2026-08-18** — the nine \*arr-stack containers
-removed, curator and minter in their place, and one film taken end to end from an empty disk. `0.2.0`
-is tagged, published and running on the box, and [T51](tasks/T51-documents.md) — which this paragraph
-called "the last task in the project" for two days after it shipped — landed with it on 2026-08-18.
+**Last updated:** 2026-08-21 · **All ten phases are done, and an eleventh is in progress.** Phases
+1–9 built and verified on a laptop; **phase 10, the cutover, executed on the Pi on 2026-08-18** — the
+nine \*arr-stack containers removed, curator and minter in their place, and one film taken end to end
+from an empty disk. `0.2.0` is tagged, published and running on the box, and
+[T51](tasks/T51-documents.md) — which this paragraph called "the last task in the project" for two
+days after it shipped — landed with it on 2026-08-18. **Phase 11 is television**, opened by
+[D48](decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)
+on 2026-08-20 and recorded at the foot of this document.
 
-**What has run since is not a phase, and is not pretended to be one.** T81–T87 are a single piece of
+**T81–T87 are still not a phase, and are still not pretended to be one.** They are a single piece of
 work with a single target: [D27](decisions.md#d27--the-vpn-is-mandatory-and-curator-owns-the-socket)'s
 promise that not one byte of download traffic leaves without the VPN. Audited against the dependency
 rather than against our own comment, none of it fully held. It is recorded at the foot of this
-document rather than in the table above, because the roadmap has no eleventh phase and inventing one
-would be tidier than it is true.
+document rather than in the table above. This paragraph used to give as its reason that *"the roadmap
+has no eleventh phase and inventing one would be tidier than it is true"*; the roadmap has one now
+and it is television, which changes nothing about the VPN work — the reason was never the absence of
+a slot, it was that a piece of work is not a phase because it was large.
 
 The narrative below is a **record**, kept in the order things were found. Where an entry says
 something is missing that now exists — "there is still no Play button" in the T44 section is the one
@@ -37,6 +42,7 @@ The table immediately below is the current status; `make status` derives it from
 | **8** | Watch it here — direct play, remux, Open in Jellyfin | **done** — T43–T46. The Play button landed in T45; T65 gave it a screen |
 | **9** | One command, and a way to watch on the TV — the image, the release pipeline, the bundle | **done** — T47–T51 and T62–T66; `0.2.0` published to ghcr and installable by a stranger, and [T51](tasks/T51-documents.md)'s quickstart run from an empty directory against an anonymous pull before it was written down |
 | **10** | Cutover: run alongside, prove parity, remove | **done — executed 2026-08-18.** T52 backed the \*arr configs up, T53 stood curator up on the Pi, T54 removed the nine. D43 voided the parity target by emptying the disk first, so it became "curator works from nothing", and it passed |
+| **11** | Television — shows, seasons and episodes, opt-in behind `LIBRARY_TV` | **in progress** — T88–T94 built and merged: store, config, TMDB, indexers, library, Jellyfin, importer, API. Scanned and matched end to end against a real library and a real TMDB key on 2026-08-21; the UI is the outstanding half, and no season pack has yet come through the tunnel |
 
 ---
 
@@ -534,7 +540,7 @@ local **qBittorrent 5.1.2** in Docker — the same version the Pi runs. The Pi w
 | Card click | reaches `/movie/?id=299536`, and that URL is **reloadable in a fresh tab** — the static export resolving `/movie/` with the query intact, `internal/web` unchanged |
 | Movie page load | **no indexer request**: `/logs` carries only the three startup lines |
 | `?id=` missing, `abc`, `NaN` | empty state, and **zero `/api/` requests** on the network panel — no `/api/tmdb/movies/NaN` |
-| `?id=999999999` | `404` — "tmdb movie 999999999: no such movie", the API's own message |
+| `?id=999999999` | `404` — "tmdb movie 999999999: no such movie", the API's own message. **Corrected in place 2026-08-21 (T96):** the sentinel behind that sentence is now `"tmdb: no such title"` — T89 retitled it because one error covers two media types. The status, the reason and the reading are unchanged; only the words are, and this row is left as it was written because it is a record of what was seen that day |
 | **Find releases** on `Avengers: Endgame` | **124 releases · yts 7 · tpb 100 · 1337x 20** — the canonical colon title, and 1337x answering 20 rather than 0 |
 | One cold run exceeded `SEARCH_TIMEOUT` | 1337x `timed out after 30s`; 104 releases rendered anyway and the partial-results banner named the failure |
 | Dispatch | `movies` row 30 — `tmdb_id 299534`, `title "Avengers: Endgame"`, `year 2019` |
@@ -1113,4 +1119,144 @@ failure**.
   the wire remains its own instrument.
 - **The dialer half is not assertable.** anacrolix keeps `cl.dialers` unexported with no accessor, so
   the teardown test is the only thing that would catch a fallback dialer.
+
+---
+
+## Phase 11 — television, additive and opt-in
+
+[D48](decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)
+landed **2026-08-20** and spent the hook [D6](decisions.md#d6--tmdb_id-is-nullable) left in the
+schema in phase 1 — *"a `media_type` column defaulting to `'movie'` is included from the start so TV
+is additive later"*. Nothing had ever written anything but `'movie'` to that column until now.
+
+D43 is **not** overturned by this and is not edited. Its own sentence is why it could not have been:
+*"the series are deleted and television is retired deliberately, not because the dependency analysis
+changed… there is no longer a sonarr to protect."* It retired a **stack**, not a **capability**.
+
+### Measured while building it, so nobody pays for these twice
+
+| | |
+|---|---|
+| TMDB id sequences **overlap** | Severance is **tv id 95396**, and a film holds **movie id 95396**. `tmdb_id` is `UNIQUE` at table level and `migrate.go` cannot relax a constraint, so `tmdb_tv_id` is a second nullable column with its own UNIQUE index — the first thing the migration mechanism has grown that is not a column |
+| `apibay.org/q.php?q=severance&cat=205,208` (2026-08-20) | **100 rows**, season packs *and* single episodes. `Severance - Season 1 - Mp4 x264 AC3 1080p` **844 seeders**; `Severance S02E05 … WEB-DL` **381**. 98 of the 100 state no year at all |
+| Narrowing that query | `q=severance s02` → **8 rows**; `q=severance season 2` → a different **4**; and the **727-seeder** `Severance - Season 2` pack is in **neither**. apibay matches keywords against the release name, so the two spellings are two subsets of one thing — the season is read back off each name instead |
+| The live TV check inside `TestTPBLive` | **100 television releases, 99 naming a season.** The hundredth is a *Seasons 1 and 2 Complete* box set, correctly parsing as no single season |
+| `TestLiveTV` against real TMDB (2026-08-20) | `id=1396 "Breaking Bad" (2008)`, **5 seasons, 62 episodes, 0 min/ep**, search 20 results first *The Office* (2005), popular 20 first *Reacher* (2022), trending 20 first *Lanterns* (2026) — **2.80s** |
+| `0 min/ep` is **TMDB's answer, not a decode bug** | `GET /tv/1396` returns `"episode_run_time": []` beside `first_air_date 2008-01-20` and `number_of_seasons 5`. Written down here so nobody files it |
+| Pi `/media/storage/media/tv` (2026-08-20) | exists, **empty**, `1000:1000`, a **sibling** of `movies` and `downloads` inside one bind — so it is one filesystem and D8's `link()` works there per episode |
+| Pi Jellyfin `/Library/VirtualFolders` | already holds **`Shows` · `tvshows` · `/tv`**, left in place by the T54 cutover. Nothing to provision on that box |
+| `SearchMovie` in the tree, before T90 | **29 references outside tests across 12 files, 201 inside** — and two different methods shared the name, `tmdb.Client`'s and `indexer.Indexer`'s |
+
+### The end-to-end run, 2026-08-21 — a real process, a real library, a real key
+
+Not a test. `go run ./cmd/curator` over one film, three episodes across two shows, and one show folder
+holding nothing, all above the production 50 MiB floor:
+
+```
+POST /api/scan
+{"scanned":1,"added":1,"matched":1,"empty":0,"removed":0,"missing":0,
+ "shows":2,"shows_added":2,"shows_matched":2,"shows_unmatched":0,
+ "shows_empty":1,"episodes":3}
+
+/api/shows   'Star Wars - Andor' (2022)  tmdb_id=None  tmdb_tv_id=83867   62914560
+             'Severance'         (2022)  tmdb_id=None  tmdb_tv_id=95396  125829120
+/api/movies  'Interstellar'      (2014)  tmdb_id=157336  tmdb_tv_id=None
+```
+
+**`Star Wars - Andor` matched**, which is CLAUDE.md's ` - ` colon-substitution trap met by the
+television matcher and not only by the film one. The **two id columns are cleanly separated**, each
+row NULL in the other's. And the **sizes are summed per show**: 125829120 is 2 × 60 MiB, 62914560
+is 1.
+
+Then the scenario every existing install performs on the next image — the same database restarted
+with `LIBRARY_TV` **unset**:
+
+```
+POST /api/scan
+{"scanned":1,"removed":0,"missing":2,"shows":0,"shows_empty":0,"episodes":0}
+
+GET /api/shows  ->  503  {"error":"television is not configured: set LIBRARY_TV"}
+
+INFO scan: rows kept without being considered, because nothing walked their
+     library root  media_type=tv rows=2
+     why="LIBRARY_TV is unset, so television is off and nothing under it was scanned"
+```
+
+`removed: 0`, one log line about the **root** rather than one per show, and turning television back on
+recovered both rows untouched — `shows=2 shows_added=0 episodes=3 removed=0 missing=0`, `tmdb_tv_id`
+still 83867 and 95396.
+
+### The two that would have shipped as silent damage
+
+Neither is hypothetical, and both are the price of one table rather than two.
+
+**A movie scan would have deleted every TV row.** `prune`'s switch puts `case outside` — computed as
+`AssertInside(libraryRoot, row.LibraryPath) != nil` — *before* `case recorded[key]`. A show row is
+not merely unfound by a movie scan; it is affirmatively deleted, with a log line reading *"its
+library_path is outside LIBRARY_MOVIES, so it can never be served"*, taking its downloads with it
+through the foreign key. **The first movie scan after the first TV import would have emptied the TV
+library.**
+
+**A show would have quietly taken a film's identity.** `MoviesMissingMetadata` selects
+`WHERE tmdb_id IS NULL`, and a show's `tmdb_id` is NULL by construction — so every show lands on the
+matching pass's work list on **every** scan, is looked up against `/search/movie`, and is written
+back with `SetTMDBMetadata`, which overwrites unconditionally by design. For **Fargo, Watchmen,
+Hannibal, Westworld, Dune and Snowpiercer** that lookup *succeeds*. No error, no log, and it re-fires
+every scan.
+
+The guard is that every media-scoped read takes a **required** media type with no value meaning
+"both", and the `MoviesMissingMetadata` half is **mutation-tested**: dropping the `media_type`
+predicate fails the Fargo test rather than passing it.
+
+### Corrections made to the docs — T96
+
+Every one of these was true when it was written.
+
+| What | Where |
+|---|---|
+| *"**No television.** Movies only."* — a public claim on a public repository, and the bullet that made it | `README.md` |
+| The `sequenceDiagram` filing only into `movies/Title (Year)/`, the `Indexer` fence whose one method was `SearchMovie(ctx, title, year)`, an `erDiagram` with no `tmdb_tv_id`, and the **EZTV row that had read *"TV, a later phase"* since phase 2** | `docs/architecture.md` |
+| *"**TV.** Retired by choice in D43, not deferred"*, and a phase table that stopped at ten | `docs/roadmap.md` |
+| `LIBRARY_TV` absent from the file a stranger curls, from the Pi's overlay, and from the developer's | `compose.yaml`, `compose.pi.yaml`, `.env.example` |
+| An environment table and a layout block that did not know `tv/` existed | `CLAUDE.md` |
+| A link to `decisions.md#d42` — **not an anchor GitHub resolves**; D42's heading is long and needs its full slug | `docs/tasks/T77-a-dead-host-fails-loudly.md` |
+
+**Marked corrected in place rather than rewritten**, which is the posture T51 used for the container
+arithmetic: line 537 of this document quotes the API's 404 as `"tmdb movie 999999999: no such
+movie"`, and T89 retitled that sentinel to `"tmdb: no such title"` because one error now covers two
+media types. The row still says what was seen that day, with the correction beside it.
+
+**EZTV's row was kept rather than deleted.** The phase it had been waiting for arrived and chose
+TPB's `cat=205,208` and 1337x's keyword search instead, and a row that says so is worth more than an
+absence somebody re-proposes in a year.
+
+### Not this task's, found while running its gate
+
+**`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot` is still failing**, and it is worth
+one more data point rather than a second entry. Measured here on a branch whose entire diff is
+Markdown and YAML comments — `git diff --stat main...HEAD` names no Go file, so it cannot be this
+work's doing. The rate on this laptop: **three red out of six `make check` runs**, and **one red out
+of four** runs of the test on its own, which is consistent with the *roughly one in three* recorded
+above rather than a worsening.
+
+**The failing run is visible in its duration**, which is the useful half: the test takes **10.9 s and
+11.08 s on the runs that fail** and **1.9 s on the runs that pass** — it is waiting out the ten
+seconds it gives a cancelled ffmpeg to return, every time. So a red `make check` here reads as a
+regression and is not one. Re-run it before believing it, and do not take timings at all while
+another agent is building, because `$GOCACHE` and the test cache are machine-global.
+
+### Still live going out
+
+- **The UI is the outstanding half.** T95 was in flight beside T96 and is the only phase-11 task with
+  no commit.
+- **Three of `phase-11.md`'s eight verification steps have no recorded run**, and they are the ones
+  that touch real hardware: a **real season pack from the UI through the tunnel** with `stat` showing
+  link count 2 per episode; a **single episode into a show that already has that season**, proving
+  `library.Link`'s same-inode-is-success path rather than an overwrite; and **Jellyfin's `Shows`
+  library picking the episodes up** from the refresh curator already sends. The importer's behaviour
+  is covered by tests in `t.TempDir()`; none of it has met a real download.
+- **Nothing has been deployed.** `compose.pi.yaml` now carries `LIBRARY_TV: /media/tv`, which is a
+  file in this repository and not a running container — no `up -d` has been run with it, and the Pi's
+  `/media/storage/media/tv` is still the empty directory measured on 2026-08-20. `phase-11.md` says
+  the Pi is a separate decision and that nothing in this phase deploys; that is still true.
 - **One laptop, one endpoint, once**, as with every live VPN measurement since phase 6.

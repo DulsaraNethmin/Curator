@@ -1,6 +1,7 @@
 # curator
 
-Self-hosted movie library automation in a single Go binary. Search, download, file, watch.
+Self-hosted movie library automation in a single Go binary — and television, if you turn it on.
+Search, download, file, watch.
 
 It replaces the \*arr stack — radarr, sonarr, prowlarr, seerr, recyclarr, flaresolverr and byparr —
 with **one container**. The torrent client is inside it, routed through a WireGuard tunnel it owns.
@@ -15,7 +16,8 @@ docker compose up -d
 ```
 
 Then open **`http://<host>:8090`**, add a TMDB key on the Settings screen (free, from
-[themoviedb.org](https://www.themoviedb.org/settings/api)), and point it at your films. That is the
+[themoviedb.org](https://www.themoviedb.org/settings/api)), and point it at your films. Television is
+off until you ask for it — uncomment `LIBRARY_TV` in the compose file. That is the
 whole install — almost nothing is configured in the compose file, because Settings is writable and
 asking you to edit YAML for the thing the screen exists to do would be the wrong trade
 ([D28](docs/decisions.md#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api)).
@@ -48,10 +50,11 @@ You search for a film, see ranked releases, and pick one. curator downloads it o
 hardlinks it into the library, tells Jellyfin, and plays it in the browser.
 
 ```
-browser ──→ curator ──→ TMDB               the film, its year and its poster
-                    ──→ indexers           YTS · TPB · 1337x
+browser ──→ curator ──→ TMDB               the film or the show, its year and its poster
+                    ──→ indexers           YTS · TPB · 1337x — YTS declines a TV query
                     ──→ torrent engine ──→ WireGuard tunnel ──→ peers
                     ──→ filesystem         hardlink into movies/Title (Year)/
+                                           or tv/Show (Year)/Season NN/, one link per episode
                     ──→ Jellyfin           rescan, if you gave it a key
 ```
 
@@ -78,7 +81,18 @@ but it is not the default and not a dependency.
 
 **Importing uses a hardlink**, so filing a film is instant, costs no extra disk, and seeding
 continues from the download path. It never moves, copies over, renames or deletes your source file
-([D8](docs/decisions.md#d8--import-by-hardlink)).
+([D8](docs/decisions.md#d8--import-by-hardlink)). A season pack is the same rule applied per file: N
+episodes become N hardlinks, not one enormous film.
+
+**Television is opt-in and off by default.** Set `LIBRARY_TV` and the same pipeline does shows —
+TMDB's television catalogue, releases from TPB and 1337x, and episodes hardlinked into
+`tv/Show (Year)/Season NN/`. Leave it unset, which is what a fresh install does, and nothing about
+the film half changes: no TV root is scanned, no TV row is pruned, and the television routes answer
+503 naming the variable
+([D48](docs/decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)).
+**Episodes play in Jellyfin rather than in the browser**, because curator's player serves one file
+per library row and a show is not one file. That is why the TV library wants Jellyfin in a way the
+film library does not.
 
 **Playback is direct play**, with a remux for the containers a browser refuses — an `.mkv` whose
 streams are already H.264 and AAC is rewrapped, not re-encoded. There is no transcoding; that is
@@ -88,8 +102,11 @@ Jellyfin's job and Jellyfin is one profile away.
 
 Each of these is a recorded decision, not a gap:
 
-- **No television.** Movies only. The schema carries `media_type` so it stays additive
-  ([D43](docs/decisions.md#d43--the-pi-is-a-clean-slate-television-is-retired-and-curator-is-the-only-downloader)).
+- **No unattended television.** Shows are opt-in behind `LIBRARY_TV`, and when they are on they work
+  exactly like films: you search, you pick, one grab at a time. No monitoring, no season-by-season
+  "what am I missing", and no fourth indexer for it — and episodes play in Jellyfin rather than in
+  the browser
+  ([D48](docs/decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)).
 - **No automatic grabbing.** No monitored lists, no RSS, no quality-profile scoring. You search and
   you pick ([D5](docs/decisions.md#d5--manual-search-not-automatic-grabbing)). For one person and a few dozen films,
   that is usually better than automation, and it is most of what the complexity was buying.
@@ -172,8 +189,9 @@ GOOS=linux GOARCH=arm64 go build ./...
 ```
 
 `LIBRARY_MOVIES` defaults to `testdata/library/movies`, a fixture mirroring a real 29-film library,
-so a fresh clone does something useful immediately. Copy [`.env.example`](.env.example) to `.env` for
-the rest.
+so a fresh clone does something useful immediately. `LIBRARY_TV` defaults to nothing, because empty
+means television is off — point it at `testdata/library/tv` to turn it on. Copy
+[`.env.example`](.env.example) to `.env` for the rest.
 
 Start with [`CLAUDE.md`](CLAUDE.md) — it carries the conventions and the traps, several of which cost
 a day to find. [`docs/architecture.md`](docs/architecture.md) is the design,

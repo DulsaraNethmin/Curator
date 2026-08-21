@@ -1,6 +1,6 @@
 # Roadmap
 
-Ten phases. Each ends somewhere useful.
+Eleven phases. Each ends somewhere useful.
 
 The plan grew from six to ten while it was being built, and the growth is the interesting part rather
 than an overrun. Phases 1–5 were the original arithmetic — replace the \*arr layer on one Raspberry Pi
@@ -10,6 +10,14 @@ moved the torrent engine inside the binary and changed what curator is: not a ma
 other containers, but the thing that does the work. Everything after that follows from it — a tunnel
 to own (6), settings to write from a browser rather than a `.env` (7), somewhere to watch (8), and an
 install a stranger can run (9). The cutover moved to the end, where it belongs, as phase 10.
+
+**Phase 11 is the one that came back.** It is not growth of the same kind: television was listed
+under *Deliberately out of scope* at the bottom of this document, and
+[D48](decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)
+reopened it on a hook [D6](decisions.md#d6--tmdb_id-is-nullable) left in the schema in phase 1 — *"a
+`media_type` column defaulting to `'movie'` is included from the start so TV is additive later."*
+That bullet is rewritten below rather than quietly deleted, because a document that only ever
+records the decisions it kept is not a record.
 
 | Phase | What | Status |
 |---|---|---|
@@ -23,9 +31,11 @@ install a stranger can run (9). The cutover moved to the end, where it belongs, 
 | **8** | Watch it here — direct play, remux, Open in Jellyfin | **done** |
 | **9** | One command, and a way to watch on the TV — the image, the release, the bundle | **done** |
 | **10** | Cutover: run alongside, prove parity, remove | **done** — executed 2026-08-18 |
+| **11** | Television — shows, seasons and episodes, opt-in behind `LIBRARY_TV` | **in progress** |
 
 `make status` derives this table from the repository rather than from a list somebody has to remember
-to update. Where the two disagree, `make status` is right.
+to update. Where the two disagree, `make status` is right — it counts the tasks that have a commit,
+which is the only reading of "how far is phase 11" that nobody has to maintain.
 
 ## The container arithmetic, which moved twice
 
@@ -214,12 +224,49 @@ radarr left to agree with. It became *"curator works on the Pi from nothing"* �
 download, import, play — which is a weaker assertion honestly labelled rather than a missing one, and
 it passed: one film taken end to end from an empty disk, hardlinked, and played.
 
+## Phase 11 — Television
+
+The phase that was not on this list, and could not have been: it reopens something the section below
+calls *deliberately out of scope*. Search a show on TMDB, see ranked releases, pick one, download it
+through the tunnel, hardlink the episodes into a TV library, tell Jellyfin. Spec in
+[`phase-11.md`](phase-11.md); tasks T88–T96.
+
+**Done when** you can search a show, pick a release, and watch the episodes on the television — having
+done nothing to the film half except make it say which media type it means.
+
+[D48](decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)
+is the whole design in two claims. **Additive**: a show is a row in `movies`, because
+`downloads.movie_id` is `NOT NULL` and a separate `shows` table would still need a shadow row in this
+one — so the entire download pipeline, `adoptTwin` included, carries over unchanged.
+**Opt-in**: `LIBRARY_TV` has no default, and empty means television is off, which is the same posture
+`QBIT_USER` and `JELLYFIN_URL` already have.
+[D5](decisions.md#d5--manual-search-not-automatic-grabbing) is extended to a second media type rather
+than reversed, so there is still no monitoring, no scheduler and no RSS.
+
+**What it charged for one table is the interesting part**, and it is written down in D48 because it
+would otherwise have shipped as silent damage: a show's `tmdb_id` is NULL by construction, so an
+unscoped matching pass looks every show up against `/search/movie` and *succeeds* for Fargo, Watchmen,
+Hannibal, Westworld, Dune and Snowpiercer; and `prune` deletes a row it finds outside `LIBRARY_MOVIES`
+before it asks whether anything recorded it, so the first movie scan after the first TV import would
+have emptied the TV library. Media type is therefore a **required argument** on every scoped read,
+with no value meaning "both".
+
+**In progress.** T88–T94 are built and merged — store, config, TMDB, indexers, library, Jellyfin,
+importer and the API. The UI is the outstanding half.
+
 ---
 
 ## Deliberately out of scope
 
-- **TV.** Retired by choice in D43, not deferred. The schema carries `media_type`, so it stays
-  additive if that ever changes.
+- ~~**TV.** Retired by choice in D43, not deferred.~~ **That changed on 2026-08-20**, and the
+  half-sentence that followed it — *"the schema carries `media_type`, so it stays additive if that
+  ever changes"* — is exactly how. D43 is not overturned and is not edited: its own words are *"the
+  series are deleted and television is retired deliberately, not because the dependency analysis
+  changed… there is no longer a sonarr to protect"*, which retires a **stack, not a capability**.
+  Nothing in it argues curator must not do television. Phase 11 above is the capability, and
+  [D48](decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)
+  is the decision. What stays out of scope is narrower, and is listed there rather than here: no
+  monitoring, no season-by-season tracking, no fourth indexer, and no episode playback in the browser.
 - **Automatic grabbing** — see [D5](decisions.md#d5--manual-search-not-automatic-grabbing). Manual
   search is the design, not a stepping stone.
 - **Users and roles** — one optional password, D25. Anything more is a surface nobody has to

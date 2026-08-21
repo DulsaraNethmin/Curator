@@ -4,7 +4,9 @@
 two live tests that pass it a control name, and the four comments that claimed a protection that did
 not exist
 **Depends on:** nothing. It closes the gap [T76](T76-a-skip-that-covers-the-call.md) measured and
-deliberately left open, and it is the reason [D42](../decisions.md#d42) exists
+deliberately left open, and it is the reason
+[D42](../decisions.md#d42--a-dead-base-url-fails-the-build-but-only-once-a-control-name-proves-the-machine-is-online)
+exists
 
 ## Goal
 

@@ -16,6 +16,10 @@
 # from the browser, and putting them in this file would tell a stranger to edit
 # YAML for the thing the Settings screen exists to do (docs/decisions.md D28).
 # What is left below is what curator needs in order to reach that screen.
+#
+# Television is the one FEATURE that is opt-in here rather than behind a profile,
+# because it needs no second container — only a directory. It is off until
+# LIBRARY_TV is uncommented under `curator` below (docs/decisions.md D48).
 
 # Fixed, so the volumes and the network do not change name with the directory
 # this file was downloaded into. The quickstart is `curl -o compose.yaml … &&
@@ -79,6 +83,36 @@ services:
       LIBRARY_MOVIES: /media/movies
       DOWNLOADS_DIR: /media/downloads
 
+      # Television, and it is OFF until this line is uncommented.
+      #
+      # LIBRARY_TV is the one library variable with NO default, deliberately
+      # (docs/decisions.md D48). Empty means television is off: no TV root is
+      # walked, no TV row is pruned, and every television route answers 503
+      # naming this variable. A default would point curator at a directory
+      # nobody asked it to write to — and, worse, would turn television on for
+      # every existing install on the next image, which is not a thing a media
+      # manager gets to decide on somebody's behalf. It is the same posture
+      # QBIT_USER and JELLYFIN_URL already have here: unconfigured is a
+      # supported state, not a broken one.
+      #
+      # Commented rather than absent, for the reason the block above is
+      # duplicated at all: a key that is already here gets edited correctly, and
+      # one that has to be known about and added is how a library ends up
+      # pointing at a directory nothing scans.
+      #
+      # /media/tv, and NOT a second volume. The importer hardlinks and falls
+      # back to a copy on EXDEV (docs/decisions.md D8), so tv/, movies/ and
+      # downloads/ have to be directories inside the ONE `media` volume below.
+      # Two volumes are two filesystems, the fallback is silent, and for
+      # television it costs a second copy of every episode rather than of one
+      # film.
+      #
+      # Episodes play in Jellyfin, not in the browser: curator's player serves
+      # one file per library row and a show is a folder of many. Turning this on
+      # without the `jellyfin` profile below — or a Jellyfin you already run —
+      # gets you a filed library with nothing to watch it on.
+      # LIBRARY_TV: /media/tv
+
       # Where minter is ON THIS NETWORK, and the one address in this file that
       # is not a restatement of an image default: the image defaults to
       # 127.0.0.1:8191, which inside a container is the container itself.
@@ -99,7 +133,8 @@ services:
       # `environment` and is locked, which is the truth.
       MINTER_URL: http://minter:8191
 
-    # ONE volume for media, with the two directories inside it. The importer
+    # ONE volume for media, with every library directory inside it — movies/,
+    # downloads/, and tv/ if LIBRARY_TV above is uncommented. The importer
     # hardlinks and falls back to a copy on EXDEV (docs/decisions.md D8), so
     # downloads and library have to share a filesystem — two volumes would put
     # them on two, and the failure is silent until a disk fills. Measured inside

@@ -35,6 +35,13 @@ direct play, a remux for the containers a browser refuses, and Open in Jellyfin.
 included: the repository and its ghcr package are public, `0.2.0` is published, and the README's
 quickstart was run from an empty directory against an anonymous pull before it was written down.
 **Phase 10, the cutover, is done** — see below, because it changes what may be touched.
+**Phase 11 is television**, which the roadmap listed under *Deliberately out of scope* until
+[D48](docs/decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)
+reopened it on the hook [D6](docs/decisions.md#d6--tmdb_id-is-nullable) left in the schema in phase 1.
+A show is a **row in `movies`**, not a table of its own, and television is **opt-in**: `LIBRARY_TV`
+has no default, so unset means no TV root is scanned, no TV row is pruned, and the television routes
+answer 503 naming the variable. Every media-scoped store read takes a **required** media type with no
+value meaning "both" — that is deliberate, and it is what stops a movie scan deleting every show row.
 Tasks live in [`docs/tasks/`](docs/tasks/). Pick one, read its file, do only what it owns.
 `make status` derives the phases, the tasks and the decision gaps — read it rather than this
 paragraph for the current counts.
@@ -363,7 +370,7 @@ internal/download/   dispatch a picked release, poll its progress into the datab
 internal/importer/   hardlink a completed download into the library; the only package that knows deployment paths
 internal/jellyfin/   ask the media server to rescan, and nothing else
 internal/web/        the embedded UI — //go:embed all:dist, and the all: is load-bearing
-testdata/library/    29 fixture dirs mirroring the real library
+testdata/library/    movies/ — 29 fixture dirs mirroring the real library; tv/ — the show fixtures
 web/                 Next.js UI — static export, embedded from internal/web/dist
 ```
 
@@ -404,6 +411,7 @@ npx -y @mermaid-js/mermaid-cli@11 -i docs/diagram.mmd -o /tmp/out.svg
 | Pi | `ssh pi` → 192.168.1.26, Pi 5, arm64, Debian 13 |
 | Library | `/media/storage/media/movies` — **empty since D43**; 916 GB USB disk with 870 GB free |
 | Downloads | `/media/storage/media/downloads` — same filesystem, so imports hardlink |
+| Television | `LIBRARY_TV` — **no default, and empty means television is off** ([D48](docs/decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)). The fixture is `testdata/library/tv`; the Pi's is `/media/storage/media/tv`, a **sibling** of the two above and therefore the same filesystem, so D8's hardlink works per episode. `compose.pi.yaml` sets it; `compose.yaml` leaves it commented out |
 | TMDB | `TMDB_API_KEY` env var, free key from themoviedb.org |
 | minter | `MINTER_URL`, default `http://127.0.0.1:8191` — IPv4 only, so not `localhost` |
 | Search | `SEARCH_TIMEOUT` default `30s`, `SEARCH_CACHE_TTL` default `1h` |
