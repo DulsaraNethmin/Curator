@@ -16,16 +16,31 @@
 # `media:/media` exactly as published, and only the backing store moves.
 #
 # It also keeps D8's hardlink working, which is the same fact from the other
-# side. /media/movies and /media/downloads are two directories inside ONE bind,
-# so they are one filesystem and `link()` succeeds; two binds would be two
-# mounts, and the importer would fall back to a copy and silently store every
-# film twice — which is precisely the 201 GB D43 just deleted.
+# side. /media/movies, /media/tv and /media/downloads are three directories
+# inside ONE bind, so they are one filesystem and `link()` succeeds; two binds
+# would be two mounts, and the importer would fall back to a copy and silently
+# store every film twice — which is precisely the 201 GB D43 just deleted. That
+# argument gets stronger with television, not weaker: a season pack is N files,
+# so a tv/ on the wrong side of a mount boundary duplicates an episode at a time
+# and nothing says so.
 #
 # TWO — the tunnel is a file. curator parses a wg-quick config
 # (internal/vpn/config.go), so VPN_CONFIG_FILE points at one. NORDVPN_USERNAME
 # and NORDVPN_PASSWORD from the T52 backup are NOT this: those are what gluetun
 # consumed, and gluetun derived a NordLynx config from them. Nothing in this
 # repository reads either variable.
+#
+# THREE — television is ON here, and this is the only place it is switched on by
+# default. compose.yaml leaves LIBRARY_TV commented out because television is
+# opt-in for everybody (docs/decisions.md D48); this box opts in. Measured on it
+# 2026-08-20: /media/storage/media/tv exists, is empty, is 1000:1000, and is a
+# SIBLING of movies and downloads — so it is inside the one bind above, D8's
+# link() works there unchanged, and it needs no volume of its own. And the Pi's
+# Jellyfin already holds a library `Shows`, collection type `tvshows`, at /tv,
+# left in place by the T54 cutover — so there is nothing to provision here: the
+# adopt flow classifies this root as already covered, on the collection type,
+# because /tv and curator's /media/tv are the same directory seen through two
+# mounts and no path comparison can say so.
 #
 # Not here, on purpose:
 #   - the `jellyfin` profile. This Pi already runs Jellyfin 10.10.7 at :8096 and
@@ -88,6 +103,18 @@ services:
       # through to a stored value, so a typo here is a curator that will not
       # start rather than a curator quietly running on the wrong tunnel.
       VPN_CONFIG_FILE: /run/secrets/wg0.conf
+
+      # Television on, for this box only. See THREE in the header: the host's
+      # /media/storage/media/tv is a sibling of movies and downloads inside the
+      # single bind below, so this path is on the same filesystem as
+      # /media/downloads and D8's hardlink works per episode. Do NOT "fix" this
+      # by adding a second bind for tv/ — that is two mounts, EXDEV, and a
+      # silent copy of every episode.
+      #
+      # The other half is already here rather than to be built: this Pi's
+      # Jellyfin holds `Shows` (tvshows) at /tv, which is this same directory,
+      # so nothing needs provisioning and curator must not offer to.
+      LIBRARY_TV: /media/tv
 
       # Explicit, though it is already the default. This is the one box where
       # being wrong about it means peer traffic leaving on the home address, and
