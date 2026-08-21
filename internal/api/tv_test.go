@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/DulsaraNethmin/curator/internal/library"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/tmdb"
 )
 
 // Television, at the HTTP boundary.
@@ -291,3 +293,58 @@ func TestATelevisionGrabIsNotRefusedByAFilmHoldingTheSameNumber(t *testing.T) {
 		t.Errorf("a film curator already has was dispatched anyway: status = %d", rec2.Code)
 	}
 }
+
+// The hand-match routes are films-only, and this is a corruption guard rather
+// than a missing feature politely declined.
+//
+// applyMatch resolves through browser.Movie — TMDB's /movie/{id} — and the
+// store writes through tmdbIDWrite, a CASE over the ROW's own media_type. Each
+// is correct alone. Together, handed a television row, they resolve a FILM and
+// store that film's id in tmdb_tv_id: silent, permanent, and every later lookup
+// for that show would then ask Jellyfin and TMDB about a film nobody mentioned.
+//
+// Matching a show by hand needs its own route reading browser.Show. Until it
+// exists, this refuses — and nothing regresses, because no screen offers a hand
+// match for a show.
+func TestHandMatchingRefusesATelevisionRowRatherThanStoringAFilmsID(t *testing.T) {
+	st := newFakeStore()
+	show := st.seedShowOnDisk(tvFixtureRoot+"/Severance (2022)", "Severance", 2022)
+	film := st.seedOnDisk(fixtureRoot+"/Interstellar (2014)", "Interstellar", 2014)
+
+	browser := &fakeBrowser{details: &tmdb.Details{Match: endgame()}}
+	mux := http.NewServeMux()
+	New(st, fixtureScanner(), nil, fixtureRoot, quiet()).WithBrowser(browser).RegisterMovieMatch(mux)
+
+	for _, method := range []string{http.MethodPost, http.MethodPut} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(method,
+			"/api/movies/"+itoa(show.ID)+"/match", strings.NewReader(`{"tmdb_id":299534}`)))
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s on a show: status = %d, want 400: %s", method, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "television") {
+			t.Errorf("%s: %q does not say why", method, rec.Body.String())
+		}
+	}
+
+	// Nothing was written, and — the assertion that matters — no TMDB request
+	// was spent finding that out. The refusal is before the lookup.
+	if browser.gotID != 0 {
+		t.Errorf("a film was resolved for a show: TMDB was asked for id %d", browser.gotID)
+	}
+	if got := st.byID[show.ID]; got.TMDBTVID != nil || got.TMDBID != nil {
+		t.Errorf("the show row was written: tmdb_id=%v tmdb_tv_id=%v", got.TMDBID, got.TMDBTVID)
+	}
+
+	// The film route still works, so this scoped the guard rather than breaking
+	// hand matching.
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+		"/api/movies/"+itoa(film.ID)+"/match", strings.NewReader(`{"tmdb_id":299534}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hand matching a FILM broke: status = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
