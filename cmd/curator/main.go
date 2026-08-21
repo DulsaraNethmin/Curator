@@ -248,6 +248,13 @@ func run() error {
 	if cfg.IndexerX1337 {
 		indexers = append(indexers, indexer.NewCache(indexer.NewX1337(minterClient), cfg.SearchCacheTTL))
 	}
+	// Not wrapped in a Cache, for the reason YTS and TPB are not: it is plain
+	// JSON in ~2.5 s a page with no browser to launch, so a cache would buy
+	// nothing and cost staleness. Only 1337x's ~9 s minter fetch is worth
+	// remembering.
+	if cfg.IndexerEZTV {
+		indexers = append(indexers, indexer.NewEZTV(indexerHTTP))
+	}
 	if len(indexers) == 0 {
 		// Not a startup failure, the same posture as every other unconfigured
 		// integration: the library still scans and the screen that turns one
@@ -858,6 +865,7 @@ func effective(cfg *config.Config) map[string]string {
 		"indexer_yts":      strconv.FormatBool(cfg.IndexerYTS),
 		"indexer_tpb":      strconv.FormatBool(cfg.IndexerTPB),
 		"indexer_1337x":    strconv.FormatBool(cfg.IndexerX1337),
+		"indexer_eztv":     strconv.FormatBool(cfg.IndexerEZTV),
 		"minter_url":       cfg.MinterURL,
 		"search_timeout":   cfg.SearchTimeout.String(),
 		"search_cache_ttl": cfg.SearchCacheTTL.String(),

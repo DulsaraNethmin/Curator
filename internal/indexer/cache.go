@@ -112,6 +112,17 @@ func (c *Cache) Unwrap() Indexer { return c.inner }
 // something that cannot answer.
 func (c *Cache) Handles(media string) bool { return handlesMedia(c.inner, media) }
 
+// Answers implements QueryCapable by reporting what the WRAPPED indexer can be
+// asked, for the same reason Handles reports what it carries. A capability is a
+// property of the source; a cache in front of it changes nothing about it.
+//
+// Safe for the same reason Handles is, and unlike ResolveMagnet: the default is
+// "yes", so a Cache that always satisfies QueryCapable still tells the truth
+// whichever indexer is inside it. Only 1337x is wrapped today and it declines
+// nothing, so this forwards a true — which is exactly what it should do, and
+// what stops the next cached indexer from silently losing its declaration.
+func (c *Cache) Answers(q Query) bool { return answersQuery(c.inner, q) }
+
 // Search implements Indexer. A miss is indistinguishable from having no cache
 // at all: call through, store, return.
 func (c *Cache) Search(ctx context.Context, q Query) ([]Release, error) {
@@ -204,6 +215,14 @@ func (c *Cache) pruneLocked(now time.Time) {
 // derived from the string each indexer actually queries — is a real refactor
 // that buys one HTTP call against a source that answers in milliseconds. Left
 // as-is deliberately; revisit if a fourth indexer makes the fan-out expensive.
+//
+// Query.IMDBID is deliberately NOT in the key, by that same rule: nothing that
+// is cached sends it. Only 1337x is wrapped, its keyword string is built from
+// the title, and EZTV — the one indexer the id exists for — is not cached at
+// all, because it answers in seconds without a browser and caching it would
+// only make it stale. Adding the id would split "severance" and "severance with
+// an id" into two entries for one identical minter fetch, at ~9 s each. If a
+// CACHED indexer ever keys on the id, it belongs here that day and not before.
 func cacheKeyFor(indexerName string, q Query) cacheKey {
 	return cacheKey{
 		indexer: indexerName,

@@ -193,11 +193,16 @@ type movieDetailBody struct {
 //
 // It shares movieCard with the film — a poster, a title, a year and what
 // curator already has are the same facts about both — and diverges below it,
-// where the two genuinely differ. Runtime, release_date and imdb_id are absent
-// rather than zero: TMDB has no runtime for a series (episode_run_time is a
-// list of per-episode lengths, carried here as episode_runtime), first_air_date
-// is the date that exists, and a show's IMDB id costs a second request nothing
-// yet needs (internal/tmdb, Details).
+// where the two genuinely differ. Runtime and release_date are absent rather
+// than zero: TMDB has no runtime for a series (episode_run_time is a list of
+// per-episode lengths, carried here as episode_runtime), and first_air_date is
+// the date that exists.
+//
+// imdb_id used to be absent for a third reason — a show's cost a second TMDB
+// request and nothing read it — and since T97 both halves of that are false.
+// append_to_response brings it back on the request already being made, and the
+// show screen sends it to /api/search because EZTV is keyed by it and has no
+// keyword surface at all.
 type showDetailBody struct {
 	movieCard
 
@@ -211,18 +216,50 @@ type showDetailBody struct {
 	Studios          []string `json:"studios"`
 	Homepage         string   `json:"homepage"`
 
+	// IMDBID is "tt14688458", exactly as TMDB spells it. The screen hands it
+	// straight to /api/search, which is the only thing that reads it — EZTV
+	// strips the prefix at its own boundary. Empty when TMDB has no id, which
+	// is a normal state and simply means EZTV declines that search.
+	IMDBID string `json:"imdb_id"`
+
 	FirstAirDate string `json:"first_air_date"`
 	// LastAirDate is the most recently aired episode and NOT a promise that the
 	// show has finished; status is where that is said.
-	LastAirDate    string `json:"last_air_date"`
-	Seasons        int    `json:"seasons"`
-	Episodes       int    `json:"episodes"`
-	EpisodeRuntime int    `json:"episode_runtime"` // minutes, TMDB's episode_run_time[0]
+	LastAirDate string `json:"last_air_date"`
+	// Seasons is a COUNT and SeasonList is the list, and they are both here
+	// because they answer different questions. Silo reports 4 seasons and lists
+	// one of them with zero episodes, so a picker built from the count offers a
+	// search with nothing behind it — which is what the show screen did until
+	// T98. The count is what the facts panel shows.
+	Seasons        int          `json:"seasons"`
+	SeasonList     []seasonBody `json:"season_list"`
+	Episodes       int          `json:"episodes"`
+	EpisodeRuntime int          `json:"episode_runtime"` // minutes, TMDB's episode_run_time[0]
 
 	// Absent rather than empty in the two states that mean "there is no link",
 	// exactly as on the film's page: no Jellyfin configured, and a show curator
 	// does not have on disk.
 	JellyfinURL string `json:"jellyfin_url,omitempty"`
+}
+
+// seasonBody is one season, and episode_count is the whole reason it exists —
+// it is the number `seasons` above cannot give.
+//
+// Every season TMDB lists is sent, unfiltered, including season_number 0
+// (Specials) and seasons with no episodes yet. The API reports what TMDB says;
+// which of them a person may click is the screen's decision, and it is not the
+// same decision for both — an unaired season has nothing to search for, while
+// Specials cannot be ASKED for at all, because ?season=0 already means "no
+// season constraint" here (see parseSeason).
+type seasonBody struct {
+	Number int `json:"number"`
+	// Name is TMDB's own label — "Season 1", "Specials" — rather than something
+	// built from Number, because Specials is not "Season 0" to anybody reading
+	// it.
+	Name         string `json:"name"`
+	EpisodeCount int    `json:"episode_count"`
+	// AirDate is "2023-05-04", and empty for a season TMDB has no date for.
+	AirDate string `json:"air_date,omitempty"`
 }
 
 // discoverRow is one rail on the Discover screen.
@@ -459,9 +496,11 @@ func (s *Server) handleTMDBShow(w http.ResponseWriter, r *http.Request) {
 		SpokenLanguages:  details.SpokenLanguages,
 		Studios:          details.Studios,
 		Homepage:         details.Homepage,
+		IMDBID:           details.IMDBID,
 		FirstAirDate:     details.FirstAirDate,
 		LastAirDate:      details.LastAirDate,
 		Seasons:          details.NumberOfSeasons,
+		SeasonList:       toSeasons(details.Seasons),
 		Episodes:         details.NumberOfEpisodes,
 		EpisodeRuntime:   details.EpisodeRuntime,
 	}
@@ -479,6 +518,21 @@ func (s *Server) handleTMDBShow(w http.ResponseWriter, r *http.Request) {
 	body.JellyfinURL = s.jellyfinLink(r.Context(), store.MediaTypeTV, body.movieCard)
 
 	s.respond(w, http.StatusOK, body)
+}
+
+// toSeasons converts TMDB's season list for the wire, [] and never null
+// because the UI iterates it.
+func toSeasons(seasons []tmdb.Season) []seasonBody {
+	out := make([]seasonBody, 0, len(seasons))
+	for _, s := range seasons {
+		out = append(out, seasonBody{
+			Number:       s.Number,
+			Name:         s.Name,
+			EpisodeCount: s.EpisodeCount,
+			AirDate:      s.AirDate,
+		})
+	}
+	return out
 }
 
 func toCards(matches []tmdb.Match, library map[int64]store.LibraryState) []movieCard {

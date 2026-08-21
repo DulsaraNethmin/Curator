@@ -266,7 +266,9 @@ importer and the API. The UI is the outstanding half.
   Nothing in it argues curator must not do television. Phase 11 above is the capability, and
   [D48](decisions.md#d48--television-is-additive-a-show-is-a-row-in-movies-and-the-second-library-root-is-opt-in)
   is the decision. What stays out of scope is narrower, and is listed there rather than here: no
-  monitoring, no season-by-season tracking, no fourth indexer, and no episode playback in the browser.
+  monitoring, no season-by-season tracking and no episode playback in the browser. *(The fourth
+  indexer was on that list and came off it on 2026-08-21 — see
+  [T97](tasks/T97-eztv.md) and [D50](decisions.md#d50--an-indexer-may-decline-a-query-it-cannot-answer-and-that-is-not-a-failure).)*
 - **Automatic grabbing** — see [D5](decisions.md#d5--manual-search-not-automatic-grabbing). Manual
   search is the design, not a stepping stone.
 - **Users and roles** — one optional password, D25. Anything more is a surface nobody has to

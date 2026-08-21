@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -162,6 +163,11 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusBadRequest, err)
 		return
 	}
+	imdbID, err := parseIMDbID(r.URL.Query().Get("imdb_id"))
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
 
 	// The media type is spelled out rather than left to the zero value, even
 	// though the zero value means the same thing: it is what decides TPB's
@@ -173,6 +179,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Media:   mediaType,
 		Season:  season,
 		Episode: episode,
+		IMDBID:  imdbID,
 	}
 	result, err := s.searcher.Search(r.Context(), query)
 	if err != nil {
@@ -339,6 +346,38 @@ func parseEpisode(raw string, season int, mediaType string) (int, error) {
 		return 0, fmt.Errorf("episode %d: name a season too — an episode number means nothing without one", episode)
 	}
 	return episode, nil
+}
+
+// imdbIDPattern is `tt` followed by digits, which is the only shape TMDB emits.
+// Seven digits is the historical length and IMDb has been issuing eight for
+// years, so the count is left open rather than pinned to a number that will
+// move again.
+var imdbIDPattern = regexp.MustCompile(`^tt\d+$`)
+
+// parseIMDbID reads the optional IMDb id. Absent or empty is not an error — it
+// is the state every search made before this parameter existed, and every
+// search from a screen that has no id to send.
+//
+// **A malformed one IS an error, and that is the whole reason this function
+// exists rather than the raw string being passed through.** The one indexer
+// that reads the id would simply decline a value it cannot use, which is
+// indistinguishable on the screen from EZTV being switched off — so a client
+// sending a TMDB id, or a title, in this parameter would silently get a search
+// without EZTV in it and no way to find out. Refusing here is the edge where
+// the caller can still be told.
+//
+// Accepted in TMDB's spelling, prefix and all, because that is what the show
+// screen has in hand. Stripping it is EZTV's business (internal/indexer,
+// eztvIMDbID) and happens at that indexer's boundary.
+func parseIMDbID(raw string) (string, error) {
+	id := strings.TrimSpace(raw)
+	if id == "" {
+		return "", nil
+	}
+	if !imdbIDPattern.MatchString(id) {
+		return "", fmt.Errorf("imdb_id %q: an IMDb id is tt followed by digits", id)
+	}
+	return id, nil
 }
 
 // splitQuality parses ?quality=1080p,2160p. The spellings themselves are

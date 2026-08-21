@@ -206,8 +206,12 @@ func (c *Client) listTV(ctx context.Context, path, what string) ([]Match, error)
 //
 // The film fields that have no television equivalent are simply absent rather
 // than mapped to something close: there is no runtime (episode_run_time is a
-// list of per-episode lengths), no release_date, and no imdb_id — TMDB serves a
-// show's IMDB id from /tv/{id}/external_ids, a second request nothing needs yet.
+// list of per-episode lengths) and no release_date.
+//
+// The imdb_id is the exception, and it is why ExternalIDs is here. TMDB does
+// not put one on /tv/{id} — it serves a show's from /tv/{id}/external_ids — but
+// append_to_response inlines that sub-resource into this same payload, so it
+// costs no second round trip. See Show.
 type tvDetailsResponse struct {
 	tvResult
 
@@ -220,11 +224,32 @@ type tvDetailsResponse struct {
 	NumberOfEpisodes int    `json:"number_of_episodes"`
 	EpisodeRunTime   []int  `json:"episode_run_time"`
 
+	// Seasons is what number_of_seasons above cannot say: how many episodes
+	// each one actually has. episode_count is 0 for a season that is announced
+	// and unaired, and season_number is 0 for Specials.
+	Seasons []tvSeason `json:"seasons"`
+
+	// ExternalIDs is the appended sub-resource. It is absent on any response
+	// fetched without append_to_response, and an absent one decodes to the zero
+	// value — an empty imdb_id, which is this package's honest "TMDB did not
+	// say" rather than a failure.
+	ExternalIDs struct {
+		IMDBID string `json:"imdb_id"`
+	} `json:"external_ids"`
+
 	Genres              []struct{ Name string } `json:"genres"`
 	ProductionCompanies []struct{ Name string } `json:"production_companies"`
 	SpokenLanguages     []struct {
 		EnglishName string `json:"english_name"`
 	} `json:"spoken_languages"`
+}
+
+// tvSeason is one entry of seasons[].
+type tvSeason struct {
+	SeasonNumber int    `json:"season_number"`
+	Name         string `json:"name"`
+	EpisodeCount int    `json:"episode_count"`
+	AirDate      string `json:"air_date"`
 }
 
 // Show fetches one television show by TMDB id — the counterpart of Movie. An id
@@ -235,13 +260,25 @@ type tvDetailsResponse struct {
 // and a Hong Kong action film on /movie/1396. Nothing in this package can tell
 // them apart, and nothing should try — the caller knows which kind it asked for
 // because it chose the method.
+//
+// It asks for external_ids alongside the show, and that is ONE request rather
+// than two: append_to_response is TMDB's own mechanism for inlining a
+// sub-resource, so /tv/{id}/external_ids arrives nested in this payload. The
+// alternative — a second GET — is what the comments here said was not worth it
+// for a field nothing read, and it stopped being true the moment an indexer
+// keyed by IMDb id existed (internal/indexer/eztv.go). Nothing about the shape
+// of the response changes for the fields already read, which is why no other
+// call site moves.
 func (c *Client) Show(ctx context.Context, id int) (*Details, error) {
 	if id <= 0 {
 		return nil, fmt.Errorf("tmdb show %d: not a tmdb id", id)
 	}
 
+	params := url.Values{}
+	params.Set("append_to_response", "external_ids")
+
 	var body tvDetailsResponse
-	if err := c.get(ctx, "/tv/"+strconv.Itoa(id), nil, fmt.Sprintf("show %d", id), &body); err != nil {
+	if err := c.get(ctx, "/tv/"+strconv.Itoa(id), params, fmt.Sprintf("show %d", id), &body); err != nil {
 		return nil, err
 	}
 
@@ -257,6 +294,22 @@ func (c *Client) Show(ctx context.Context, id int) (*Details, error) {
 		LastAirDate:      body.LastAirDate,
 		NumberOfSeasons:  body.NumberOfSeasons,
 		NumberOfEpisodes: body.NumberOfEpisodes,
+		// Verbatim, `tt` and all. A show's id is the only one TMDB does not
+		// serve on the details path itself; append_to_response above is what
+		// puts it here.
+		IMDBID: body.ExternalIDs.IMDBID,
+	}
+	// Every season TMDB lists, in TMDB's order, unfiltered — Specials
+	// (season_number 0) and unaired seasons (episode_count 0) included. What to
+	// draw from it is the screen's decision and not this package's; see
+	// Details.Seasons.
+	for _, s := range body.Seasons {
+		details.Seasons = append(details.Seasons, Season{
+			Number:       s.SeasonNumber,
+			Name:         s.Name,
+			EpisodeCount: s.EpisodeCount,
+			AirDate:      s.AirDate,
+		})
 	}
 	// episode_run_time is a list because a show's episode length varies, and it
 	// is empty for plenty of shows. The first entry is what TMDB's own pages

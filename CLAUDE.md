@@ -364,7 +364,7 @@ internal/store/      SQLite: schema, queries
 internal/library/    disk scan, Title (Year) parsing
 internal/tmdb/       metadata lookup
 internal/api/        HTTP handlers
-internal/indexer/    release search — YTS, TPB, 1337x behind one interface, merged and ranked
+internal/indexer/    release search — YTS, TPB, 1337x, EZTV behind one interface, merged and ranked
 internal/qbit/       qBittorrent Web API v2 — adds and reads, never deletes
 internal/download/   dispatch a picked release, poll its progress into the database
 internal/importer/   hardlink a completed download into the library; the only package that knows deployment paths

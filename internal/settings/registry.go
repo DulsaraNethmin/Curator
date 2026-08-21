@@ -151,6 +151,7 @@ var registry = []Setting{
 	{Env: "INDEXER_YTS", Group: "indexers", Kind: KindBool},
 	{Env: "INDEXER_TPB", Group: "indexers", Kind: KindBool},
 	{Env: "INDEXER_1337X", Group: "indexers", Kind: KindBool},
+	{Env: "INDEXER_EZTV", Group: "indexers", Kind: KindBool},
 	{Env: "MINTER_URL", Group: "indexers", Kind: KindURL},
 	{Env: "SEARCH_TIMEOUT", Group: "indexers", Kind: KindDuration},
 	{Env: "SEARCH_CACHE_TTL", Group: "indexers", Kind: KindDuration},

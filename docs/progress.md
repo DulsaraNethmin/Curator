@@ -1247,8 +1247,8 @@ another agent is building, because `$GOCACHE` and the test cache are machine-glo
 
 ### Still live going out
 
-- **The UI is the outstanding half.** T95 was in flight beside T96 and is the only phase-11 task with
-  no commit.
+- ~~**The UI is the outstanding half.** T95 was in flight beside T96 and is the only phase-11 task with
+  no commit.~~ **Closed 2026-08-21** — T95 landed and phase 11 reads 9/9 in `make status`.
 - **Three of `phase-11.md`'s eight verification steps have no recorded run**, and they are the ones
   that touch real hardware: a **real season pack from the UI through the tunnel** with `stat` showing
   link count 2 per episode; a **single episode into a show that already has that season**, proving
@@ -1283,3 +1283,72 @@ another agent is building, because `$GOCACHE` and the test cache are machine-glo
   the last one 10 ms before the deadline**. A count in the tens next time means the observation
   starved, not the swarm.
 - **One laptop, one endpoint, once**, as with every live VPN measurement since phase 6.
+
+---
+
+## T97, T98 — a fourth indexer, and a picker that shows what exists
+
+Two things Nethmin asked for after using the television screens: **more sources**, and **season and
+episode as clickable rows** rather than a select and a number field. He also asked whether **DHT**
+could widen the results — it cannot, and the reason is in
+[T97](tasks/T97-eztv.md#deliberately-not-in-scope): BEP 5 maps `infohash → peers` and has no keyword
+index, so *"Silo S03E08"* is not a question it can be asked. curator already runs a DHT node on the
+tunnel socket, doing the only job it can do.
+
+### Measured live, 2026-08-21 — do not re-derive
+
+| | |
+|---|---|
+| `eztvx.to/api/get-torrents?imdb_id=14688458` | **270 torrents** for Silo across three pages, one page 87 KB in ~2.5 s. apibay caps at 100 |
+| `limit=300` | answers `"limit":30` with **thirty** rows — above the cap the value is discarded, not clamped, so asking for more returns **fewer** |
+| `&season=3&episode=8` | **ignored**, the identical page 1 comes back. Narrowing stays where D49 put it |
+| ordering | **newest first**. Silo page 1 is seasons 2 and 3 only; season 1 first appears on page 2 |
+| no `imdb_id` | HTTP 200, `torrents_count: 1075625` — the newest uploads across every show on the site |
+| unknown id | HTTP 200, `torrents_count: 0`, **no `torrents` key at all** — `ytsData`'s `movie_count` trap again |
+| catalogue sizes | Game of Thrones 146 · Stranger Things 196 · Silo 270 · The Simpsons **2,425** |
+| `eztv.re` | **301**; `eztvx.to` is the live front door. `architecture.md` named the wrong one from phase 2 until now |
+| TMDB `/tv/{id}?append_to_response=external_ids` | `imdb_id` **and** `seasons[]` in **one** request, 0.22 s. Live: `imdb=tt0903747, seasons[]=6` |
+| Silo's `seasons[]` | `number_of_seasons: 4` against **10, 10, 10 and 0** episodes — the fourth is announced and unaired |
+| live `TestEZTVLive` | **270 releases, 270 stating a season**, in 2.05 s |
+
+### The end-to-end run, on 8095 against real services
+
+| | |
+|---|---|
+| `?title=Silo&media=tv&season=3&episode=8&imdb_id=tt14688458` | `yts NA · tpb 100 · eztv 270` → **5 exact** |
+| the same without `imdb_id` | `yts NA · tpb 100 · eztv NA` → 2. Nothing failed and nothing is red |
+| `&season=1&imdb_id=…` | 102 releases, **93 of them from eztv** — every one off page 2 or 3, which is the whole argument for a three-page budget over one |
+| rendered `/show/?id=125988` | season row **Every 1 2 3** — the unaired fourth absent — then **All 1..10**, top result carrying `tpb, eztv` because the same torrent was found through both and merged on its info hash |
+
+### What was decided rather than discovered
+
+**The page budget is a cap, not a promise.** Three pages, 300 rows, ~7.5 s of a 30 s
+`SEARCH_TIMEOUT` now shared by four sources. Twenty-five pages would cover The Simpsons and eat the
+whole budget; one page would answer a season-1 search with a hundred rows `narrow()` then drops. The
+truncation is real and lives in `eztvMaxPages`' own comment.
+
+**Specials gets no button.** `?season=0` is what the API reads an absent season as, so a Specials
+button would silently search every season. Drawn disabled was the alternative and is worse — a
+control that cannot be pressed invites somebody to make it pressable without finding the reason
+first. Recorded as a known gap in
+[D50](decisions.md#d50--an-indexer-may-decline-a-query-it-cannot-answer-and-that-is-not-a-failure).
+
+### Still live going out
+
+- **The Pi is still on 0.3.0** and nothing here changes that. `compose.pi.yaml` remains staged at
+  `:0.4.0` with `LIBRARY_TV: /media/tv`, un-run.
+- **Three of `phase-11.md`'s eight verification steps still have no recorded run** — the three that
+  need real hardware, listed above and unchanged by this task.
+- **Quality sections are deferred**, taking **D51**: a Grouped/Flat toggle defaulting to grouped,
+  nesting inside D49's tiers as *tier → quality → seeders*.
+- **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot`** is still unfiled, and this task
+  narrowed it without fixing it. It fired twice here — 11.14 s and 10.57 s, the documented failing
+  duration against ~0.9 s passing — and both times it was **under a full parallel `go test ./...`**.
+  In isolation it passed **4 of 4 on this branch and 4 of 4 on `main`**, and this branch has **zero
+  commits touching `internal/remux`**. That points at contention starving the ten seconds the test
+  gives a cancelled ffmpeg to return, rather than at the leak the failure message names — which
+  contradicts the T96 handoff's "failed 1 of 3 in isolation" and is worth re-measuring before
+  anybody files it as a slot leak. `make check` was green at all five commits.
+- **A fourth live indexer test is a fourth chance of CI reddening on an outage**, knowingly accepted.
+  `TestEZTVLive` shares `classifyLiveFailure` with the other two, and the control arrangement is now
+  a **cycle** — TPB←YTS←EZTV←TPB — pinned by a table rather than by two hand-written comparisons.

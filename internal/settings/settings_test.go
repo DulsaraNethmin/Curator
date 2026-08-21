@@ -49,7 +49,7 @@ func TestEveryStoredKeyIsItsVariableLowerCased(t *testing.T) {
 // docs/phase-7.md#the-settings-catalogue. A setting added to one and not the
 // other is a field nobody can save, so it fails here instead.
 func TestTheRegistryMatchesTheCatalogue(t *testing.T) {
-	const documented = 35
+	const documented = 36
 	if len(All()) != documented {
 		t.Errorf("the registry has %d settings and docs/phase-7.md documents %d — "+
 			"update both, or neither is the catalogue", len(All()), documented)

@@ -334,17 +334,34 @@ export type MovieDetails = MovieSummary & {
 };
 
 /**
+ * One season of a show, as `ShowDetails.season_list` carries it.
+ *
+ * `name` is TMDB's own label rather than something built from `number`, because
+ * "Specials" is not "Season 0" to anybody reading it.
+ */
+export type Season = {
+  number: number;
+  name: string;
+  /** 0 is real and common: a season TMDB has announced and nobody has aired. */
+  episode_count: number;
+  /** `"2023-05-04"`, absent for a season TMDB has no date for. */
+  air_date?: string;
+};
+
+/**
  * ShowDetails is what the show screen shows, and it is a SEPARATE type from
  * MovieDetails rather than a widening of it.
  *
  * The shared half is `MovieSummary` — a poster, a title, a year and what curator
  * already has are the same facts about both — and the two diverge below it,
- * where they genuinely differ. `runtime`, `release_date` and `imdb_id` are not
- * here at all rather than zero: TMDB has no runtime for a series (it has a list
- * of per-episode lengths, which is `episode_runtime`), the date a show has is
- * its first air date, and a show's IMDb id costs a second request nothing yet
- * needs. A screen given a shared type would draw "0m" for a series that ran
- * five years.
+ * where they genuinely differ. `runtime` and `release_date` are not here at all
+ * rather than zero: TMDB has no runtime for a series (it has a list of
+ * per-episode lengths, which is `episode_runtime`), and the date a show has is
+ * its first air date. A screen given a shared type would draw "0m" for a series
+ * that ran five years.
+ *
+ * `imdb_id` used to be absent for a third reason — it cost TMDB a second
+ * request and nothing read it — and since T97 neither half holds.
  *
  * `tmdb_id` on the embedded summary is the **tv** id, in TMDB's own tv space.
  * It is the number `/show/?id=` is addressed by and the number that must never
@@ -360,10 +377,36 @@ export type ShowDetails = MovieSummary & {
   studios: string[];
   homepage: string;
 
+  /**
+   * `"tt14688458"`, exactly as TMDB spells it, and empty when TMDB has no id.
+   *
+   * It is handed straight to `api.search`, which is the only thing that reads
+   * it: EZTV is keyed by it and has no keyword surface at all, so a search
+   * without one is a search that source declines.
+   */
+  imdb_id: string;
+
   first_air_date: string;
   /** The most recently aired episode, and NOT a promise that the show has finished. `status` is where that is said. */
   last_air_date: string;
+  /** How many seasons TMDB counts. **Not what `season_list` holds** — see it. */
   seasons: number;
+
+  /**
+   * Every season TMDB lists, unfiltered, and `episode_count` is the whole
+   * reason it is here: `seasons` above is a COUNT and cannot say how many
+   * episodes any of them has.
+   *
+   * The two disagree, and not only on trimmed data. Silo reports
+   * `seasons: 4` and lists one with `episode_count: 0` — announced, unaired —
+   * so a control built from the count offers a search with nothing behind it.
+   *
+   * It also carries `number: 0`, which is TMDB's Specials. A picker must not
+   * turn that one into a button: `?season=0` already means "no season
+   * constraint" at the search API, so clicking Specials would silently search
+   * every season.
+   */
+  season_list: Season[];
   episodes: number;
   /** Minutes, TMDB's episode_run_time[0]. 0 is "TMDB does not know". */
   episode_runtime: number;
@@ -1048,6 +1091,17 @@ export const api = {
    * itself that way — the convention is S02E05 and a bare E05 matches nothing,
    * so honouring it would mean a query that reliably finds nothing while
    * reporting success. 0 is "the whole season" and is not sent.
+   *
+   * `imdbID` is not a narrowing parameter like those two. It is a second, and
+   * for one source the ONLY, way to name the thing being searched for: EZTV is
+   * keyed by IMDb id and has no keyword surface, so a search without it is one
+   * that source declines rather than fails. Every other indexer ignores it.
+   * Sent in TMDB's own spelling, `tt` and all — the server refuses anything
+   * else, and stripping the prefix happens at EZTV's boundary.
+   *
+   * **Seven positional parameters is the ceiling.** An eighth turns this into
+   * an options object rather than sliding one further; the three call sites are
+   * `/movie`, `/show` and `/search`.
    */
   search: (
     title: string,
@@ -1056,6 +1110,7 @@ export const api = {
     media?: MediaType,
     season?: number,
     episode?: number,
+    imdbID?: string,
   ) => {
     const query = new URLSearchParams({ title });
     if (year) query.set('year', String(year));
@@ -1066,6 +1121,11 @@ export const api = {
     // season is the one combination the server refuses, so the client must not
     // be able to send it even if a caller passes one.
     if (media === 'tv' && season && episode) query.set('episode', String(episode));
+    // Not gated on media: nothing but EZTV reads it, and EZTV is television
+    // only, so a film search carrying one costs a query parameter and changes
+    // no answer. Gating it here would be a second copy of a rule the indexer
+    // already owns.
+    if (imdbID) query.set('imdb_id', imdbID);
     return request<SearchResult>(`/api/search?${query}`);
   },
 

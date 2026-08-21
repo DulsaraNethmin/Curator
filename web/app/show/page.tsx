@@ -103,6 +103,11 @@ function Show() {
       // job, server-side and above the cache (D20). `undefined` for quality:
       // this screen has no quality control, and the show page's own year is
       // the first air year, which is what `Show (Year)` on disk is named for.
+      //
+      // The IMDb id last, and it is the only reason EZTV is searched at all:
+      // that source is keyed by it and has no keyword surface, so without one
+      // it reports itself not searched rather than failing. This screen is the
+      // only one that has an id to send.
       setReleases(
         await api.search(
           details.title,
@@ -111,6 +116,7 @@ function Show() {
           'tv',
           want,
           wantEpisode,
+          details.imdb_id || undefined,
         ),
       );
     } catch (e) {
@@ -254,7 +260,10 @@ function Show() {
         film={{ title: details.title, year: details.year, tmdb_id: details.tmdb_id, media: 'tv' }}
         searching={searching}
         onSearchAgain={() => findReleases()}
-        seasons={details.seasons}
+        // The LIST, not the count. `details.seasons` is 4 for Silo and three
+        // of them have aired; the list is what says so, and it is the only
+        // thing that knows how many episodes each one has.
+        seasons={details.season_list}
         season={season}
         // A new season is a new search, and the state moves inside it so the
         // control and the request can never disagree about which one is in
@@ -267,9 +276,11 @@ function Show() {
         // which is the one combination the server refuses.
         onSeason={(next) => void findReleases(next, 0)}
         episode={episode}
-        // Typed, not searched: this only moves the state, and Enter or Find
-        // releases runs it. See the input in Releases for why.
-        onEpisode={setEpisode}
+        // Searched, not merely typed — which is what T98 changed. This was
+        // `setEpisode` while the control was a number field that fired per
+        // keystroke and therefore could not search on change; a button is a
+        // discrete choice, so it behaves exactly like the season above it.
+        onEpisode={(next) => void findReleases(season, next)}
         noYearReason="TMDB has no first air date for this show, so there is no year — and Show (Year) is the folder name curator would have to write."
         empty={
           <>
@@ -288,9 +299,16 @@ function Show() {
  *
  * Every row is conditional for the same reason the film's are: TMDB's coverage
  * is uneven, and a row reading "—" four times is worse than four rows that are
- * not there. What is NOT here is as deliberate: no runtime, no release date and
- * no IMDb id, because a series has none of the three (it has a per-episode
- * length, a first air date, and an id that costs a second request).
+ * not there. What is NOT here is as deliberate: no runtime and no release date,
+ * because a series has neither — it has a per-episode length and a first air
+ * date.
+ *
+ * The IMDb row IS here since T97, and it is the film's row unchanged. It was
+ * absent because a show's id cost TMDB a second request; it now arrives on the
+ * one already being made, and the same id is what EZTV is searched by. IMDb's
+ * /title/ space covers films and series alike, so the link needs no branch —
+ * unlike TMDB's below, where the same number under /movie/ is a different
+ * title entirely.
  */
 function Facts({ details }: { details: ShowDetails }) {
   const facts: [string, React.ReactNode][] = [];
@@ -322,6 +340,14 @@ function Facts({ details }: { details: ShowDetails }) {
       {details.tmdb_id}
     </a>,
   ]);
+  if (details.imdb_id) {
+    facts.push([
+      'IMDb',
+      <a href={`https://www.imdb.com/title/${details.imdb_id}/`} target="_blank" rel="noreferrer">
+        {details.imdb_id}
+      </a>,
+    ]);
+  }
 
   return (
     <dl className="facts">

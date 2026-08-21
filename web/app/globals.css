@@ -173,7 +173,10 @@ button.primary:hover:not(:disabled) { filter: brightness(1.08); }
    which is what the nav does, and reusing the accent-soft "you are here" mark
    means a reader learns it once. It is drawn only where television is on, so it
    never appears as a switch with one working side. */
-.switch { display: inline-flex; gap: .2rem; padding: .15rem; border-radius: 8px; background: var(--bg); }
+/* Wraps, for the episode row: a 22-episode season is ordinary and a row that
+   refuses to wrap would push the page sideways. The two-button media switch
+   above never reaches the edge, so this costs it nothing. */
+.switch { display: inline-flex; flex-wrap: wrap; gap: .2rem; padding: .15rem; border-radius: 8px; background: var(--bg); }
 .switch button {
   border-color: transparent;
   background: transparent;

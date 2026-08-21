@@ -518,7 +518,7 @@ func TestLoadTakesTheTunnelFromTheResolvedSettings(t *testing.T) {
 // every search until somebody ran a command they were never shown, which is the
 // exact failure the rest of that task removes.
 func TestIndexersNeedingNothingAreOnAndX1337IsNot(t *testing.T) {
-	for _, key := range []string{"INDEXER_YTS", "INDEXER_TPB", "INDEXER_1337X"} {
+	for _, key := range []string{"INDEXER_YTS", "INDEXER_TPB", "INDEXER_1337X", "INDEXER_EZTV"} {
 		t.Setenv(key, "")
 	}
 
@@ -526,9 +526,9 @@ func TestIndexersNeedingNothingAreOnAndX1337IsNot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.IndexerYTS || !cfg.IndexerTPB {
-		t.Errorf("an unset toggle disabled an indexer that needs nothing: yts=%v tpb=%v",
-			cfg.IndexerYTS, cfg.IndexerTPB)
+	if !cfg.IndexerYTS || !cfg.IndexerTPB || !cfg.IndexerEZTV {
+		t.Errorf("an unset toggle disabled an indexer that needs nothing: yts=%v tpb=%v eztv=%v",
+			cfg.IndexerYTS, cfg.IndexerTPB, cfg.IndexerEZTV)
 	}
 	if cfg.IndexerX1337 {
 		t.Error("1337x defaults to on: a fresh install would search an indexer whose companion container has never been started")
@@ -551,8 +551,18 @@ func TestIndexersNeedingNothingAreOnAndX1337IsNot(t *testing.T) {
 	if off.IndexerX1337 {
 		t.Error("a stored indexer_1337x=false did not turn 1337x off")
 	}
-	if !off.IndexerYTS || !off.IndexerTPB {
+	if !off.IndexerYTS || !off.IndexerTPB || !off.IndexerEZTV {
 		t.Error("turning one indexer off turned another off with it")
+	}
+
+	// EZTV is switchable the same way, which is what makes it a setting rather
+	// than a hard-wired source.
+	noEZTV, err := Load(map[string]string{"indexer_eztv": "false"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if noEZTV.IndexerEZTV {
+		t.Error("a stored indexer_eztv=false did not turn EZTV off")
 	}
 
 	if _, err := Load(map[string]string{"indexer_yts": "sometimes"}); err == nil {
