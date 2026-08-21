@@ -1259,4 +1259,27 @@ another agent is building, because `$GOCACHE` and the test cache are machine-glo
   file in this repository and not a running container — no `up -d` has been run with it, and the Pi's
   `/media/storage/media/tv` is still the empty directory measured on 2026-08-20. `phase-11.md` says
   the Pi is a separate decision and that nothing in this phase deploys; that is still true.
+- **T74's flake fired in front of the v0.4.0 publish, and its diagnostic finally spoke.** Release run
+  `32447250968`'s embedded `check` failed on `TestDeleteTorrentRefusesAnotherCategory` at 60.07 s.
+  The identical commit had passed `check` on `main` eight minutes earlier (`32447242921`), so this is
+  nondeterminism again and not the version bump, which changed one string constant. What is new is
+  the dump. T74's signature was metadata in, peers up and **zero payload**; this one moved payload
+  and then stopped — `read data=180224`, `pieces complete=3` of 32, one piece left `M`, alongside
+  `active=2 seeders=2`, `piece0 priority=normal ok=true`, `wasted-chunks=0 bad-pieces=0`. All four of
+  swarmState's cases are excluded by those readings, which is precisely the state T74 built
+  `stallReport` for and left unwired. It is wired into `await` now, so the next occurrence carries the
+  per-peer `flags` segment that says whether the peer is choking us. Measured by rendering it
+  mid-flight rather than assuming the format survived anacrolix v1.61.0:
+  `reqq: 0+0/(1/250):0/1024, flags: :e,v1:c` — and that trailing `c` is the answer. 180 lines and
+  6,833 bytes, on the failure path only. **The mechanism is still not named**; the deadline, a retry
+  and `-count` all remain refused for T74's reasons, and it did not reproduce locally in 12 full-package
+  runs at `GOMAXPROCS=2` any more than it did in T74's 20.
+- **`Progress:0` sat beside `pieces complete=3` in that same dump, and the two cannot both be current**
+  — `BytesCompleted` and `PiecesComplete` read the same `_completedPieces` bitmap. So either the
+  poller's view was stale, which would mean `TorrentByHash` was **blocking** and the download was
+  healthy all along, or the client's accounting disagrees with itself. Those are different bugs in
+  different places and the old dump could not separate them. `await` now prints its own poll count and
+  the age of its last poll: the healthy baseline, measured here, is **2,868 polls over 60.01 s with
+  the last one 10 ms before the deadline**. A count in the tens next time means the observation
+  starved, not the swarm.
 - **One laptop, one endpoint, once**, as with every live VPN measurement since phase 6.
