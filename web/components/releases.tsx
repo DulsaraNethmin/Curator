@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   api,
   ApiError,
@@ -12,6 +12,7 @@ import {
   type Season,
 } from '@/lib/api';
 import { Empty, Failure } from '@/components/states';
+import { qualitySections, type Section } from '@/lib/sections';
 
 /**
  * Film is what dispatch sends: the thing a release is for.
@@ -128,6 +129,43 @@ export function Releases({
 
   const [downloadsConfigured, setDownloadsConfigured] = useState<boolean | null>(null);
 
+  /**
+   * Whether to draw the list in quality sections, and it is deliberately NOT
+   * reset when a new search arrives: it is how somebody wants to read a list,
+   * not a fact about the list they are reading.
+   *
+   * Nothing writes it to storage either. The repo remembers no view preference
+   * anywhere — the Movies|Shows switch rides in the query string precisely so
+   * that the URL is the only memory — and a toggle that quietly persisted would
+   * be the first, for a control that is one click away from either state.
+   */
+  const [groupSections, setGroupSections] = useState(true);
+
+  const sections = useMemo(() => qualitySections(result?.releases ?? []), [result]);
+
+  // One section is the whole list, so grouping it changes nothing — no headers,
+  // and no control offering a choice that has no second outcome.
+  const grouped = groupSections && sections.length > 1;
+
+  /**
+   * The rows in the order they are drawn, each carrying the section it belongs
+   * to so the header can be drawn on the change rather than recomputed.
+   *
+   * Grouped is a stable partition of the ranked list and never a re-sort: the
+   * sections come out in the order their first release appears, and inside one
+   * the server's order is untouched. That is what makes the two modes safe to
+   * toggle between — the first row on screen is the same release either way,
+   * and no two rows in one section ever swap.
+   */
+  const ordered = useMemo(() => {
+    if (grouped) {
+      return sections.flatMap((section) => section.releases.map((release) => ({ release, section })));
+    }
+    const flat: { release: Release; section?: Section }[] = [];
+    for (const release of result?.releases ?? []) flat.push({ release, section: undefined });
+    return flat;
+  }, [grouped, sections, result]);
+
   // Why dispatch is refused, in the API's own words rather than this file's
   // guess. The backend is a choice (docs/decisions.md D22), so the sentence that
   // fixes it differs per backend: `embedded` needs no credentials at all, and
@@ -238,6 +276,40 @@ export function Releases({
 
       {result && result.releases.length === 0 && empty && <Empty>{empty}</Empty>}
 
+      {result && sections.length > 1 && (
+        <div className="row" style={{ margin: '0 0 .7rem' }}>
+          <span className="small muted" style={{ minWidth: '4.2rem' }}>
+            Quality
+          </span>
+          <div className="switch" role="group" aria-label="Quality grouping">
+            <button
+              type="button"
+              data-active={groupSections}
+              aria-pressed={groupSections}
+              onClick={() => setGroupSections(true)}
+            >
+              Grouped
+            </button>
+            <button
+              type="button"
+              data-active={!groupSections}
+              aria-pressed={!groupSections}
+              onClick={() => setGroupSections(false)}
+            >
+              Flat
+            </button>
+          </div>
+          {/* Says the property rather than the mechanism, because the property
+              is the reason it is safe to leave on: the sections re-arrange the
+              middle of the list and never the top of it. */}
+          <span className="small muted">
+            {grouped
+              ? 'Sections in the order of their best-seeded release — the top row is the same either way.'
+              : 'One list, best-seeded first.'}
+          </span>
+        </div>
+      )}
+
       {result && result.releases.length > 0 && (
         <div className="panel">
           <table>
@@ -252,19 +324,26 @@ export function Releases({
               </tr>
             </thead>
             <tbody>
-              {result.releases.map((release, i) => {
+              {ordered.map(({ release, section }, i) => {
                 const saved = dispatched[release.id];
                 // The first release that is not an exact match opens the
                 // "contains it" group. Read off the server's own verdict rather
                 // than recomputed here (see Release.match), and keyed on the
                 // CHANGE rather than on the value so the divider is drawn once
                 // instead of before every pack. Releases arrive ranked by tier,
-                // so one transition is all there can be per group.
-                const previous = i > 0 ? result.releases[i - 1].match : undefined;
+                // so one transition is all there can be per group — and the
+                // grouped order preserves that, because a tier is contiguous in
+                // the ranked list and the tier is part of a section's key.
+                // TestRankKeepsATierContiguous is what pins the half of that
+                // sentence living in Go.
+                const previous = i > 0 ? ordered[i - 1] : undefined;
                 const opensGroup =
                   release.match !== undefined &&
                   release.match !== 'exact' &&
-                  release.match !== previous;
+                  release.match !== previous?.release.match;
+                // Identity, not the key: two sections cannot share an object,
+                // and comparing objects means the label is never re-derived.
+                const opensSection = section !== undefined && section !== previous?.section;
                 return (
                   <Fragment key={release.id}>
                     {opensGroup && (
@@ -273,6 +352,21 @@ export function Releases({
                           {release.match === 'pack'
                             ? `— season ${result.season} packs, which contain episode ${result.episode} —`
                             : '— releases whose name does not say which season —'}
+                        </td>
+                      </tr>
+                    )}
+                    {opensSection && (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="small"
+                          // Less top padding than the tier divider above, and
+                          // that is the nesting: a section sits INSIDE a tier,
+                          // and the two are adjacent whenever a tier's first
+                          // section opens it.
+                          style={{ paddingTop: opensGroup ? '.2rem' : '.8rem', fontWeight: 550 }}
+                        >
+                          {section.label}
                         </td>
                       </tr>
                     )}

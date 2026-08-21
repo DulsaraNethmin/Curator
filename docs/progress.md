@@ -1340,7 +1340,10 @@ first. Recorded as a known gap in
 - **Three of `phase-11.md`'s eight verification steps still have no recorded run** — the three that
   need real hardware, listed above and unchanged by this task.
 - **Quality sections are deferred**, taking **D51**: a Grouped/Flat toggle defaulting to grouped,
-  nesting inside D49's tiers as *tier → quality → seeders*.
+  nesting inside D49's tiers as *tier → quality → seeders*. **Done by
+  [T99](tasks/T99-quality-sections.md) on 2026-08-21**, and D51 settled the one thing this line left
+  open the other way round: the sections are ordered by their best-seeded release, not by
+  resolution, because ordering them by resolution is D11 reversed.
 - **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot`** is still unfiled, and this task
   narrowed it without fixing it. It fired twice here — 11.14 s and 10.57 s, the documented failing
   duration against ~0.9 s passing — and both times it was **under a full parallel `go test ./...`**.
@@ -1352,3 +1355,95 @@ first. Recorded as a known gap in
 - **A fourth live indexer test is a fourth chance of CI reddening on an outage**, knowingly accepted.
   `TestEZTVLive` shares `classifyLiveFailure` with the other two, and the control arrangement is now
   a **cycle** — TPB←YTS←EZTV←TPB — pinned by a table rather than by two hand-written comparisons.
+
+---
+
+## T99 — quality sections, ordered by their best release
+
+The release table draws in **quality sections** by default, with a `Grouped | Flat` toggle above it.
+A section is a **(tier, quality)** pair, nesting inside D49's tiers, and the sections come out in the
+order their first release appeared in the ranked list — ordered by their best-seeded member, not by
+resolution. [D51](decisions.md#d51--quality-sections-are-ordered-by-their-best-release-not-by-resolution)
+is the decision; [T99](tasks/T99-quality-sections.md) is the task.
+
+Nothing on the wire changed. `quality` and `match` were already per-release, and the section order is
+derived from the server's own ranking rather than from a rule a client could get wrong — which is
+why this needed no new field despite D49's posture of sending the tier rather than re-deriving it.
+
+### Measured live, 2026-08-21 — do not re-derive
+
+YTS + TPB + EZTV merged, five searches in **7.08 s**:
+
+| search | releases | sections | |
+|---|---|---|---|
+| Interstellar (2014) | 91 | 4 | 1080p 45 (best **1194**) · 2160p 14 (**262**) · 720p 10 (130) · none 22 (5) |
+| Dune Part Two (2024) | 77 | 4 | 1080p 43 (best **1142**) · 2160p 20 (**518**) |
+| Silo S01 | 102 | 4 | 1080p 52 (858) · 720p 31 (523) · **none 9 (6)** · **480p 10 (4)** |
+| Severance S02 | 107 | 5 | |
+| Severance S02E05 | 9 | 5 | under 2 tier dividers |
+
+**The bolded pairs are the decision.** Ordering sections best-resolution-first leads Interstellar
+with a 262-seeder 2160p and buries the 1194-seeder 1080p — which is D11's own rejected sentence, and
+putting it behind a section header does not make it a different answer. So the best row orders the
+sections: D11 applied one level up.
+
+**Silo puts `no resolution in the name` (best 6) above `480p` (best 4)**, which is the same rule
+visible in the one place it disagrees with a resolution table. `QualityRank` orders a tie-break
+inside `rank` and deliberately does not order these.
+
+**The top row is the same in Grouped and in Flat**, verified on all three dumped answers rather than
+argued.
+
+### How a browserless repo checked a browser change
+
+There is no JS test framework here and T99 did not add one. Instead a live search was dumped in the
+API's release shape and the **shipped module** was run over it — imported, not transliterated:
+
+```
+node --experimental-strip-types render.mjs      # imports web/lib/sections.ts
+```
+
+That is why the logic lives in `web/lib/sections.ts` rather than beside the component: it is the only
+part of the change that can be checked without a browser, and it was. **No browser render was
+checked** — the markup is table rows; the logic is what was verified.
+
+### What was decided rather than discovered
+
+**No row-count threshold.** Severance S02E05 is seven rows of chrome over nine rows of list, and
+three of its five sections hold one release under a header naming the quality that release's own
+badge already states. Any number chosen to suppress that would be a number nobody measured. The
+answers are the toggle — one click, and it does not reset when a new search arrives — and the rule
+that a list with **one** section is never grouped at all, because there the two modes render
+identically.
+
+**The header names its tier only when it is not `exact`.** Interstellar and Silo are 100% one tier,
+so a film search and a season-only search get bare resolution headers; the qualifier appears on the
+only screen that has more than one tier on it, where `1080p · 45 releases` and
+`1080p · season packs · 2 releases` would otherwise both read `1080p`.
+
+**D49's tier divider stays above the section headers.** It carries the sentence that explains a tier
+the first time you meet it; a section header names a section. Neither replaces the other.
+
+### The Go half of a TypeScript invariant
+
+`TestRankKeepsATierContiguous` (`internal/indexer/tier_test.go`) pins that a tier arrives in one run
+and never two. That holds only because the tier is `rank`'s primary key, so nobody set out to provide
+it — and the thing it protects is in `web/components/releases.tsx`. Demoting the tier below seeders
+makes a tier reopen partway down the list and draw its header a second time, with nothing in the Go
+diff to suggest a screen broke. Verified failing for exactly that reason before it was kept.
+
+### Still live going out
+
+- **The Pi is still on 0.3.0** and nothing here changes that. `compose.pi.yaml` remains staged at
+  `:0.4.0` with `LIBRARY_TV: /media/tv`, un-run.
+- **Three of `phase-11.md`'s eight verification steps still have no recorded run** — the three that
+  need real hardware, unchanged by this task.
+- **No quality filter.** `?quality=` exists in the API and `FilterFound` implements it; no screen
+  sends it. Sections make the same information browsable without narrowing, so a control that
+  actually filters is still unbuilt.
+- **Grouped mode leaves the Quality column in place**, where it repeats its own section header on
+  every row. Dropping it under grouping would reclaim the width and make the column set change under
+  a toggle, which is the bigger jar — not traded blind.
+- **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot`** is still unfiled and still
+  unmeasured since T98 narrowed it to contention rather than a slot leak.
+- **`?season=0` is still overloaded**, and the picker still draws no Specials button.
