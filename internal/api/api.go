@@ -179,6 +179,10 @@ type Server struct {
 	// WithBrowser. Nil when TMDB_API_KEY is unset, which is a supported state.
 	browser Browser
 
+	// rails caches the TMDB half of the Discover screen. Its zero value works;
+	// see discoverCache.
+	rails discoverCache
+
 	// remux is phase 8's ffmpeg fallback, attached with WithRemux. Nil is the
 	// state of every install without an ffmpeg on it, and it is what makes
 	// POST .../playback omit remux_url and GET .../remux answer 404.

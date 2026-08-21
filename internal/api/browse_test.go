@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/jellyfin"
 	"github.com/DulsaraNethmin/curator/internal/store"
@@ -49,6 +52,23 @@ type fakeBrowser struct {
 	showPopularErr  error
 	showTopRatedErr error
 	showOnTheAirErr error
+
+	// The genre rails, keyed by TMDB genre id so a test can prove a rail asked
+	// for ITS OWN genre rather than merely for some genre. A nil map answers
+	// nil with no error, which is a rail that is ok and empty — the state every
+	// test written before the genres existed expects.
+	byGenre     map[int][]tmdb.Match
+	showByGenre map[int][]tmdb.Match
+
+	byGenreErr     error
+	showByGenreErr error
+
+	// The rails run concurrently, so anything they WRITE needs the mutex or
+	// -race fails the package. Everything above is set before the request and
+	// only read.
+	mu            sync.Mutex
+	gotGenres     []int
+	gotShowGenres []int
 
 	gotQuery string
 	gotYear  int
@@ -117,6 +137,20 @@ func (f *fakeBrowser) TopRatedShows(context.Context) ([]tmdb.Match, error) {
 
 func (f *fakeBrowser) OnTheAir(context.Context) ([]tmdb.Match, error) {
 	return f.showOnTheAir, f.showOnTheAirErr
+}
+
+func (f *fakeBrowser) MoviesByGenre(_ context.Context, genreID int, _ string) ([]tmdb.Match, error) {
+	f.mu.Lock()
+	f.gotGenres = append(f.gotGenres, genreID)
+	f.mu.Unlock()
+	return f.byGenre[genreID], f.byGenreErr
+}
+
+func (f *fakeBrowser) ShowsByGenre(_ context.Context, genreID int, _ string) ([]tmdb.Match, error) {
+	f.mu.Lock()
+	f.gotShowGenres = append(f.gotShowGenres, genreID)
+	f.mu.Unlock()
+	return f.showByGenre[genreID], f.showByGenreErr
 }
 
 // severance is television's endgame(): the fixture every show test in this
@@ -294,8 +328,10 @@ func TestDiscoverReportsAFailingRailWithoutLosingTheOther(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 — a downed rail is not an error page", rec.Code)
 	}
-	if len(body.Rows) != 4 {
-		t.Fatalf("got %d rows, want 4", len(body.Rows))
+	// Four fixed rails plus one per genre. Derived rather than written as a
+	// number, so adding a genre does not fail a test that is not about genres.
+	if want := 4 + len(movieGenres); len(body.Rows) != want {
+		t.Fatalf("got %d rows, want %d", len(body.Rows), want)
 	}
 
 	byID := map[string]discoverRow{}
@@ -327,14 +363,35 @@ func TestDiscoverReportsAFailingRailWithoutLosingTheOther(t *testing.T) {
 // nothing else returns, and the id it arrives under is checked.
 //
 // It runs both media types from one table because the transposition can happen
-// on either side, and the television half is the one with a rail whose TITLE
-// differs — a fifth thing to get wrong that films do not have.
+// on either side, and the television half is the two places it is most likely:
+// a rail whose TITLE differs, and a genre vocabulary where the same id means
+// something else. /discover does not reject a film's genre id — it returns a
+// plausible page of the wrong shows — so `genre_28` arriving with Action's cards
+// on the television tab is a defect nothing else in this package would see.
 func TestEachDiscoverRailDrawsItsOwnSource(t *testing.T) {
 	// One card per rail, told apart by id. The numbers are arbitrary and only
 	// have to be distinct.
 	card := func(id int, title string) []tmdb.Match {
 		return []tmdb.Match{{TMDBID: id, Title: title, Year: 2024}}
 	}
+	// Each genre is fed a card naming its own id, so a rail drawing another
+	// genre's page says so in the failure message.
+	genreCards := func(genres []struct {
+		id    int
+		title string
+	}, noun string) (map[int][]tmdb.Match, map[string][2]string) {
+		cards := map[int][]tmdb.Match{}
+		want := map[string][2]string{}
+		for _, g := range genres {
+			label := fmt.Sprintf("the %s %s", strings.ToLower(g.title), noun)
+			cards[g.id] = card(g.id, label)
+			want[fmt.Sprintf("genre_%d", g.id)] = [2]string{label, g.title}
+		}
+		return cards, want
+	}
+
+	movieCards, movieWant := genreCards(movieGenres, "film")
+	showCards, showWant := genreCards(showGenres, "show")
 
 	for _, c := range []struct {
 		media   string
@@ -349,13 +406,14 @@ func TestEachDiscoverRailDrawsItsOwnSource(t *testing.T) {
 			popular:    card(2, "the popular film"),
 			topRated:   card(3, "the top rated film"),
 			nowPlaying: card(4, "the film in cinemas"),
+			byGenre:    movieCards,
 		},
-		want: map[string][2]string{
+		want: merge(map[string][2]string{
 			"trending":   {"the trending film", "Trending this week"},
 			"popular":    {"the popular film", "Popular"},
 			"top_rated":  {"the top rated film", "Top rated"},
 			"in_release": {"the film in cinemas", "In cinemas now"},
-		},
+		}, movieWant),
 	}, {
 		media: "tv",
 		browser: &fakeBrowser{
@@ -363,13 +421,14 @@ func TestEachDiscoverRailDrawsItsOwnSource(t *testing.T) {
 			showPopular:  card(6, "the popular show"),
 			showTopRated: card(7, "the top rated show"),
 			showOnTheAir: card(8, "the show on the air"),
+			showByGenre:  showCards,
 		},
-		want: map[string][2]string{
+		want: merge(map[string][2]string{
 			"trending":   {"the trending show", "Trending this week"},
 			"popular":    {"the popular show", "Popular"},
 			"top_rated":  {"the top rated show", "Top rated"},
 			"in_release": {"the show on the air", "On the air this week"},
-		},
+		}, showWant),
 	}} {
 		t.Run(c.media, func(t *testing.T) {
 			var body struct {
@@ -407,6 +466,198 @@ func TestEachDiscoverRailDrawsItsOwnSource(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The cache exists because twelve rails is twelve TMDB requests, and the home
+// screen is the most-reloaded page in the application.
+//
+// It counts CALLS rather than timing anything: a test that asserted the second
+// request was faster would be a test about the machine it ran on.
+func TestDiscoverAsksTMDBOncePerRailPerTTL(t *testing.T) {
+	browser := &countingBrowser{fakeBrowser: fakeBrowser{trending: []tmdb.Match{endgame()}}}
+	h := browseServer(t, browser, nil)
+
+	for i := 1; i <= 3; i++ {
+		if rec := getJSON(t, h, "/api/tmdb/discover", nil); rec.Code != http.StatusOK {
+			t.Fatalf("request %d: status %d", i, rec.Code)
+		}
+	}
+
+	// One per rail, not three — and emphatically not one, which would mean the
+	// rails were never fanned out at all.
+	if want := 4 + len(movieGenres); browser.calls() != want {
+		t.Errorf("TMDB was asked %d times over three requests, want %d — one per rail",
+			browser.calls(), want)
+	}
+}
+
+// The rails are cached; whether curator HAS the film is not.
+//
+// This is the whole reason the cache holds []tmdb.Match rather than the finished
+// response body. A card carries `library: {...}`, which is what draws the badge
+// on a poster, and it changes the moment somebody presses Download — so a cached
+// response would leave the poster unbadged for fifteen minutes and make the
+// button look broken.
+func TestACachedRailStillPicksUpTheLibrary(t *testing.T) {
+	st := newFakeStore()
+	h := browseServer(t, &fakeBrowser{trending: []tmdb.Match{endgame()}}, st)
+
+	var before struct {
+		Rows []discoverRow `json:"rows"`
+	}
+	getJSON(t, h, "/api/tmdb/discover", &before)
+	if card := findCard(t, before.Rows, "trending"); card.Library != nil {
+		t.Fatalf("the film is in the library before it was imported: %+v", card.Library)
+	}
+
+	// The film arrives. Nothing invalidates the cache, and nothing should have
+	// to — the rail's cards are the same twenty films either way.
+	row := store.Movie{ID: 7, Title: "Avengers: Endgame", Year: 2019, MediaType: store.MediaTypeMovie}
+	st.byID[row.ID] = &row
+	st.library = map[int64]store.LibraryState{
+		299534: {MovieID: row.ID, Status: store.StatusImported},
+	}
+
+	var after struct {
+		Rows []discoverRow `json:"rows"`
+	}
+	getJSON(t, h, "/api/tmdb/discover", &after)
+	card := findCard(t, after.Rows, "trending")
+	if card.Library == nil {
+		t.Fatal("a cached rail lost the library state — the poster would draw with no badge")
+	}
+	if card.Library.State != store.StatusImported {
+		t.Errorf("state = %q, want %q", card.Library.State, store.StatusImported)
+	}
+}
+
+// A failed rail is not remembered. Fifteen minutes of a cached transient 502 is
+// how a blip becomes a screen somebody reports as broken.
+func TestAFailedRailIsRetriedRatherThanCached(t *testing.T) {
+	browser := &countingBrowser{fakeBrowser: fakeBrowser{
+		trendingErr: errors.New("dial tcp: connection refused"),
+	}}
+	h := browseServer(t, browser, nil)
+
+	for i := 1; i <= 2; i++ {
+		var body struct {
+			Rows []discoverRow `json:"rows"`
+		}
+		getJSON(t, h, "/api/tmdb/discover", &body)
+		byID := map[string]discoverRow{}
+		for _, row := range body.Rows {
+			byID[row.ID] = row
+		}
+		if byID["trending"].OK {
+			t.Fatalf("request %d: the failing rail reports ok", i)
+		}
+	}
+
+	// Trending was asked both times; every other rail succeeded and was asked
+	// once.
+	if got, want := browser.trendingCalls(), 2; got != want {
+		t.Errorf("the failed rail was asked %d times, want %d — a failure was cached", got, want)
+	}
+	if got, want := browser.popularCalls(), 1; got != want {
+		t.Errorf("a rail that SUCCEEDED was asked %d times, want %d", got, want)
+	}
+}
+
+// And it does expire. The clock is injected rather than slept through: fifteen
+// real minutes is not a test.
+func TestARailIsAskedAgainOnceTheTTLHasPassed(t *testing.T) {
+	browser := &countingBrowser{fakeBrowser: fakeBrowser{trending: []tmdb.Match{endgame()}}}
+
+	mux := http.NewServeMux()
+	srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, quiet()).WithBrowser(browser)
+	now := time.Now()
+	srv.rails.now = func() time.Time { return now }
+	srv.Register(mux)
+	srv.RegisterBrowse(mux)
+
+	getJSON(t, mux, "/api/tmdb/discover", nil)
+	getJSON(t, mux, "/api/tmdb/discover", nil)
+	if got := browser.trendingCalls(); got != 1 {
+		t.Fatalf("inside the TTL the rail was asked %d times, want 1", got)
+	}
+
+	// One second past, not one second before: the boundary is where an
+	// off-by-one lives.
+	now = now.Add(railTTL + time.Second)
+	getJSON(t, mux, "/api/tmdb/discover", nil)
+	if got := browser.trendingCalls(); got != 2 {
+		t.Errorf("past the TTL the rail was asked %d times, want 2", got)
+	}
+}
+
+// countingBrowser is fakeBrowser that counts what it was asked. The rails run
+// concurrently, so every counter is atomic or -race fails the package.
+type countingBrowser struct {
+	fakeBrowser
+	trendingN atomic.Int64
+	popularN  atomic.Int64
+	otherN    atomic.Int64
+}
+
+func (c *countingBrowser) Trending(ctx context.Context) ([]tmdb.Match, error) {
+	c.trendingN.Add(1)
+	return c.fakeBrowser.Trending(ctx)
+}
+
+func (c *countingBrowser) Popular(ctx context.Context) ([]tmdb.Match, error) {
+	c.popularN.Add(1)
+	return c.fakeBrowser.Popular(ctx)
+}
+
+func (c *countingBrowser) TopRated(ctx context.Context) ([]tmdb.Match, error) {
+	c.otherN.Add(1)
+	return c.fakeBrowser.TopRated(ctx)
+}
+
+func (c *countingBrowser) NowPlaying(ctx context.Context) ([]tmdb.Match, error) {
+	c.otherN.Add(1)
+	return c.fakeBrowser.NowPlaying(ctx)
+}
+
+func (c *countingBrowser) MoviesByGenre(ctx context.Context, id int, what string) ([]tmdb.Match, error) {
+	c.otherN.Add(1)
+	return c.fakeBrowser.MoviesByGenre(ctx, id, what)
+}
+
+func (c *countingBrowser) calls() int {
+	return int(c.trendingN.Load() + c.popularN.Load() + c.otherN.Load())
+}
+func (c *countingBrowser) trendingCalls() int { return int(c.trendingN.Load()) }
+func (c *countingBrowser) popularCalls() int  { return int(c.popularN.Load()) }
+
+// findCard pulls one rail's first card, failing the test rather than panicking
+// on a rail that is missing or empty.
+func findCard(t *testing.T, rows []discoverRow, id string) movieCard {
+	t.Helper()
+	for _, row := range rows {
+		if row.ID != id {
+			continue
+		}
+		if len(row.Results) == 0 {
+			t.Fatalf("rail %q is empty: %+v", id, row)
+		}
+		return row.Results[0]
+	}
+	t.Fatalf("no rail %q in %d rows", id, len(rows))
+	return movieCard{}
+}
+
+// merge folds the genre expectations into the fixed ones. Both halves are built
+// the same way and neither may quietly overwrite the other, so a collision is a
+// failure rather than a last-write-wins.
+func merge(into, from map[string][2]string) map[string][2]string {
+	for k, v := range from {
+		if _, clash := into[k]; clash {
+			panic("two rails share the id " + k)
+		}
+		into[k] = v
+	}
+	return into
 }
 
 func TestBrowseStatusCodes(t *testing.T) {
@@ -908,6 +1159,8 @@ func TestAFailedRailIsWrittenForAHuman(t *testing.T) {
 			topRatedErr: fmt.Errorf("tmdb top rated: %w: Invalid API key: You must be granted a valid key.",
 				tmdb.ErrUnauthorized),
 			nowPlayingErr: fmt.Errorf("tmdb now playing: %w: Invalid API key: You must be granted a valid key.",
+				tmdb.ErrUnauthorized),
+			byGenreErr: fmt.Errorf("tmdb action films: %w: Invalid API key: You must be granted a valid key.",
 				tmdb.ErrUnauthorized),
 		})
 	srv.Register(mux)

@@ -210,6 +210,31 @@ func (c *Client) OnTheAir(ctx context.Context) ([]Match, error) {
 	return c.listTV(ctx, "/tv/on_the_air", "on the air")
 }
 
+// ShowsByGenre is MoviesByGenre's counterpart, over /discover/tv.
+//
+// **The genre ids are not the same numbers**, and that is the one thing to know
+// here. TMDB keeps two genre vocabularies: a film is Action (28) or Science
+// Fiction (878), where a show is "Action & Adventure" (10759) or "Sci-Fi &
+// Fantasy" (10765), and neither of those ids means anything on the other
+// endpoint. Passing a film's genre id here does not fail — it returns a plausible
+// page of the wrong shows — so the two tables live beside their own callers in
+// internal/api and are never shared.
+//
+// The vote floor is 200 as it is for films, and it does more work here: a show
+// with three votes is a show nobody can find a release for either.
+func (c *Client) ShowsByGenre(ctx context.Context, genreID int, what string) ([]Match, error) {
+	params := url.Values{}
+	params.Set("with_genres", strconv.Itoa(genreID))
+	params.Set("sort_by", "popularity.desc")
+	params.Set("vote_count.gte", "200")
+
+	var body tvSearchResponse
+	if err := c.get(ctx, "/discover/tv", params, what, &body); err != nil {
+		return nil, err
+	}
+	return toMatches(asMovieShapedAll(body.Results)), nil
+}
+
 // listTV is list over the television envelope. The only difference is which
 // struct decodes the page, and it converts before returning so the result is
 // the same []Match the film lists produce.

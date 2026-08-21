@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +115,14 @@ func TestEveryEndpointScrubsTheAPIKey(t *testing.T) {
 		},
 		"OnTheAir": func(ctx context.Context) error {
 			_, err := client.OnTheAir(ctx)
+			return err
+		},
+		"MoviesByGenre": func(ctx context.Context) error {
+			_, err := client.MoviesByGenre(ctx, 28, "action films")
+			return err
+		},
+		"ShowsByGenre": func(ctx context.Context) error {
+			_, err := client.ShowsByGenre(ctx, 10759, "action & adventure shows")
 			return err
 		},
 	}
@@ -313,6 +322,8 @@ func TestBrowseReportsARejectedKey(t *testing.T) {
 		"PopularShows":  second(client.PopularShows(ctx)),
 		"TopRatedShows": second(client.TopRatedShows(ctx)),
 		"OnTheAir":      second(client.OnTheAir(ctx)),
+		"MoviesByGenre": second(client.MoviesByGenre(ctx, 28, "action films")),
+		"ShowsByGenre":  second(client.ShowsByGenre(ctx, 10759, "action & adventure shows")),
 	} {
 		if !errors.Is(err, ErrUnauthorized) {
 			t.Errorf("%s: err = %v, want ErrUnauthorized", name, err)
@@ -323,6 +334,67 @@ func TestBrowseReportsARejectedKey(t *testing.T) {
 // second discards a call's value and keeps its error, so the table above reads
 // as a list rather than four near-identical blocks.
 func second[T any](_ T, err error) error { return err }
+
+// The genre rails are the only endpoints here whose QUERY carries meaning, so
+// they are the only ones with a test that reads it.
+//
+// Two of the three parameters are the rail's quality and not decoration.
+// Without sort_by, TMDB applies its own default ordering and the row leads with
+// something nobody has heard of; without the vote floor, /discover happily
+// surfaces a 10.0-average film with four votes, and "Horror" becomes a row of
+// unrated shorts. A silent drop of either is invisible on the screen — the rail
+// still fills with twenty plausible posters — which is exactly the kind of
+// regression that needs an assertion rather than an eye.
+func TestGenreRailsAskForTheRightThing(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		call     func(*Client) ([]Match, error)
+		wantPath string
+		wantID   string
+	}{{
+		name:     "films",
+		call:     func(c *Client) ([]Match, error) { return c.MoviesByGenre(context.Background(), 28, "action films") },
+		wantPath: "/discover/movie",
+		wantID:   "28",
+	}, {
+		// 10759 and not 28: television has its own genre vocabulary, and TMDB
+		// answers a film's id here with a plausible page of the wrong shows
+		// rather than an error.
+		name:     "shows",
+		call:     func(c *Client) ([]Match, error) { return c.ShowsByGenre(context.Background(), 10759, "action shows") },
+		wantPath: "/discover/tv",
+		wantID:   "10759",
+	}} {
+		t.Run(c.name, func(t *testing.T) {
+			var got *url.URL
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.URL
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(readFixture(t, "empty.json"))
+			}))
+			defer srv.Close()
+
+			if _, err := c.call(New("k", nil, WithBaseURL(srv.URL))); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if got == nil {
+				t.Fatal("no request was made")
+			}
+			if got.Path != c.wantPath {
+				t.Errorf("path = %q, want %q", got.Path, c.wantPath)
+			}
+			for param, want := range map[string]string{
+				"with_genres":    c.wantID,
+				"sort_by":        "popularity.desc",
+				"vote_count.gte": "200",
+			} {
+				if have := got.Query().Get(param); have != want {
+					t.Errorf("%s = %q, want %q", param, have, want)
+				}
+			}
+		})
+	}
+}
 
 // An empty page is [] and never nil, because the UI iterates it.
 func TestBrowseEmptyPageIsNotNil(t *testing.T) {

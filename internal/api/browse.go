@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/DulsaraNethmin/curator/internal/jellyfin"
 	"github.com/DulsaraNethmin/curator/internal/store"
@@ -41,6 +42,20 @@ type Browser interface {
 	PopularShows(ctx context.Context) ([]tmdb.Match, error)
 	TopRatedShows(ctx context.Context) ([]tmdb.Match, error)
 	OnTheAir(ctx context.Context) ([]tmdb.Match, error)
+
+	// The genre rails, and they take an id rather than being a method each —
+	// which is the opposite of the rule above, on purpose. The pairs above are
+	// two DIFFERENT TMDB endpoints with different paths; these two are one
+	// endpoint per media type with a parameter, and fourteen methods named
+	// after genres would be a table pretending to be an interface. The split by
+	// media type stays, because /discover/movie and /discover/tv are still two
+	// paths and their genre ids are two different vocabularies (28 is Action
+	// for a film and nothing at all for a show).
+	//
+	// `what` is the label an error is phrased with — "action films" — and never
+	// reaches TMDB.
+	MoviesByGenre(ctx context.Context, genreID int, what string) ([]tmdb.Match, error)
+	ShowsByGenre(ctx context.Context, genreID int, what string) ([]tmdb.Match, error)
 }
 
 // WithBrowser attaches the catalogue and returns the server.
@@ -294,37 +309,177 @@ type discoverRail struct {
 	fetch func(context.Context) ([]tmdb.Match, error)
 }
 
+// The genre rails, as ids TMDB understands and the words a person reads.
+//
+// **Two tables and not one, because TMDB keeps two genre vocabularies.** A film
+// is Action (28) and Science Fiction (878); a show is "Action & Adventure"
+// (10759) and "Sci-Fi & Fantasy" (10765), and those ids mean nothing on the
+// other endpoint. Crucially /discover does not FAIL on a foreign id — it returns
+// a plausible page of the wrong thing — so a single shared table would be a bug
+// that looks exactly like a working screen. They are deliberately not factored
+// together.
+//
+// Eight each, and the count is a judgement rather than a limit. Every rail is a
+// TMDB request on a cold cache, and past about a dozen the screen stops being a
+// place to browse and becomes a place to scroll; these are the eight a general
+// library actually gets asked for.
+var movieGenres = []struct {
+	id    int
+	title string
+}{
+	{28, "Action"},
+	{35, "Comedy"},
+	{878, "Science fiction"},
+	{53, "Thriller"},
+	{27, "Horror"},
+	{16, "Animation"},
+	{18, "Drama"},
+	{99, "Documentary"},
+}
+
+var showGenres = []struct {
+	id    int
+	title string
+}{
+	{10759, "Action & adventure"},
+	{35, "Comedy"},
+	{10765, "Sci-fi & fantasy"},
+	{80, "Crime"},
+	{9648, "Mystery"},
+	{16, "Animation"},
+	{18, "Drama"},
+	{99, "Documentary"},
+}
+
 // discoverRails is the home screen, in the order it is drawn. Callers must have
 // checked s.browser is non-nil.
 //
 // **The ids are shared across media types and the titles are not, and the split
 // is deliberate.** An id names a SLOT — the UI keys its rails on it and never
 // learns that television exists — while the title says what that slot holds
-// here. Three of the four mean the same thing on both sides, so they read the
-// same; the fourth does not, because "in cinemas" and "on the air" are two
-// different facts and not one fact said twice. That is the rule the original
-// comment was reaching for: the toggle already says Movies or Shows, so a title
-// must not repeat it, but it must still be true.
+// here. Most mean the same thing on both sides, so they read the same;
+// `in_release` does not, because "in cinemas" and "on the air" are two different
+// facts and not one fact said twice. That is the rule the original comment was
+// reaching for: the toggle already says Movies or Shows, so a title must not
+// repeat it, but it must still be true.
 //
 // The order is a claim about what a person came for. Trending leads because it
 // is the reason to open this screen at all; top rated sits third because it is
-// the only rail here that does not turn over weekly, and burying it under two
-// lists of the same new releases was what made the screen worth widening.
+// the only rail up there that does not turn over weekly. The genres follow in a
+// fixed order rather than a personalised one — curator has no idea what anybody
+// likes, and inventing a ranking from nothing would be a lie told in a layout.
 func (s *Server) discoverRails(mediaType string) []discoverRail {
 	if mediaType == store.MediaTypeTV {
-		return []discoverRail{
+		rails := []discoverRail{
 			{"trending", "Trending this week", s.browser.TrendingShows},
 			{"popular", "Popular", s.browser.PopularShows},
 			{"top_rated", "Top rated", s.browser.TopRatedShows},
 			{"in_release", "On the air this week", s.browser.OnTheAir},
 		}
+		for _, g := range showGenres {
+			rails = append(rails, s.genreRail(g.id, g.title, "shows", s.browser.ShowsByGenre))
+		}
+		return rails
 	}
-	return []discoverRail{
+
+	rails := []discoverRail{
 		{"trending", "Trending this week", s.browser.Trending},
 		{"popular", "Popular", s.browser.Popular},
 		{"top_rated", "Top rated", s.browser.TopRated},
 		{"in_release", "In cinemas now", s.browser.NowPlaying},
 	}
+	for _, g := range movieGenres {
+		rails = append(rails, s.genreRail(g.id, g.title, "films", s.browser.MoviesByGenre))
+	}
+	return rails
+}
+
+// genreRail closes one genre id into the no-argument shape every other rail has,
+// so handleDiscover keeps one loop over one kind of thing.
+//
+// The id is in the rail id — "genre_28" — rather than the title slugged, because
+// the title is prose that may be reworded and the id is the thing that actually
+// identifies the row. The UI keys React on it and nothing else reads it.
+func (s *Server) genreRail(
+	id int,
+	title, noun string,
+	by func(context.Context, int, string) ([]tmdb.Match, error),
+) discoverRail {
+	// what is the error's words, not TMDB's: "action films could not be loaded".
+	what := strings.ToLower(title) + " " + noun
+	return discoverRail{
+		id:    fmt.Sprintf("genre_%d", id),
+		title: title,
+		fetch: func(ctx context.Context) ([]tmdb.Match, error) { return by(ctx, id, what) },
+	}
+}
+
+// railTTL is how long a rail's cards are reused.
+//
+// Fifteen minutes against lists TMDB itself recomputes daily (top rated, the
+// genres), weekly (trending) or on a cinema's schedule (now playing) — so this
+// is not a staleness trade at all, it is a floor on how often curator asks a
+// question whose answer has not changed. Short enough that a genuinely new
+// trending list appears within the quarter hour; long enough that opening
+// Discover, pressing Shows, pressing Movies and going back is one round of
+// requests instead of four.
+const railTTL = 15 * time.Minute
+
+// discoverCache holds the TMDB half of each rail — the cards, and never the
+// library state merged onto them.
+//
+// **That split is the whole design.** A card carries `library: {...}` saying
+// whether curator already has the film, and that changes the instant somebody
+// presses Download; caching the finished response would leave a poster without
+// its badge for fifteen minutes and make the button look broken. So what is kept
+// is the [] tmdb.Match, and LibraryByTMDBID is re-read and re-merged on every
+// request, which it already was — it is one indexed SQLite read.
+//
+// **Failures are not cached.** A rail that failed is a rail to try again, and
+// fifteen minutes of a remembered error is how a transient 502 becomes a screen
+// somebody reports as broken. The cost of that choice is that a hard TMDB outage
+// re-asks every fifteen seconds somebody reloads; the log line in handleDiscover
+// is what makes that visible.
+//
+// The zero value is usable: the map is made on first write.
+type discoverCache struct {
+	mu      sync.Mutex
+	entries map[string]railEntry
+	// now is time.Now except in tests, which need to age an entry without
+	// sleeping for a quarter of an hour.
+	now func() time.Time
+}
+
+type railEntry struct {
+	matches []tmdb.Match
+	at      time.Time
+}
+
+func (c *discoverCache) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+// get returns the cached cards for a key and whether they are still fresh.
+func (c *discoverCache) get(key string) ([]tmdb.Match, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok || c.clock().Sub(entry.at) >= railTTL {
+		return nil, false
+	}
+	return entry.matches, true
+}
+
+func (c *discoverCache) put(key string, matches []tmdb.Match) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = map[string]railEntry{}
+	}
+	c.entries[key] = railEntry{matches: matches, at: c.clock()}
 }
 
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
@@ -343,20 +498,32 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		rows[i] = discoverRow{ID: rail.id, Title: rail.title}
 	}
 
-	// Concurrently, and it matters more at four rails than it did at two: these
-	// are four sequential ten-second timeouts otherwise, which is forty seconds
-	// of home screen. The fan-out is bounded by the table above and TMDB is one
-	// host, so there is nothing here to rate-limit against.
+	// Concurrently, and at twelve rails it is the difference between a screen
+	// and a stall: these are twelve sequential ten-second timeouts otherwise,
+	// which is two minutes of home page. The fan-out is bounded by the table
+	// above and TMDB is one host at ~50 requests a second, so twelve in flight
+	// is not something to rate-limit against — and on a warm cache it is zero.
 	var (
 		wg      sync.WaitGroup
 		results = make([][]tmdb.Match, len(rails))
 		errs    = make([]error, len(rails))
 	)
 	for i := range rails {
+		// Keyed by media type as well as rail id: "genre_16" is Animation in
+		// both vocabularies and two entirely different pages, and one shared key
+		// would serve cartoons to whichever tab asked second.
+		key := mediaType + "/" + rails[i].id
+		if cached, ok := s.rails.get(key); ok {
+			results[i] = cached
+			continue
+		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			results[i], errs[i] = rails[i].fetch(r.Context())
+			if errs[i] == nil {
+				s.rails.put(key, results[i])
+			}
 		}(i)
 	}
 	wg.Wait()
