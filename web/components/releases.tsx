@@ -6,13 +6,14 @@ import {
   ApiError,
   formatBytes,
   type Download,
+  type MediaType,
   type Release,
   type SearchResult,
 } from '@/lib/api';
 import { Empty, Failure } from '@/components/states';
 
 /**
- * Film is what dispatch sends: the movie a release is for.
+ * Film is what dispatch sends: the thing a release is for.
  *
  * It is a separate prop from `result` rather than read off it, because the two
  * are not the same string (D20). The release-name search knows only what was
@@ -20,11 +21,34 @@ import { Empty, Failure } from '@/components/states';
  * canonical title, year and id, colon and all — `library.DestFolder` spells the
  * colon " - " on the way to disk, and a client that pre-stripped it would write
  * the wrong folder.
+ *
+ * Since phase 11 it is as often a show as a film. The name is the one dispatch
+ * has always had and renaming it would churn two screens to say nothing new —
+ * what matters is `media`, below, which is a completely different fact.
  */
 export type Film = {
   title: string;
   year: number;
+
+  /**
+   * TMDB's id in the id space `media` names, and **the two are different
+   * spaces**: 95396 is Severance's tv id and also some film's movie id (D48).
+   * The server reads it as whichever `media_type` says, so sending one with the
+   * wrong media type does not mislabel a row, it attaches the grab to a
+   * different title entirely.
+   */
   tmdb_id?: number | null;
+
+  /**
+   * Absent is a film, which is what every dispatch made before phase 11 was.
+   *
+   * It is not cosmetic. It decides which library root the import lands under,
+   * and a show dispatched as a film is deleted by the next movie scan for
+   * sitting outside LIBRARY_MOVIES — with its downloads, through the foreign
+   * key. It also decides whether a season may be sent at all: the server
+   * answers 400 for a season on a film request rather than ignoring it.
+   */
+  media?: MediaType;
 };
 
 /**
@@ -46,6 +70,9 @@ export function Releases({
   empty,
   noYearReason = 'Search with a year first — it becomes the library folder name',
   onSearchAgain,
+  seasons = 0,
+  season = 0,
+  onSeason,
 }: {
   result: SearchResult | null;
   film: Film;
@@ -57,6 +84,21 @@ export function Releases({
   // for a film they cannot edit would be advice they cannot take.
   noYearReason?: string;
   onSearchAgain?: () => void;
+
+  /**
+   * How many seasons TMDB says the show has, and which one is selected. 0
+   * seasons means there is no selector to draw — nothing is known to pick from
+   * — and season 0 means "every season", which is what the API reads an absent
+   * season as and what finds a complete-series pack.
+   *
+   * The search itself belongs to the caller, which is why this is a callback
+   * rather than a search made here: the show page owns the title, the year and
+   * the request, and a second search implementation inside this component would
+   * be a second place for the 410 wording to drift (see above).
+   */
+  seasons?: number;
+  season?: number;
+  onSeason?: (season: number) => void;
 }) {
   const [dispatching, setDispatching] = useState<string | null>(null);
   const [dispatched, setDispatched] = useState<Record<string, Download>>({});
@@ -123,6 +165,15 @@ export function Releases({
         title: film.title,
         year: film.year,
         tmdb_id: film.tmdb_id,
+        media_type: film.media,
+        // The release's OWN season wins, and the answer's season is the
+        // fallback — never the selector's current value. A season selector
+        // fires a request per change, so the control can already be showing
+        // season 3 while the row being clicked came out of the season 2 answer.
+        // The name is the truest source there is: the importer files episodes
+        // by what each FILE says, and this number is the record of what a
+        // person believed they were grabbing.
+        season: film.media === 'tv' ? (release.season ?? result?.season ?? 0) : undefined,
       });
       setDispatched((prev) => ({ ...prev, [release.id]: saved }));
     } catch (e) {
@@ -143,6 +194,39 @@ export function Releases({
           // belong to a search that has aged out, so offer to run it again.
           onRetry={expired ? onSearchAgain : undefined}
         />
+      )}
+
+      {/* Television only, and above the results rather than beside the search
+          button, because it is a filter on what is listed below it and changing
+          it re-runs the search. Drawn before the first search too: picking the
+          season you want and then pressing Find releases is one wait instead of
+          two. */}
+      {film.media === 'tv' && onSeason && seasons > 0 && (
+        <div className="row" style={{ margin: '0 0 .9rem' }}>
+          <label className="small muted" htmlFor="season">
+            Season
+          </label>
+          <select
+            id="season"
+            value={season}
+            disabled={searching}
+            onChange={(e) => onSeason(Number(e.target.value))}
+          >
+            {/* 0 is what the API reads an absent season as: no constraint at
+                the indexers, which is how a complete-series pack is found. */}
+            <option value={0}>Every season</option>
+            {Array.from({ length: seasons }, (_, i) => i + 1).map((n) => (
+              <option key={n} value={n}>
+                Season {n}
+              </option>
+            ))}
+          </select>
+          <span className="small muted">
+            {season === 0
+              ? 'Season packs and single episodes, from every season TMDB knows about.'
+              : `Narrowed to season ${season}. Both a pack and a single episode import.`}
+          </span>
+        </div>
       )}
 
       {result && <Indexers result={result} />}
