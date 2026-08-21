@@ -216,6 +216,14 @@ T27, T28 and T29 are independent and can land in any order.
 | `GET /api/tmdb/search?query=&year=` | `{query,year,results:[card]}` |
 | `GET /api/tmdb/movies/{id}` | a card plus tagline, runtime, genres, status, studios, languages |
 
+> **"trending and popular" is corrected in place by [T102](tasks/T102-more-rails-and-a-visual-refresh.md):**
+> the envelope is unchanged, but there are now **twelve** rails, not two — `trending`, `popular`,
+> `top_rated`, `in_release`, and eight `genre_<tmdb-id>`. The ids are shared across media types and
+> the titles are not: `in_release` is headed *In cinemas now* for films and *On the air this week*
+> for shows, because those are two different facts rather than one fact said twice. The genre ids
+> are two different vocabularies for the same reason — 28 is Action for a film and nothing at all
+> for a show. Phase 11 added `?media=tv` to this route; see [T94](tasks/T94-api-tv-routes.md).
+
 Everything TMDB-backed lives under `/api/tmdb/`, and the prefix is the rule: **if it is under
 `/api/tmdb/`, it goes dark without a key**. `/api/movies` stays the library and cannot be confused
 with it. `GET /api/search` is untouched — it is the fallback.

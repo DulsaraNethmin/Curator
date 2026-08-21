@@ -20,6 +20,10 @@ curator.key
 /web/node_modules/
 /web/out/
 /web/.next/
+# `next build` typechecks in-process and leaves nothing behind, but a bare
+# `npx tsc --noEmit` — which is how the UI gets checked without a full build —
+# drops an incremental cache here.
+/web/tsconfig.tsbuildinfo
 
 # The Next.js export is generated, not committed: minified bundles make every UI
 # change an unreviewable diff (D16). The directory itself must exist, though —

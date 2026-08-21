@@ -272,10 +272,19 @@ func TestSearchShowsRejectsAnEmptyQuery(t *testing.T) {
 // The recorded pages are trimmed to three shows each. What is under test is the
 // name/first_air_date mapping and the path, neither of which gets any truer at
 // twenty.
+// tv_top_rated.json and tv_on_the_air.json are the two pages here that were
+// WRITTEN rather than captured — three shows each, in the recorded shape, with
+// obviously synthetic poster paths so nobody mistakes them for a real response.
+// That is enough for what this test is: the path asked for, and the
+// name/first_air_date mapping. Neither gets truer from a captured page, and
+// on_the_air in particular could not be captured usefully — it is a rolling
+// seven-day window, so a real recording is stale the week after it is taken.
 func TestTrendingShowsAndPopularShows(t *testing.T) {
 	client := browseClient(t, map[string]string{
 		"/trending/tv/week": "trending_tv_week.json",
 		"/tv/popular":       "tv_popular.json",
+		"/tv/top_rated":     "tv_top_rated.json",
+		"/tv/on_the_air":    "tv_on_the_air.json",
 	})
 	ctx := context.Background()
 
@@ -286,6 +295,8 @@ func TestTrendingShowsAndPopularShows(t *testing.T) {
 	}{
 		"TrendingShows": {func() ([]Match, error) { return client.TrendingShows(ctx) }, "The Last of Us", 2023},
 		"PopularShows":  {func() ([]Match, error) { return client.PopularShows(ctx) }, "Grey's Anatomy", 2005},
+		"TopRatedShows": {func() ([]Match, error) { return client.TopRatedShows(ctx) }, "Breaking Bad", 2008},
+		"OnTheAir":      {func() ([]Match, error) { return client.OnTheAir(ctx) }, "Silo", 2023},
 	} {
 		got, err := tc.call()
 		if err != nil {

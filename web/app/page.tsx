@@ -11,10 +11,11 @@ import {
   type Movie,
   type SettingsResult,
 } from '@/lib/api';
-import { Empty, Failure } from '@/components/states';
-import { MovieCard } from '@/components/movie-card';
+import { Failure } from '@/components/states';
 import { MediaSwitch } from '@/components/media-switch';
 import { FirstRun, isFirstRun } from '@/components/first-run';
+import { Billboard } from '@/components/billboard';
+import { Rail } from '@/components/rail';
 
 /**
  * Discover: what curator has, in one strip, and then what there is to want.
@@ -121,13 +122,27 @@ export default function Home() {
     );
   }
 
+  // The billboard is the trending rail's first card. It is drawn only when that
+  // rail actually answered — a failed trending rail is a banner further down,
+  // and a blank hero above it would be the same failure said twice, in the
+  // largest element on the page.
+  const billboard = rows?.find((row) => row.id === 'trending' && row.ok)?.results[0];
+
   return (
     <>
-      <h1>curator</h1>
-      <p className="lede">
-        Pick {tvOn ? 'a film or a show' : 'a film'}, and it downloads, hardlinks itself into the
-        library and tells Jellyfin. One binary where seven containers used to be.
-      </p>
+      {/* The page's heading, and the only one it has when the billboard is
+          drawn: a document whose first heading is the <h2> over the trending
+          rail starts its outline halfway down. */}
+      <h1 className="visually-hidden">Discover</h1>
+
+      {billboard ? (
+        <Billboard film={billboard} media={media} />
+      ) : (
+        <p className="lede" style={{ marginTop: 'var(--sp-8)' }}>
+          Pick {tvOn ? 'a film or a show' : 'a film'}, and it downloads, hardlinks itself into the
+          library and tells Jellyfin. One binary where seven containers used to be.
+        </p>
+      )}
 
       {error !== null && <Failure error={error} />}
 
@@ -169,9 +184,14 @@ export default function Home() {
 
       {/* Absent when LIBRARY_TV is unset, which is the whole of D48's opt-in on
           this screen: no switch, no TV rails, and the landing page of an
-          install that wanted films is exactly the one it had. */}
+          install that wanted films is exactly the one it had.
+
+          The negative bottom margin this row carried was tuned against a rail
+          whose <h2> set its own top margin. The rails own their spacing now
+          (.rail-section), so a pull-up here collides the switch with the first
+          heading instead of tightening it. */}
       {tvOn && (
-        <div className="row" style={{ margin: '1.5rem 0 -.5rem' }}>
+        <div className="row" style={{ margin: 'var(--sp-6) 0' }}>
           <MediaSwitch media={media} onChange={setMedia} />
         </div>
       )}
@@ -182,46 +202,14 @@ export default function Home() {
 
       {!rows && discoverError === null && <p className="lede">Loading…</p>}
 
+      {/* The rail titles are the same for both media types where they mean the
+          same thing — "Trending this week" is unambiguous because this screen
+          shows one media type at a time, and a "Trending shows" heading would be
+          the switch's job said twice. `media` is what makes each card open the
+          right page. */}
       {rows?.map((row) => (
-        // The rail titles are the same for both media types — "Trending this
-        // week" is unambiguous because this screen shows one media type at a
-        // time, and a "Trending shows" heading would be the switch's job said
-        // twice. `media` is what makes each card open the right page.
         <Rail key={row.id} row={row} media={media} />
       ))}
     </>
-  );
-}
-
-/**
- * One rail, and its own failure.
- *
- * ok and error are per-row for the same reason indexers[] is per-indexer: one
- * rail failing is a success carrying the other. A rail that rendered as an
- * empty row would be indistinguishable from a rail TMDB had nothing for, which
- * is minter's 200-carrying-a-failure wearing a third hat.
- */
-function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
-  return (
-    <section>
-      <h2>{row.title}</h2>
-
-      {!row.ok ? (
-        <div className="banner warn">
-          <strong>{row.title} could not be loaded</strong>
-          <span className="small">{row.error ?? 'no reason given'}</span>
-        </div>
-      ) : row.results.length === 0 ? (
-        <Empty>TMDB returned nothing for {row.title.toLowerCase()}.</Empty>
-      ) : (
-        <div className="rail">
-          {row.results.map((film) => (
-            // The key is scoped by the rail, not global: a film and a show can
-            // hold the same TMDB id, and one screen never draws both.
-            <MovieCard key={film.tmdb_id} film={film} media={media} />
-          ))}
-        </div>
-      )}
-    </section>
   );
 }
