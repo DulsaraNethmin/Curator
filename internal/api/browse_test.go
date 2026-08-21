@@ -813,3 +813,95 @@ func TestAFailedRailIsWrittenForAHuman(t *testing.T) {
 		}
 	}
 }
+
+// showBrowseServer is browseServer with television switched on, which is what
+// an install with LIBRARY_TV set has. Without it every /api/tmdb/shows/ request
+// answers 503 naming the variable (D48).
+func showBrowseServer(t *testing.T, b Browser) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := New(newFakeStore(), ScannerFunc(nil), nil, fixtureRoot, quiet()).
+		WithBrowser(b).
+		WithTV(TV{Root: tvFixtureRoot, Scanner: tvFixtureScanner()})
+	srv.Register(mux)
+	srv.RegisterBrowse(mux)
+	return mux
+}
+
+// silo is the show every T97 measurement was taken against, and its season list
+// is the reason the count is not enough: TMDB reports four seasons and the
+// fourth has no episodes in it.
+func silo() tmdb.Match {
+	return tmdb.Match{
+		TMDBID: 125988, Title: "Silo", Year: 2023,
+		Overview: "In a ruined and toxic future…", PosterPath: "/silo.jpg",
+		BackdropPath: "/silo-wide.jpg", VoteAverage: 8.0,
+	}
+}
+
+// The show body carries the two fields T97 added, and the season list is the
+// half that is not obvious: it is not what `seasons` counts.
+func TestShowCarriesItsIMDbIDAndItsSeasonList(t *testing.T) {
+	browser := &fakeBrowser{showDetails: &tmdb.Details{
+		Match: silo(), Status: "Returning Series", FirstAirDate: "2023-05-04",
+		NumberOfSeasons: 4, NumberOfEpisodes: 30, IMDBID: "tt14688458",
+		Seasons: []tmdb.Season{
+			{Number: 0, Name: "Specials", EpisodeCount: 2},
+			{Number: 1, Name: "Season 1", EpisodeCount: 10, AirDate: "2023-05-04"},
+			{Number: 4, Name: "Season 4", EpisodeCount: 0},
+		},
+	}}
+
+	var body showDetailBody
+	rec := getJSON(t, showBrowseServer(t, browser), "/api/tmdb/shows/125988", &body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	if browser.gotShowID != 125988 {
+		t.Errorf("fetched show id %d — the tv endpoint was not the one reached", browser.gotShowID)
+	}
+
+	// Verbatim, prefix and all. The screen hands it straight to /api/search,
+	// which refuses anything that is not tt-plus-digits.
+	if body.IMDBID != "tt14688458" {
+		t.Errorf("imdb_id = %q, want tt14688458", body.IMDBID)
+	}
+
+	// The count and the list are both sent and they disagree, which is exactly
+	// why both are here: 4 against three listed, one of which has no episodes.
+	if body.Seasons != 4 {
+		t.Errorf("seasons = %d, want the count TMDB states", body.Seasons)
+	}
+	if len(body.SeasonList) != 3 {
+		t.Fatalf("season_list has %d entries, want all three TMDB listed", len(body.SeasonList))
+	}
+	// Unfiltered, Specials and the empty season included. The API reports what
+	// TMDB says; which of them a person may click is the screen's decision, and
+	// it is a different decision for each of those two.
+	if body.SeasonList[0].Number != 0 || body.SeasonList[0].Name != "Specials" {
+		t.Errorf("season_list[0] = %+v, want Specials reported rather than dropped", body.SeasonList[0])
+	}
+	if body.SeasonList[1].EpisodeCount != 10 || body.SeasonList[1].AirDate != "2023-05-04" {
+		t.Errorf("season_list[1] = %+v", body.SeasonList[1])
+	}
+	if body.SeasonList[2].Number != 4 || body.SeasonList[2].EpisodeCount != 0 {
+		t.Errorf("season_list[2] = %+v, want the unaired season with its zero intact", body.SeasonList[2])
+	}
+}
+
+// [] and never null, because the UI iterates it. A show TMDB lists no seasons
+// for would otherwise crash the picker rather than draw nothing.
+func TestShowSeasonListIsNeverNull(t *testing.T) {
+	browser := &fakeBrowser{showDetails: &tmdb.Details{Match: silo()}}
+
+	var body struct {
+		SeasonList []seasonBody `json:"season_list"`
+	}
+	getJSON(t, showBrowseServer(t, browser), "/api/tmdb/shows/125988", &body)
+
+	raw := httptest.NewRecorder()
+	showBrowseServer(t, browser).ServeHTTP(raw, httptest.NewRequest(http.MethodGet, "/api/tmdb/shows/125988", nil))
+	if !strings.Contains(raw.Body.String(), `"season_list":[]`) {
+		t.Errorf("season_list did not serialise as []: %s", raw.Body)
+	}
+}

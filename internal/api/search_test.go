@@ -533,6 +533,64 @@ func TestSearchRefusesAnEpisodeItCannotHonour(t *testing.T) {
 	}
 }
 
+// The IMDb id reaches the indexers in TMDB's own spelling, prefix and all.
+// EZTV is the only thing that reads it, and the strip to bare digits happens at
+// that indexer's boundary rather than here.
+func TestSearchPassesTheIMDbIDDown(t *testing.T) {
+	fake := &fakeSearcher{}
+	do(t, newTVSearchServer(t, fake), http.MethodGet,
+		"/api/search?title=Silo&media=tv&season=3&episode=8&imdb_id=tt14688458")
+
+	if fake.gotQuery.IMDBID != "tt14688458" {
+		t.Errorf("searched with imdb_id %q, want tt14688458 verbatim", fake.gotQuery.IMDBID)
+	}
+}
+
+// No id is the state every search made before this parameter existed, and the
+// state every screen that has none is still in. It is not an error.
+func TestSearchWithoutAnIMDbIDIsFine(t *testing.T) {
+	fake := &fakeSearcher{}
+	rec := do(t, newTVSearchServer(t, fake), http.MethodGet, "/api/search?title=Silo&media=tv")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if fake.gotQuery.IMDBID != "" {
+		t.Errorf("IMDBID = %q, want empty", fake.gotQuery.IMDBID)
+	}
+}
+
+// **A malformed id is a 400 rather than an ignored parameter**, and the reason
+// is the same shape as the season's.
+//
+// The one indexer that reads it would simply DECLINE a value it cannot use,
+// which on the screen is indistinguishable from that indexer being switched
+// off. So a client sending a TMDB id here — the mistake that is actually
+// available to make, since the show screen holds both numbers — would get a
+// search quietly missing a source, with nothing anywhere saying so.
+func TestSearchRefusesAnIDThatIsNotAnIMDbID(t *testing.T) {
+	for _, tt := range []struct {
+		label string
+		url   string
+	}{
+		{"a tmdb id", "/api/search?title=Silo&media=tv&imdb_id=125988"},
+		{"the digits with no prefix", "/api/search?title=Silo&media=tv&imdb_id=14688458"},
+		{"a title", "/api/search?title=Silo&media=tv&imdb_id=Silo"},
+		{"the prefix alone", "/api/search?title=Silo&media=tv&imdb_id=tt"},
+	} {
+		t.Run(tt.label, func(t *testing.T) {
+			fake := &fakeSearcher{}
+			rec := do(t, newTVSearchServer(t, fake), http.MethodGet, tt.url)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			if fake.gotQuery.Title != "" {
+				t.Errorf("the indexers were searched anyway, with %+v", fake.gotQuery)
+			}
+		})
+	}
+}
+
 // TestSearchStampsTheMatchTier proves the screen is told which releases are the
 // thing asked for and which merely contain it, rather than re-deriving it.
 func TestSearchStampsTheMatchTier(t *testing.T) {
