@@ -9,7 +9,7 @@ SHELL := /bin/bash
 ARM   := GOOS=linux GOARCH=arm64
 
 .DEFAULT_GOAL := help
-.PHONY: help status check build ui lists go test race vet cross run restart ui-dev deploy-pi live live-tunnel live-rss clean
+.PHONY: help status check build ui lists contrast go test race vet cross run restart ui-dev deploy-pi live live-tunnel live-rss clean
 
 help: ## the targets, and what they are for
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk -F':.*?## ' '{printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
@@ -34,6 +34,13 @@ ui: ## the Next.js static export into internal/web/dist
 # .ts modules directly, against captured answers in testdata/search/.
 lists: ## the release-list rules (TypeScript), against captured answers
 	node --experimental-strip-types web/scripts/check-lists.mjs
+
+# Deliberately NOT in `check`. The gate already needs Go and node; python3 would
+# be a third language to install for a file that changes rarely. Run it when you
+# touch a colour — several pairs clear their floor by under 0.3, so "it still
+# looks fine" is not evidence. It reads globals.css rather than holding a copy.
+contrast: ## every UI colour pair against WCAG AA, both themes
+	python3 scripts/check-contrast.py
 
 go: ## the Go binary (embeds whatever dist/ currently holds)
 	go build ./...

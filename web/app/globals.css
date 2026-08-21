@@ -14,10 +14,13 @@
    Google Fonts <link> is a request that hangs and then falls back anyway. The
    system stack is the only one guaranteed to be there.
 
-   Colour is checked, not eyeballed: every pair below clears WCAG AA in both
-   themes, text at 4.5:1 and control boundaries at 3:1. The numbers are in
-   docs/tasks/T102-more-rails-and-a-visual-refresh.md. Do not adjust one of these
-   hexes without re-running that check — several are within 0.2 of their floor. */
+   Colour is checked, not eyeballed. `make contrast` reads THIS FILE and puts
+   every pair against WCAG AA in both themes — text at 4.5:1, control boundaries
+   at 3:1. Run it after touching a hex: several pairs clear their floor by under
+   0.3 (muted on bg-sunk is 4.74, border-control on bg-sunk is 3.04), so a colour
+   that still looks fine can already have failed. It is not in `make check`,
+   because that would put python3 in the gate; see the Makefile.
+   docs/tasks/T102-more-rails-and-a-visual-refresh.md has the numbers. */
 
 :root {
   /* --- scales -------------------------------------------------------------

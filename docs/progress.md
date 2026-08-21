@@ -1663,3 +1663,82 @@ here and fails there.
   rather than rejected.
 - **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot`** is still unfiled.
 - **`?season=0` is still overloaded**, and the picker still draws no Specials button.
+
+## T102 — twelve rails, and a design system under the CSS
+
+Two rails is not a browse screen. Trending and popular are both *this week*, so Discover was two
+views of the same dozen releases — and against a fresh TMDB key on 2026-08-22 the top of each was
+literally the same film. It is twelve now: `trending`, `popular`, `top_rated`, `in_release`, and
+eight genres per media type. All twelve answered live in both vocabularies; the run is in
+[T102's file](tasks/T102-more-rails-and-a-visual-refresh.md).
+
+Underneath, `globals.css` grew a token layer. It had nine font sizes between `.74rem` and `1.02rem`
+and no two paddings agreeing, because every value was chosen at its call site. The file's opening
+rule — **no utility framework** — was left standing, and now has a second reason beside it: no
+webfont either, because curator runs on a LAN that frequently has no route out, so a Google Fonts
+link is a request that hangs and then falls back anyway.
+
+### What the contrast check found that the eye did not
+
+`make contrast` reads `globals.css` and puts all 23 pairs against WCAG AA in both themes. Two failed
+a first pass:
+
+```
+muted on bg-sunk (light)   4.34  → 4.74   --muted darkened to #64686f
+border on panel (both)     1.69  → 3.59   split into --border / --border-control
+```
+
+The second is the interesting one. A single `--border` was ruling tables *and* outlining inputs — and
+an input's outline is the whole thing telling somebody a control is there, so it owes 3:1 (WCAG
+1.4.11) where a table rule owes nothing. It had been at 1.69:1 since phase 5. Every link also gained
+a focus ring: `:focus-visible` existed on inputs and buttons only, so tabbing the poster grid, the
+nav or the counters strip moved an invisible cursor.
+
+The check is **not** in `make check` — the gate needs Go and node, and python3 would be a third
+language to install for a file that changes rarely. It was verified by firing it: lightening
+`--muted` one step, to a value that still looks fine, fails three pairs and exits 1.
+
+### The two the browser had to be asked about
+
+**`100vw` includes the scrollbar; `clientWidth` does not.** The full-bleed billboard overhung by 8px
+on a 1440px window — `scrollWidth 1433, clientWidth 1425`, measured. `overflow-x: clip` on **html and
+body** absorbs it. It has to be `clip` and not `hidden`, or the element becomes a scroll container
+and the sticky topbar stops sticking.
+
+**`align-items: flex-end` makes a scrim shrink-wrap its text.** The billboard's gradient then started
+a third of the way down the image and drew a visible horizontal seam across the backdrop — which
+looks like a bad photograph rather than a CSS mistake, and survived the first screenshot for exactly
+that reason.
+
+### Two lockstep slices, at the moment they stopped being safe
+
+`handleDiscover` held `rows` and `fetch` indexed together. Nothing said `fetch[i]` belonged to
+`rows[i]`, so a rail inserted into one list and appended to the other keeps both the right length,
+passes every assertion about counts and failure envelopes, and draws top-rated films under "Trending
+this week". At two rails that was merely true; at twelve it was a transposition waiting. It is one
+`[]discoverRail` now, and `TestEachDiscoverRailDrawsItsOwnSource` feeds every rail a card nothing
+else returns — both media types, because the television side is where it is most likely: `/discover`
+does **not** reject a film's genre id, it returns a plausible page of the wrong shows.
+
+### The cache holds the cards and not the answer
+
+Twelve rails is twelve TMDB requests on the most-reloaded page in the application, so they are cached
+for fifteen minutes. What is cached is `[]tmdb.Match` and never the finished response: a card carries
+`library: {…}`, which is the badge on a poster, and that changes the instant somebody presses
+Download. `LibraryByTMDBID` is still re-read and re-merged every request, and a test pins it.
+Failures are deliberately not cached — fifteen minutes of a remembered 502 is how a blip becomes a
+bug report.
+
+### Still live going out
+
+- **The Pi has not seen any of this.** T102 is laptop-only; `compose.pi.yaml`'s pin has not moved.
+- **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot` flaked again**, on the first of
+  three `make check` runs, and it is still unfiled. So did `internal/vpn`'s
+  `TestLiveTheTunnelIsTornDownUnderADownload` on the second run — 222 s in isolation, four minutes of
+  real NordVPN handshakes. Both packages have an **empty diff** on this branch and both pass alone;
+  the third run was green throughout. They are load-sensitive under a full `-race` suite.
+- **There is still no decision record refusing Tailwind and shadcn.** The argument lives in
+  `globals.css`'s first three lines and nowhere else, which is thin for a rule this load-bearing —
+  this task was requested through a skill built on both and left it standing on a comment.
+- **Discover is one response**, so a cold cache waits for the slowest rail. Per-rail streaming would
+  need SSE and was not built.
