@@ -138,20 +138,41 @@ func magnetFor(t *testing.T, mi *metainfo.MetaInfo, ih metainfo.Hash) string {
 // await polls the engine the way the poller does, because that is the only view
 // of a download the rest of curator ever gets.
 //
-// On the deadline it dumps swarmState for every engine it was handed, and that
-// is the whole reason others exists. T74's flake printed `State:downloading
-// Progress:0` and nothing else, which is the least informative view this
-// codebase can produce: it is compatible with four different faults, three of
-// which are not "slow", and telling them apart cost a session. See swarmState.
+// On the deadline it dumps the awaited engine's stallReport and swarmState for
+// every peer it was handed, and that is the whole reason others exists. T74's
+// flake printed `State:downloading Progress:0` and nothing else, which is the
+// least informative view this codebase can produce: it is compatible with four
+// different faults, three of which are not "slow", and telling them apart cost a
+// session. See swarmState.
+//
+// It dumps stallReport rather than swarmState because T74's diagnostic finally
+// fired — release run 32447250968, the check job in front of v0.4.0 — and landed
+// on the one case swarmState cannot speak to. All four of its readings came back
+// healthy: `active=2 seeders=2`, `piece0 priority=normal ok=true`,
+// `wasted-chunks=0 bad-pieces=0`, and payload that MOVED and then stopped
+// (`read data=180224`, `pieces complete=3` of 32, one piece left `M`). Not
+// asking, not being answered and not corrupt are all excluded, which leaves
+// choked-versus-never-asked — and that reading is in WriteStatus's per-peer
+// `flags` segment and nowhere else. T74 built stallReport for exactly this and
+// left wiring it in as the next move; this is that move. Peers stay on
+// swarmState: the peer's choking state is in the LEECHER's own flags, so the
+// question is answerable from the awaited engine alone.
 func await(t *testing.T, e *Engine, hash string, want string, others ...*Engine) torrent.Torrent {
 	t.Helper()
-	deadline := time.Now().Add(60 * time.Second)
-	var last torrent.Torrent
+	started := time.Now()
+	deadline := started.Add(60 * time.Second)
+	var (
+		last     torrent.Torrent
+		polls    int
+		lastPoll time.Time
+	)
 	for time.Now().Before(deadline) {
 		found, err := e.TorrentByHash(context.Background(), hash)
 		if err != nil {
 			t.Fatalf("TorrentByHash: %v", err)
 		}
+		polls++
+		lastPoll = time.Now()
 		if found != nil {
 			last = *found
 			if last.State == want {
@@ -162,7 +183,19 @@ func await(t *testing.T, e *Engine, hash string, want string, others ...*Engine)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "torrent never reached %q; last seen %+v", want, last)
-	fmt.Fprintf(&b, "\n  awaited: %s", swarmState(e, hash))
+	// How often this loop actually ran, because run 32447250968 printed
+	// `Progress:0` beside `pieces complete=3` and those two cannot both be
+	// current: BytesCompleted and PiecesComplete read the same _completedPieces
+	// bitmap. One of them is therefore stale, and which one changes the whole
+	// diagnosis. At a 20 ms sleep a healthy 60 s wait polls on the order of 3,000
+	// times and the last one lands ~20 ms before the deadline; a poll count in
+	// the tens, or a last poll seconds old, means TorrentByHash was BLOCKING —
+	// the download was fine and the observation starved, which is a different bug
+	// in a different place from a stalled swarm.
+	fmt.Fprintf(&b, "\n  polled %d times over %s; last poll returned %s before the deadline",
+		polls, time.Since(started).Round(time.Millisecond),
+		deadline.Sub(lastPoll).Round(time.Millisecond))
+	fmt.Fprintf(&b, "\n  awaited: %s", strings.TrimRight(stallReport(e, hash), "\n"))
 	for i, other := range others {
 		fmt.Fprintf(&b, "\n  peer %d:  %s", i, swarmState(other, hash))
 	}
