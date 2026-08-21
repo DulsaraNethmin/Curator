@@ -66,17 +66,17 @@ services:
     # On `latest` that is a curator which restarts itself mid-download at an
     # hour nobody chose, and `--cleanup` removes the image it was running. D43
     # keeps watchtower, so this is permanent rather than a phase-10 detail.
-    # `0.3.0`, and NOT `v0.3.0`: release.yml:64 does `version="${tag#v}"`, so the
+    # `0.4.0`, and NOT `v0.4.0`: release.yml:76 does `version="${tag#v}"`, so the
     # git tag carries the v and the image tag does not. Getting this wrong is not
     # a typo that fails loudly at the registry in a useful way — `docker pull`
     # answers `manifest unknown`, which reads like a missing release rather than
-    # a missing letter. Published: 0.3.0, 0.3, latest.
+    # a missing letter. Published: 0.4.0, 0.4, latest.
     #
     # The same `manifest unknown` is also what a tag that has not finished
     # BUILDING answers, and the two are indistinguishable from here. Check that
     # the release run is green before pulling, or a healthy box gets diagnosed
     # for a missing letter it does not have.
-    image: ghcr.io/dulsaranethmin/curator:0.3.0
+    image: ghcr.io/dulsaranethmin/curator:0.4.0
 
     # The pin alone is not quite the whole guarantee: watchtower re-pulls on a
     # changed DIGEST, not on a changed tag string, so it would still move a
