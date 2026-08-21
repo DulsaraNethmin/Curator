@@ -2,9 +2,18 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { api, type DiscoverRow, type Download, type Movie, type SettingsResult } from '@/lib/api';
+import {
+  api,
+  televisionOn,
+  type DiscoverRow,
+  type Download,
+  type MediaType,
+  type Movie,
+  type SettingsResult,
+} from '@/lib/api';
 import { Empty, Failure } from '@/components/states';
 import { MovieCard } from '@/components/movie-card';
+import { MediaSwitch } from '@/components/media-switch';
 import { FirstRun, isFirstRun } from '@/components/first-run';
 
 /**
@@ -28,6 +37,7 @@ export default function Home() {
 
   const [rows, setRows] = useState<DiscoverRow[] | null>(null);
   const [discoverError, setDiscoverError] = useState<unknown>(null);
+  const [media, setMedia] = useState<MediaType>('movie');
 
   // The third fetch, and the cheapest: no probe, so it is configuration this
   // process has already resolved. A failure is not a first run — it is a
@@ -48,11 +58,6 @@ export default function Home() {
       .catch((e) => !cancelled && setError(e));
 
     api
-      .discover()
-      .then((d) => !cancelled && setRows(d.rows))
-      .catch((e) => !cancelled && setDiscoverError(e));
-
-    api
       .settings()
       .then((s) => !cancelled && setSettings(s))
       .catch(() => !cancelled && setSettingsFailed(true));
@@ -61,6 +66,28 @@ export default function Home() {
       cancelled = true;
     };
   }, []);
+
+  // The rails, on their own, because the switch re-runs them. Two more TMDB
+  // calls per press and no cache in front of them, which is what the strip
+  // above deliberately does not pay: /api/movies is the library and answers
+  // whether TMDB is reachable or not.
+  useEffect(() => {
+    let cancelled = false;
+    setRows(null);
+    setDiscoverError(null);
+    api
+      .discover(media)
+      .then((d) => !cancelled && setRows(d.rows))
+      .catch((e) => !cancelled && setDiscoverError(e));
+    return () => {
+      cancelled = true;
+    };
+  }, [media]);
+
+  // Television, read off the settings call this screen already makes rather
+  // than through useTelevision — a second /api/settings on the landing screen
+  // to learn a fact already in hand would be a request for nothing.
+  const tvOn = settings !== null && televisionOn(settings);
 
   const active = downloads?.filter((d) => d.state !== 'imported' && d.state !== 'failed').length ?? 0;
   // A null tmdb_id is the row that wants human attention — the entire reason D6
@@ -98,8 +125,8 @@ export default function Home() {
     <>
       <h1>curator</h1>
       <p className="lede">
-        Pick a film, and it downloads, hardlinks itself into the library and tells Jellyfin. One
-        binary where seven containers used to be.
+        Pick {tvOn ? 'a film or a show' : 'a film'}, and it downloads, hardlinks itself into the
+        library and tells Jellyfin. One binary where seven containers used to be.
       </p>
 
       {error !== null && <Failure error={error} />}
@@ -109,7 +136,11 @@ export default function Home() {
       <div className="strip">
         <Link href="/library/">
           <b>{movies?.length ?? '—'}</b>
-          <span>in the library</span>
+          {/* "films" rather than "in the library" once there is a second half
+              of the library to be counted separately from. /api/movies is
+              films and always was; saying "in the library" beside a Shows tab
+              would read as the total. */}
+          <span>{tvOn ? 'films in the library' : 'in the library'}</span>
         </Link>
         <Link href="/activity/">
           <b>{downloads ? active : '—'}</b>
@@ -136,6 +167,15 @@ export default function Home() {
         </p>
       )}
 
+      {/* Absent when LIBRARY_TV is unset, which is the whole of D48's opt-in on
+          this screen: no switch, no TV rails, and the landing page of an
+          install that wanted films is exactly the one it had. */}
+      {tvOn && (
+        <div className="row" style={{ margin: '1.5rem 0 -.5rem' }}>
+          <MediaSwitch media={media} onChange={setMedia} />
+        </div>
+      )}
+
       {/* A failed catalogue is a banner under the counters, never an error page:
           the library above it is still true and still worth seeing. */}
       {discoverError !== null && <Failure error={discoverError} />}
@@ -143,7 +183,11 @@ export default function Home() {
       {!rows && discoverError === null && <p className="lede">Loading…</p>}
 
       {rows?.map((row) => (
-        <Rail key={row.id} row={row} />
+        // The rail titles are the same for both media types — "Trending this
+        // week" is unambiguous because this screen shows one media type at a
+        // time, and a "Trending shows" heading would be the switch's job said
+        // twice. `media` is what makes each card open the right page.
+        <Rail key={row.id} row={row} media={media} />
       ))}
     </>
   );
@@ -157,7 +201,7 @@ export default function Home() {
  * empty row would be indistinguishable from a rail TMDB had nothing for, which
  * is minter's 200-carrying-a-failure wearing a third hat.
  */
-function Rail({ row }: { row: DiscoverRow }) {
+function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
   return (
     <section>
       <h2>{row.title}</h2>
@@ -172,7 +216,9 @@ function Rail({ row }: { row: DiscoverRow }) {
       ) : (
         <div className="rail">
           {row.results.map((film) => (
-            <MovieCard key={film.tmdb_id} film={film} />
+            // The key is scoped by the rail, not global: a film and a show can
+            // hold the same TMDB id, and one screen never draws both.
+            <MovieCard key={film.tmdb_id} film={film} media={media} />
           ))}
         </div>
       )}
