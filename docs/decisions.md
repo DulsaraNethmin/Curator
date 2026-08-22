@@ -3008,3 +3008,143 @@ twelve serial ones spread across a scroll — but it is a choice, not a law.
 **Nothing else in the UI streams.** Activity, the VPN screen, the logs and the player all still poll
 on a `setInterval`, and this decision is not an argument for converting them. Those poll because the
 thing they watch keeps changing; Discover streams because one answer arrives in twelve pieces.
+
+## D55 — A pause is a state; a hold is a reason
+
+**Status:** decided and **built** ([T107](tasks/T107-activity-says-how-fast-and-can-stop-it.md)) ·
+**Qualifies** `heldState`'s reasoning in `internal/engine/hold.go`, which was the only recorded
+answer to "should this be a sixth state" and said no · **Lifts** the constraint recorded in
+`internal/qbit`'s package doc and `download.TorrentClient`'s, both of which cited a shared
+qBittorrent · **Bound by** [D27](#d27--the-vpn-is-mandatory-and-curator-owns-the-socket) and
+[D47](#d47--every-torrent-network-operation-is-tunnel-bound-or-disabled)
+
+A torrent somebody stopped reports `paused`, a sixth state in `torrent.Torrent`'s vocabulary. A
+torrent the VPN sentinel stopped keeps reporting `stalled` with a sentence, exactly as it did.
+
+### The discriminator, because the same three calls do both
+
+`Hold` and `PauseTorrent` run identical anacrolix calls — `DisallowDataDownload`,
+`DisallowDataUpload`, `SetMaxEstablishedConns(0)`. What differs is what the screen has to do next,
+and that is what decides the representation:
+
+> **A control needs a machine-readable state. A policy needs a sentence.**
+
+`heldState`'s note argues for reuse and is right *for a hold*: it is process-wide, it has no per-row
+control, and its reason is the only actionable thing on screen. A user pause is the opposite on all
+three counts, and the decisive one is that **the row has to draw a Resume button**. Testing
+`download.reason.includes('paused')` in TSX is precisely the translation table
+`torrent.Torrent.Reason`'s own doc forbids — *"a code would need a translation table in the UI,
+which is a second vocabulary for the screen to drift out of step with"*. `stalled` also renders
+`badge warn`, which is a warning about something the user chose.
+
+The cost `heldState` quoted — "a case in the poller, the store, the API and the UI's badge switch" —
+turned out smaller than it reads. **The poller needed zero changes**: `Tick` compares
+`state != row.State`, and `paused` is just another string. The store needed one constant and one
+word in a comment, and **no migration**, because `state` is `TEXT` and its values are a comment
+rather than a `CHECK`.
+
+### Three orderings, all of which were wrong first
+
+**The stall detector must not run on a paused torrent.** It gains no bytes by design, so after
+`DefaultStallAfter` the row would say *"no peers are connected — nobody appears to be seeding this
+release"* about a download curator stopped on request. That is [T78](tasks/T78-a-stall-that-says-why.md)'s
+defect arriving from a third direction, the second being the hold `heldState` already covers.
+
+**Pause and resume delete the hash's `mark` from `e.progress`.** `mark.since` is when the byte count
+last *moved*, and a pause is hours of it not moving — so without the delete, the first observation
+after a resume compares against a timestamp from before the pause and reports `stalled` immediately.
+
+**`Release()` must skip a paused hash, and `ResumeTorrent` must not lift a hold.** Release loops
+every torrent and allows it, so one shared set would make any tunnel blip silently restart every
+download somebody had deliberately stopped. And pressing Resume while the sentinel is holding
+records the preference and downloads nothing — a button must never be a way past the kill switch.
+
+### The pause lives in the row, because the engine forgets
+
+`Service.Resume` re-adds every non-imported row by magnet at boot. qBittorrent remembers a stop by
+itself and is found still holding the torrent; **the embedded engine rebuilds from disk with no
+memory of a preference**, so a pause that lived only in the backend would be quietly undone by the
+first reboot — unattended, on a box that has just come back up. The row is the record, and `Resume`
+re-applies the pause *after* the add, because a paused download the client does not hold at all
+cannot be resumed later.
+
+### Two operations, four endpoint names
+
+qBittorrent 5.0 renamed pause to stop and the Web API followed: `torrents/pause` → `torrents/stop`,
+`torrents/resume` → `torrents/start`. `internal/qbit/state.go` has documented the matching rename of
+the *state* names since phase 3 — `pausedDL` became `stoppedDL` — so this is the same change on the
+other half of the API. Both spellings are sent, newest first: the Pi ran 5.1.2 and a stranger's
+`docker run` could be a 4.x. A 404 on the first is not a failure, it is the answer to which
+vocabulary the server speaks.
+
+`pausedDL` and `stoppedDL` also stopped mapping to `queued`, which is a fix on its own: `queued`
+promises a torrent about to start, and these mean one that will not until somebody says so.
+
+### What lifted the old constraint, and what replaced it
+
+`internal/qbit`'s doc said it *"deliberately cannot pause, resume or reprioritise anything: the \*arr
+stack shares this qBittorrent until phase 6"*. [T54](tasks/T54-remove-what-is-replaced.md) removed
+that stack on 2026-08-18. Both comments are **corrected in place rather than deleted**, because a
+constraint that was lifted and one that was forgotten look identical six months later.
+
+What replaced it is the guard that was always the real protection: every mutating call takes the
+category it requires and refuses a torrent that is not curator's, which is what `DeleteTorrent` has
+done since [D19](#d19--curator-deletes-only-what-it-created). It still cannot reprioritise, relocate
+or edit trackers — the narrowest surface that does the job is still the rule.
+
+## D56 — Speed and ETA are read, never recorded, and ETA has one definition
+
+**Status:** decided and **built** ([T107](tasks/T107-activity-says-how-fast-and-can-stop-it.md)) ·
+**Constrained by** `download.Poller.Tick`'s write condition · **Does not disturb**
+[D22](#d22--the-torrent-engine-moves-inside-the-binary-and-qbittorrent-becomes-the-second-backend)'s
+two backends, which is precisely what forces the second half
+
+`GET /api/downloads` joins each recorded row with a live read of the torrent list, adding
+`download_rate`, `size_bytes` and `eta_seconds`. The `downloads` table gains no columns.
+
+### The table gains nothing, and the reason is one line of the poller
+
+`Poller.Tick` writes a row only when the state, the progress or the reason moved. **A rate column
+would change on every single tick and defeat that condition permanently**, turning a five-second
+poll into a five-second write of a row whose state nobody changed. A rate is true for one instant;
+the `downloads` table is the record of what curator dispatched.
+
+So the live half is joined at read time — and it is **best-effort**, because `Downloads` has always
+promised to stay answerable when the backend is down, *"which is exactly when someone is most likely
+to be looking"*. A failed `Torrents()` is one log line and an empty map: every recorded row still
+lists and carries no live keys. That is not a detail, it is the promise the join could most easily
+have broken, and it is asserted rather than assumed.
+
+**Absent is not zero.** All three keys are `omitempty`, so a backend that is down — or a torrent it
+has never heard of — sends no key at all, and the screen draws nothing rather than `0 B/s`. A screen
+cannot tell a computed zero from an absent one, so the wire has to.
+
+### The ETA is computed above both backends, or it is two answers
+
+qBittorrent sends an `eta` of its own; the embedded engine has none. Decoding qBittorrent's would
+give **two different answers to "minutes left" depending on `TORRENT_BACKEND`** — libtorrent's
+smoothed estimate beside a rate derived from byte deltas — and one screen showing two definitions is
+worse than one definition being cruder. The arithmetic is `(size × (1 − progress)) / rate`, in
+`internal/download`, and it is **omitted rather than guessed** whenever there is no honest number:
+no rate, no metadata yet, or already finished.
+
+The same reasoning puts one more rule there: **a paused row carries no rate whatever the backend
+said.** The engine zeroes it itself and qBittorrent mostly reports `dlspeed` 0 for a stopped
+torrent — but "paused · 4.1 MB/s" is a nonsense line, and which backend is running must not decide
+whether it appears. Found with a stub that kept claiming 4 MiB/s after a stop.
+
+### The rate reuses the sampler that was already there
+
+anacrolix reports cumulative counters and no rate, so a rate has to be a delta. The stall detector
+already kept a per-hash `mark{bytes, since}` where `since` is when the count last *moved* — which
+makes the interval between two moves a **measured** interval rather than an assumed poll period.
+`observe` is that map update extracted; one observation per torrent per tick feeds both signals,
+which is what stops them disagreeing about whether anything is arriving. Do not add a second
+sampler.
+
+Two rules ride on it. The numerator is `t.BytesCompleted()`, the same number `Progress` is built
+from, so the rate and the bar cannot tell different stories. And **two callers now ask for the
+torrent list** — the poller, and this join — so observations can land 40 ms apart; below `rateFloor`
+the previous rate is carried rather than recomputed, because a megabyte across 40 ms reads as
+25 MB/s on a 3 MB/s download. Past `rateStaleAfter` (30 s) the rate reports 0, half a minute before
+`stalled` fires at five: two honest signals, in that order.
