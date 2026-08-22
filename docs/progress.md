@@ -1844,3 +1844,28 @@ screen has now happens before the first write.
 - **The three flaky live tests are still unfiled** — `internal/remux`'s cap test, `internal/vpn`'s
   teardown-under-download, and engine-over-tunnel. Not hit this task, because all four gates ran in a
   worktree without `.env`.
+
+## T105 — the engine stall, filed
+
+Not built. [T105's file](tasks/T105-the-engine-stall.md) is a specification for the flake that has
+now interrupted the gate in front of two publishes — v0.4.0 and 0.6.0 — and it is filed because the
+third occurrence **excludes the reading the second one was reasoned down to**, which makes the
+evidence a narrowing rather than a pile.
+
+The framing that was wrong every previous time it came up: **it is not a network test and not a
+runner artifact.** Since T74 every engine in that package is `Config.hermetic` — `NoDHT`, loopback
+listen host, empty `DhtStartingNodes` — so the `no initial nodes` lines filling the failing log are
+the confinement working exactly as `engine.go:293-306` says it should. What actually fails is one
+in-process seeder handing 32 pieces of 32 KB to one in-process leecher over loopback, and taking
+more than a minute not to.
+
+`await`'s client-status dump answered its question on 2026-08-22 (run `32556473382`, attempt 1,
+`TestDeleteTorrentRemovesItsOwnFiles`). Neither peer line carries the trailing `c`, so **we are not
+choked**; `reqq: 1+0` on both and `piece0 priority=normal ok=true`, so **we are asking**; and 2,941
+polls over 60.015 s against a 2,868-poll baseline says the poller was healthy and the transfer was
+not. Asked, unchoked, connected, served one 16 KB chunk in sixty seconds — a fourth case, which none
+of T74's four `swarmState` cases nor the choked-versus-never-asked reading covers.
+
+The lead worth chasing is in both dumps that ever printed per-peer lines: `peers active=2 seeders=2`
+and `pex: 2 conns` for the **one** seeder the test adds, with the two connections in different states
+(`i:e,v1:` against `i:U,e,v1:`). It was noticed at v0.4.0 and not pursued.
