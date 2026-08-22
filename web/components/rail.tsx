@@ -1,10 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { DiscoverRow, MediaType } from '@/lib/api';
+import type { DiscoverSlot, MediaType } from '@/lib/api';
 import { Empty } from '@/components/states';
 import { Icon } from '@/components/icons';
 import { MovieCard } from '@/components/movie-card';
+import { SkeletonRailStrip } from '@/components/skeleton';
 import { useReveal } from '@/components/reveal';
 
 /**
@@ -23,17 +24,24 @@ import { useReveal } from '@/components/reveal';
  * already a tab stop, so a screen reader gains nothing from two more buttons
  * that only move pixels, and `aria-hidden` on a control that duplicates existing
  * keyboard access is the correct reading of it.
+ *
+ * It takes a SLOT rather than a row, because the stream names every rail before
+ * it fetches any of them: a slot with no row yet is a real heading over a
+ * skeleton strip, and it becomes the strip below without unmounting. That is
+ * what makes the arrival one layout instead of twelve — the section is in place
+ * from the first frame, and only its cards change.
  */
 export function Rail({
-  row,
+  slot,
   media,
   index = 0,
 }: {
-  row: DiscoverRow;
+  slot: DiscoverSlot;
   media: MediaType;
   /** Position on the screen, for the load-time stagger only. */
   index?: number;
 }) {
+  const row = slot.row;
   const strip = useRef<HTMLDivElement>(null);
   const [atStart, setAtStart] = useState(true);
   const [atEnd, setAtEnd] = useState(true);
@@ -71,7 +79,9 @@ export function Rail({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [measure, row.results.length]);
+    // On the card count, so the arrows re-measure when this rail's own event
+    // lands and the skeleton strip becomes twenty posters.
+  }, [measure, row?.results.length]);
 
   // Just under a full strip, so the card at the edge stays half in view and the
   // eye keeps its place. A whole viewport of scroll is how somebody loses track
@@ -81,6 +91,18 @@ export function Rail({
     if (!el) return;
     el.scrollBy({ left: direction * el.clientWidth * 0.85, behavior: 'smooth' });
   };
+
+  // Named but not yet answered. The heading is real and final; only the cards
+  // are a stand-in, and nothing here speaks — the page carries one status for
+  // all twelve rather than twelve saying "Loading…" at once.
+  if (row === null) {
+    return (
+      <section className="rail-section" {...enter}>
+        <h2>{slot.title}</h2>
+        <SkeletonRailStrip />
+      </section>
+    );
+  }
 
   if (!row.ok) {
     return (
