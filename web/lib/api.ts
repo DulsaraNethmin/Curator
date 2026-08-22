@@ -85,7 +85,10 @@ export type DownloadState =
   | 'failed'
   // Added, wanted, and getting nowhere. Phase 6 shipped the state and this
   // union was not told; `| string` below is why nothing complained.
-  | 'stalled';
+  | 'stalled'
+  // Stopped on purpose. A state rather than a `reason`, because the row draws a
+  // Resume BUTTON on it and a button cannot be drawn on prose (D55).
+  | 'paused';
 
 export type Download = {
   id: number;
@@ -107,6 +110,23 @@ export type Download = {
 
   added_at: string;
   completed_at: string | null;
+
+  /**
+   * What only the backend can say right now, and **none of it is in the
+   * database** — the server joins it onto the row at read time (D56). All three
+   * are `omitempty` on the Go side, so absent means "the backend did not say",
+   * which is not the same as zero: a torrent the backend has never heard of, or
+   * a backend that is down, sends no key at all and the screen draws nothing
+   * rather than `0 B/s`.
+   */
+  download_rate?: number;
+  size_bytes?: number;
+  /**
+   * Seconds remaining at the current rate, computed server-side above both
+   * backends so the answer does not change with `TORRENT_BACKEND`. Absent
+   * whenever there is no honest number: no rate, no metadata yet, or finished.
+   */
+  eta_seconds?: number;
 };
 
 export type Release = {
@@ -1336,6 +1356,10 @@ export const api = {
     media_type?: MediaType;
     season?: number;
   }) => request<Download>('/api/downloads', { method: 'POST', body: JSON.stringify(body) }),
+
+  /** Stop and start one download. Both answer the updated row. */
+  pause: (hash: string) => request<Download>(`/api/downloads/${hash}/pause`, { method: 'POST' }),
+  resume: (hash: string) => request<Download>(`/api/downloads/${hash}/resume`, { method: 'POST' }),
 
   import: (hash: string) =>
     request<Movie>(`/api/downloads/${encodeURIComponent(hash)}/import`, { method: 'POST' }),

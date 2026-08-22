@@ -53,3 +53,29 @@ export function ago(then: number, now = Date.now()): string {
   if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
   return 'over an hour ago';
 }
+
+/**
+ * Seconds remaining, in the words a download screen wants.
+ *
+ * Coarser than `ago` on purpose. An ETA is an estimate that moves every poll,
+ * so second-level precision would be a number flickering next to a progress bar
+ * that is not — "about 12 minutes" is both more honest and more readable than
+ * "11m 47s". Under a minute it says so without a number at all.
+ *
+ * Returns null for anything not worth showing, which is the server's `omitempty`
+ * arriving as `undefined`: no rate, no metadata, or already finished.
+ */
+export function formatETA(seconds: number | undefined): string | null {
+  if (!seconds || seconds <= 0) return null;
+  if (seconds < 60) return 'under a minute left';
+
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min left`;
+
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (hours < 24) return rest === 0 ? `${hours}h left` : `${hours}h ${rest}m left`;
+
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} left`;
+}
