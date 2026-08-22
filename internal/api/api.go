@@ -50,6 +50,18 @@ type Store interface {
 	GetMovie(ctx context.Context, id int64) (store.Movie, error)
 	MoviesMissingMetadata(ctx context.Context, mediaType string) ([]store.Movie, error)
 
+	// MoviesMissingArtwork is the OTHER list, and the two are disjoint: rows
+	// TMDB has already matched that still carry no poster. They exist because
+	// UpsertWanted knows an id and nothing else, so the pass above — which
+	// selects `<tmdbcol> IS NULL` — has never seen one.
+	MoviesMissingArtwork(ctx context.Context, mediaType string) ([]store.Movie, error)
+
+	// SetTMDBArtwork is that list's write half, and it is COALESCE where
+	// SetTMDBMetadata is assignment: this caller fills gaps in a row whose
+	// identity is already settled, so a title TMDB has no overview for must not
+	// blank one the row already carries.
+	SetTMDBArtwork(ctx context.Context, id int64, overview, posterPath *string) error
+
 	// LibraryByTMDBID annotates a TMDB card with what curator already has, within
 	// one media type's id space — TMDB's movie and tv ids overlap, so one map
 	// keyed on a bare number would badge the wrong poster.
@@ -317,6 +329,12 @@ type scanResponse struct {
 	Matched   int `json:"matched"`
 	Unmatched int `json:"unmatched"`
 
+	// Artwork is rows that were ALREADY matched and had no poster until this
+	// pass fetched one — which is a different number from Matched and is not a
+	// subset of it. It is a backfill, so on a healthy library it is 0 forever;
+	// the run that first sees a dispatched row is the one that reports it.
+	Artwork int `json:"artwork"`
+
 	Empty int `json:"empty"` // folders on disk with no film in them
 
 	// Removed and Missing count BOTH media types, and they are not split the
@@ -336,6 +354,7 @@ type scanResponse struct {
 	ShowsAdded     int `json:"shows_added"`     // of those, rows that did not exist before
 	ShowsMatched   int `json:"shows_matched"`   // shows this pass resolved against TMDB's tv ids
 	ShowsUnmatched int `json:"shows_unmatched"` // shows still carrying no tmdb_tv_id
+	ShowsArtwork   int `json:"shows_artwork"`   // matched shows that had no poster until this pass
 	ShowsEmpty     int `json:"shows_empty"`     // folders under LIBRARY_TV with no episode in them
 	Episodes       int `json:"episodes"`        // distinct episodes across every show found
 }
@@ -458,6 +477,21 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// After the matching pass, not before: a row matched a moment ago already
+	// carries its poster, so running this first would ask TMDB about it twice.
+	// The television half is NOT behind tvConfigured — a show row exists whether
+	// or not LIBRARY_TV is set today, because a dispatch creates one, and a root
+	// that is switched off is a reason not to SCAN it rather than a reason to
+	// leave its artwork blank.
+	if out.Artwork, err = s.artworkPass(ctx, store.MediaTypeMovie); err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	if out.ShowsArtwork, err = s.artworkPass(ctx, store.MediaTypeTV); err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+
 	// The disk is the source of truth and metadata is an enrichment, so a missing
 	// key is reported, not fatal: everything on disk is already recorded by now.
 	message := "scan complete"
@@ -466,6 +500,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info(message, "scanned", out.Scanned, "added", out.Added,
 		"matched", out.Matched, "unmatched", out.Unmatched,
+		"artwork", out.Artwork+out.ShowsArtwork,
 		"empty", out.Empty, "removed", out.Removed, "missing", out.Missing,
 		"shows", out.Shows, "shows_added", out.ShowsAdded, "episodes", out.Episodes)
 	s.respond(w, http.StatusOK, out)
@@ -570,6 +605,107 @@ func (s *Server) matchPass(ctx context.Context, mediaType string) (matched, unma
 		matched++
 	}
 	return matched, unmatched, nil
+}
+
+// artworkPass fills in the overview and poster of rows TMDB has ALREADY matched
+// and that have neither, and reports how many it filled.
+//
+// It is not matchPass with a wider predicate, and the rows it exists for are the
+// ones curator wrote for itself. store.UpsertWanted records a dispatch as
+// (tmdb_id, title, year, media_type, status, added_at) — at that moment the id
+// is known and the artwork is not — and matchPass's work list is
+// `<tmdbcol> IS NULL`, so those rows were never revisited by any scan. Measured
+// on the Pi 2026-08-22: five of five rows carried an id and no poster, which was
+// every row curator had ever created, and the library grid drew the `noposter`
+// fallback for all of them permanently.
+//
+// **The lookup is by id, so D9 does not apply and a yearless row is fine.**
+// matchPass refuses to search without a year because TMDB's fuzzy search would
+// answer confidently and wrongly. There is nothing fuzzy here: the id came from
+// the row, it is the title itself, and /movie/{id} either knows it or 404s.
+//
+// A failure is one row, not the scan. The pass is idempotent and runs again on
+// the next scan, so a TMDB outage costs a delay rather than a permanent hole.
+func (s *Server) artworkPass(ctx context.Context, mediaType string) (filled int, err error) {
+	if s.browser == nil {
+		// Same posture as canMatch: no key for this catalogue, so the rows stay
+		// as they are and nothing is guessed.
+		return 0, nil
+	}
+
+	missing, err := s.store.MoviesMissingArtwork(ctx, mediaType)
+	if err != nil {
+		return 0, err
+	}
+
+	for _, m := range missing {
+		// The id is read from the column this row's own media type owns. The
+		// list is already scoped, so a nil here would be a store that answered
+		// the wrong question — worth saying rather than dereferencing.
+		id := m.TMDBID
+		if mediaType == store.MediaTypeTV {
+			id = m.TMDBTVID
+		}
+		if id == nil {
+			s.log.Warn("a row on the artwork list carries no id for its own media type",
+				"title", m.Title, "movie_id", m.ID, "media_type", mediaType)
+			continue
+		}
+		if err := s.fillArtwork(ctx, m.ID, mediaType, *id); err != nil {
+			s.log.Warn("could not fetch artwork for a matched row",
+				"title", m.Title, "movie_id", m.ID, "media_type", mediaType, "err", err)
+			continue
+		}
+		filled++
+	}
+	return filled, nil
+}
+
+// fillArtwork reads one already-identified title off TMDB by id and records its
+// overview and poster.
+//
+// **One function on both paths deliberately** — the dispatch that stops the
+// hole opening and the scan pass that heals what already fell in it. The
+// healing path is the one that gets exercised in anger, so sharing the code is
+// what keeps the prevention path honest.
+//
+// The title is left alone, exactly as match does: TMDB's canonical spelling
+// would undo the " - " substitution that identifies the folder (D9), and
+// library_path is the row's identity. tmdb_year is left alone too — it belongs
+// to the hand-match path (D37).
+func (s *Server) fillArtwork(ctx context.Context, movieID int64, mediaType string, tmdbID int64) error {
+	found, err := s.details(ctx, mediaType, tmdbID)
+	if err != nil {
+		return err
+	}
+
+	var overview, poster *string
+	if found.Overview != "" {
+		overview = &found.Overview
+	}
+	if found.PosterPath != "" {
+		poster = &found.PosterPath
+	}
+	if overview == nil && poster == nil {
+		// TMDB knows this id and holds neither. Writing would be a no-op that
+		// leaves the row on the list, so say so rather than report a fill.
+		return fmt.Errorf("tmdb has no overview and no poster for %d", tmdbID)
+	}
+	return s.store.SetTMDBArtwork(ctx, movieID, overview, poster)
+}
+
+// details is the by-id lookup, chosen from the media type of the row asking.
+//
+// **Browser spans both id spaces, so this is the one place the split that
+// Matcher/ShowMatcher makes a compile error has to be made by hand.** TMDB
+// numbers films and shows independently — 95396 is both Severance's tv id and
+// some film's movie id — so asking /movie/{id} with a tv id does not miss, it
+// LANDS on an unrelated film and would write its poster onto the show (D48).
+func (s *Server) details(ctx context.Context, mediaType string, tmdbID int64) (*tmdb.Details, error) {
+	if mediaType == store.MediaTypeTV {
+		return s.browser.Show(ctx, int(tmdbID))
+	}
+	return s.browser.Movie(ctx, int(tmdbID))
 }
 
 // canMatch reports whether there is a TMDB client for this media type.
