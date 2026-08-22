@@ -25,6 +25,17 @@ const (
 	// its values are a comment in schema.sql rather than a constraint. It is
 	// not terminal — the next poll can move it back to downloading.
 	DownloadStalled = "stalled"
+
+	// DownloadPaused is a torrent somebody stopped on purpose, and it needs no
+	// migration for exactly the reason above.
+	//
+	// **It is written to the row rather than left to the backend, and that is
+	// what makes a pause survive a restart.** Service.Resume re-adds every
+	// non-imported row by magnet at boot; qBittorrent remembers a stop by
+	// itself, but the embedded engine rebuilds its torrents from disk with no
+	// memory of a preference, so without this the first reboot would quietly
+	// resume everything somebody had paused. The row is the record.
+	DownloadPaused = "paused"
 )
 
 // Download is one row of the downloads table.

@@ -103,8 +103,13 @@ var ErrAuth = errors.New("qbittorrent refused the credentials")
 //
 // Only what curator reads is decoded; qBittorrent sends around forty more
 // fields. `size` and `save_path` used to be decoded here and were read by
-// nothing for three phases, so they are gone — a field nobody reads is a field
-// that can be wrong indefinitely without anyone noticing.
+// nothing for three phases, so they were removed — a field nobody reads is a
+// field that can be wrong indefinitely without anyone noticing.
+//
+// `size` came back in T107 because it acquired exactly one reader: the Activity
+// screen's "3.2 GB of 8.1 GB, 12 minutes left". `save_path` did not, and should
+// not until something reads it. `eta` is on the wire too and is deliberately
+// still ignored — see DownloadRate below.
 type info struct {
 	// Hash is lower-case hex, normalised by wireHash on the way in.
 	Hash string `json:"hash"`
@@ -132,6 +137,19 @@ type info struct {
 	// Category is what scopes a torrent to us: everything curator adds is in
 	// `curator`, and the *arr stack's torrents are in `radarr` and `sonarr`.
 	Category string `json:"category"`
+
+	// DownloadRate is qBittorrent's `dlspeed`, in bytes per second.
+	//
+	// **`eta` sits beside it on the wire and is deliberately not decoded.**
+	// libtorrent's smoothed estimate next to a rate the embedded engine computes
+	// from byte deltas gives two different answers to "minutes left" depending
+	// on which backend is running, and one screen showing two definitions is
+	// worse than one definition being slightly cruder. The arithmetic lives in
+	// internal/download, above both backends (docs/decisions.md D56).
+	DownloadRate int64 `json:"dlspeed"`
+
+	// SizeBytes is `size`: the payload's total length in bytes.
+	SizeBytes int64 `json:"size"`
 }
 
 // DefaultDownloadsPath is the downloads root inside qBittorrent's own
@@ -183,6 +201,13 @@ func (c *Client) neutral(i info) (torrent.Torrent, error) {
 		// two can never disagree: whatever `stalledDL` is spelled as, the
 		// sentence appears exactly when this package answered `stalled`.
 		Reason: stalledReason(state),
+
+		// Straight through. qBittorrent samples the rate itself, so unlike the
+		// embedded engine there is nothing to compute here — which is also why
+		// the two backends cannot share a rate implementation and only share
+		// what the rate MEANS.
+		DownloadRate: i.DownloadRate,
+		SizeBytes:    i.SizeBytes,
 	}, nil
 }
 

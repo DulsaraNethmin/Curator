@@ -451,8 +451,13 @@ func TestTorrentsFiltersByCategoryAndDecodesTheFields(t *testing.T) {
 	}
 
 	// What comes out is the neutral type, not the wire one: the hash has changed
-	// case, `stalledUP` has become curator's `completed`, and the two fields
-	// nothing reads — size and save_path — are decoded by nobody.
+	// case and `stalledUP` has become curator's `completed`.
+	//
+	// `size` IS decoded now and `save_path` still is not, which is the rule
+	// rather than an inconsistency — a field is decoded when something reads it.
+	// T107 gave size exactly one reader, the "3.2 GB of 8.1 GB" on the Activity
+	// screen; nothing reads save_path, so it stays undecoded. `eta` is on the
+	// wire too and is deliberately ignored (D56).
 	got := torrents[0]
 	want := torrent.Torrent{
 		Hash:        infoHashUpper,
@@ -461,6 +466,7 @@ func TestTorrentsFiltersByCategoryAndDecodesTheFields(t *testing.T) {
 		Progress:    1,
 		ContentPath: "/downloads/complete/curator/Interstellar (2014) [1080p] [BluRay] [x264]",
 		Category:    testCategory,
+		SizeBytes:   2147483648,
 	}
 	if got != want {
 		t.Errorf("torrent =\n%+v\nwant\n%+v", got, want)

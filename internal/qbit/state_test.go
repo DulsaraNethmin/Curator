@@ -25,8 +25,13 @@ func TestMapState(t *testing.T) {
 		{"allocating", torrent.StateQueued},
 		{"checkingDL", torrent.StateQueued},
 		{"checkingResumeData", torrent.StateQueued},
-		{"pausedDL", torrent.StateQueued},
-		{"stoppedDL", torrent.StateQueued}, // what 5.1.2 sends instead of pausedDL
+
+		// paused — and NOT queued, which they were until T107. `queued` promises
+		// a torrent about to start; these mean one that will not until somebody
+		// says so, and the Activity row now has a Resume button to draw on the
+		// difference.
+		{"pausedDL", torrent.StatePaused},
+		{"stoppedDL", torrent.StatePaused}, // what 5.1.2 sends instead of pausedDL
 
 		// downloading
 		// stalled
