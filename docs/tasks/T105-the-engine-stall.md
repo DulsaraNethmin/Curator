@@ -76,6 +76,31 @@ it was noted and not pursued. Two of two dumps that printed per-peer lines have 
 most concrete un-chased lead in the file, and `i:e,v1:` versus `i:U,e,v1:` says the two connections
 are *not* in the same state.
 
+## It is load, not the package
+
+**`internal/engine` on its own is six seconds.** Measured 2026-08-22 on the laptop, in a worktree
+with no `.env`, three consecutive `go test -race -count=1 ./internal/engine/`: **6.030s, 5.865s,
+5.828s, zero failures.** The same package inside a full `go test ./...` on the same machine took
+**50.4s**. A stalled `await` is 60s.
+
+So the healthy path is an order of magnitude under the deadline, and the thing that moves it is
+everything else in the suite running beside it. That matches what `docs/progress.md` already records
+about the other two flakes in this repo — *"they are load-sensitive under a full `-race` suite"* —
+and it is why every attempt so far to reproduce it by hammering the package alone has failed: T74's
+20 runs, `await-names-its-cause`'s 12 at `GOMAXPROCS=2`, and these 3. **Reproduce it under `./...`,
+under load, or not at all.**
+
+### A fourth occurrence, and the mistake that wasted it
+
+The gate on `d1c3ae2` — the merge that put this very file on `main` — **failed once locally in the
+`-race` run and passed on re-run.** Which package failed is not known, because the run's output was
+captured with `tail -6` and the failing package's line had already scrolled past; all that survives
+is `FAIL` and `make: *** [race] Error 1`.
+
+That is recorded as a process lesson rather than as evidence: **capture the whole gate log, not its
+tail.** A flake that has been chased across four sessions was in hand and unreadable, and the fix
+costs one redirection.
+
 ## Do
 
 1. **Chase the duplicate connection first.** Two connections to one peer, in different states, on a
