@@ -16,6 +16,8 @@ import { Icon } from '@/components/icons';
 import { LibraryBadge, Poster } from '@/components/movie-card';
 import { Rating } from '@/components/rating';
 import { Releases } from '@/components/releases';
+import { recall, releaseKey } from '@/lib/recent';
+import { ago } from '@/lib/duration';
 import { Loading, SkeletonHero } from '@/components/skeleton';
 import { Player } from '@/components/player';
 
@@ -61,6 +63,12 @@ function Movie() {
   // Jellyfin — sit together in the hero instead of one being a button below it.
   const [watching, setWatching] = useState(false);
 
+  // When the list on screen was fetched, when it came from the cache rather than
+  // from a search just now. Null means these releases are fresh — a restored
+  // list that said nothing about its age would be the one dishonest thing about
+  // showing it at all.
+  const [restored, setRestored] = useState<number | null>(null);
+
   // Metadata and releases are two fetches and never a Promise.all. TMDB answers
   // in about 150 ms; a cold release search takes up to thirteen seconds because
   // a real browser is clearing Cloudflare behind minter. Awaiting both would
@@ -72,9 +80,20 @@ function Movie() {
 
     setDetails(null);
     setError(null);
-    setReleases(null);
     setSearchError(null);
     setWatching(false);
+
+    // The releases from the last search for THIS film, if it was recent enough
+    // and nothing has been searched since. This is the whole of T108: the button
+    // below costs 7.08 s, and routing away by accident used to cost it twice.
+    //
+    // Only this effect reads the cache. `findReleases` never does — so "Search
+    // again" always goes to the network, which is what it says, and `result`
+    // identity always changes on a real search, which is what keeps
+    // <Releases>'s `[result]` reset firing.
+    const held = recall(releaseKey('movie', id) ?? '');
+    setReleases(held?.result ?? null);
+    setRestored(held?.at ?? null);
 
     api
       .tmdbMovie(id)
@@ -100,6 +119,7 @@ function Movie() {
       // here would go on to send the stripped title to dispatch and write
       // "Avengers Endgame (2019)" as the folder.
       setReleases(await api.search(details.title, details.year || undefined));
+      setRestored(null);
     } catch (e) {
       setSearchError(e);
       setReleases(null);
@@ -278,6 +298,18 @@ function Movie() {
               Press <strong>Find releases</strong> to ask YTS, TPB and 1337x for{' '}
               <span className="mono">{details.title}</span>.
             </Empty>
+          )}
+
+          {/* A list that appeared instantly where a 7-second wait used to be
+              needs to say why, or it is the one dishonest thing about caching
+              it: these are the releases from before, and the seeder counts have
+              moved on. `restored` is null after a real search, so this is drawn
+              exactly when the list did not come from the network just now. */}
+          {releases && restored !== null && (
+            <p className="small muted">
+              These are the releases from your last search for this film, {ago(restored)}. Press{' '}
+              <strong>Search again</strong> for fresh ones.
+            </p>
           )}
 
           <Releases

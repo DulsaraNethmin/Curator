@@ -12,6 +12,8 @@ import {
   type Season,
 } from '@/lib/api';
 import { Empty, Failure } from '@/components/states';
+import { parseGoDuration } from '@/lib/duration';
+import { forget, releaseKey, remember } from '@/lib/recent';
 import { qualitySections, type Section } from '@/lib/sections';
 import {
   AnyQuality,
@@ -217,6 +219,19 @@ export function Releases({
   // telling that user to set QBIT_USER is an instruction that cannot work.
   const [downloadsDetail, setDownloadsDetail] = useState<string | null>(null);
 
+  /**
+   * How long curator keeps a release id resolvable, read from the server rather
+   * than guessed — `intervals.search_cache_ttl` is `SEARCH_CACHE_TTL` as
+   * `time.Duration.String()` wrote it, and `Aggregator.issue` stamps every id
+   * with exactly that. A client TTL longer than the server's would hold a list
+   * whose every Download button answers 410.
+   *
+   * The fallback is the Go default (`defaultSearchCacheTTL`, one hour), which is
+   * the same shape `FALLBACK_POLL_MS` has on the Activity screen. It is only
+   * ever an optimisation: the 410 below is what makes a stale list safe.
+   */
+  const [ttlMs, setTtlMs] = useState(3_600_000);
+
   // Ask once whether dispatch is even possible, rather than letting the button
   // fail with a 503.
   useEffect(() => {
@@ -239,6 +254,7 @@ export function Releases({
         // again, which is exactly what the old `?? false` did.
         setDownloadsConfigured(torrents ? torrents.configured : null);
         setDownloadsDetail(torrents?.detail ?? null);
+        setTtlMs(parseGoDuration(s.intervals?.search_cache_ttl) ?? 3_600_000);
       })
       .catch(() => {
         if (cancelled) return;
@@ -255,6 +271,25 @@ export function Releases({
   useEffect(() => {
     setDispatched({});
     setDispatchError(null);
+  }, [result]);
+
+  /**
+   * Hold the answer, so leaving this screen and coming back does not cost the
+   * search again — 7.08 s for a film, up to 13 s for television.
+   *
+   * **This component is the writer and the pages are the readers**, because it
+   * is the only one in the tree that has read `/api/settings` and therefore the
+   * only one holding the TTL. It stamps an absolute deadline once, so
+   * `recall` needs no notion of how long anything lasts.
+   *
+   * `releaseKey` returns null for the release-name search on /search/, which has
+   * no stable identity to key on — so that mode is excluded here by
+   * construction rather than by a prop this component would have to be told.
+   */
+  useEffect(() => {
+    if (!result) return;
+    const key = releaseKey(film.media, film.tmdb_id, result.season ?? 0, result.episode ?? 0);
+    if (key) remember(key, result, Date.now() + ttlMs);
   }, [result]);
 
   async function dispatch(release: Release) {
@@ -282,6 +317,13 @@ export function Releases({
       });
       setDispatched((prev) => ({ ...prev, [release.id]: saved }));
     } catch (e) {
+      // A 410 means these ids are dead — which is precisely what the cache is
+      // holding, so it goes. Dropped HERE rather than through a callback the
+      // pages pass down: this is the one implementation of dispatch, and a page
+      // that forgot to wire the prop would serve the dead list back on the next
+      // visit. The list itself stays on screen with its "Search again"; only the
+      // memory of it goes.
+      if (e instanceof ApiError && e.expiredSearch) forget();
       setDispatchError(e);
     } finally {
       setDispatching(null);

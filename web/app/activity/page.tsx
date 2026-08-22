@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, formatWhen, type Download } from '@/lib/api';
+import { parseGoDuration } from '@/lib/duration';
 import { Empty, Failure } from '@/components/states';
 
 // The fallback if /api/settings cannot be read. It matches
@@ -32,7 +33,7 @@ export default function Activity() {
     let cancelled = false;
     api
       .settings()
-      .then((s) => !cancelled && setPollMs(parseGoDuration(s.intervals.download_poll) ?? FALLBACK_POLL_MS))
+      .then((s) => !cancelled && setPollMs(pollInterval(s.intervals.download_poll) ?? FALLBACK_POLL_MS))
       .catch(() => undefined);
     return () => {
       cancelled = true;
@@ -196,24 +197,16 @@ function State({ state }: { state: string }) {
   }
 }
 
-/** parseGoDuration understands what time.Duration.String() writes: "10s", "1h0m0s". */
-function parseGoDuration(value: string | undefined): number | null {
-  if (!value) return null;
-
-  let ms = 0;
-  let matched = false;
-  for (const [, amount, unit] of value.matchAll(/([\d.]+)(ns|us|µs|ms|s|m|h)/g)) {
-    const n = Number(amount);
-    if (Number.isNaN(n)) continue;
-    matched = true;
-    ms +=
-      unit === 'h' ? n * 3_600_000
-      : unit === 'm' ? n * 60_000
-      : unit === 's' ? n * 1000
-      : unit === 'ms' ? n
-      : 0; // sub-millisecond units round to nothing useful for a UI timer
-  }
-  // Never poll faster than a second, whatever the server says: below that it is
-  // load with no new data.
-  return matched ? Math.max(ms, 1000) : null;
+/**
+ * The poll interval this screen should use, from what the server said.
+ *
+ * The parsing moved to `web/lib/duration.ts` when a second reader appeared, and
+ * **the floor did not go with it**: "never poll faster than a second, whatever
+ * the server says" is a rule about polling, not about durations, and the other
+ * reader is a cache TTL that a one-second floor would be nonsense for. Below a
+ * second it is load with no new data.
+ */
+function pollInterval(value: string | undefined): number | null {
+  const ms = parseGoDuration(value);
+  return ms === null ? null : Math.max(ms, 1000);
 }
