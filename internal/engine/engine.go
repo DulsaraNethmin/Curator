@@ -171,6 +171,18 @@ type Engine struct {
 	// heldConns is each torrent's own connection limit from before the hold, so
 	// Release restores what was there rather than the global default.
 	heldConns map[string]int
+
+	// paused is the hashes somebody stopped on purpose, and pausedConns is each
+	// one's connection limit from before, restored on resume for the reason
+	// heldConns is.
+	//
+	// **A separate set from the hold, deliberately.** They use the same three
+	// anacrolix calls and mean opposite things: a hold is curator protecting
+	// itself and outranks everything, a pause is a person's preference about one
+	// row. Sharing one set would make a VPN blip silently un-pause whatever
+	// somebody had stopped, because Release loops every torrent and allows it.
+	paused      map[string]bool
+	pausedConns map[string]int
 }
 
 // mark is one torrent's last observed progress, and whether the stall it is in
@@ -376,17 +388,19 @@ func New(cfg Config) (*Engine, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
-		dataDir:    dataDir,
-		category:   cfg.Category,
-		log:        cfg.Log,
-		ctx:        ctx,
-		cancel:     cancel,
-		stallAfter: cfg.StallAfter,
-		now:        time.Now,
-		unchecked:  map[string]bool{},
-		progress:   map[string]mark{},
-		heldConns:  map[string]int{},
-		network:    cfg.Network,
+		dataDir:     dataDir,
+		category:    cfg.Category,
+		log:         cfg.Log,
+		ctx:         ctx,
+		cancel:      cancel,
+		stallAfter:  cfg.StallAfter,
+		now:         time.Now,
+		unchecked:   map[string]bool{},
+		progress:    map[string]mark{},
+		heldConns:   map[string]int{},
+		paused:      map[string]bool{},
+		pausedConns: map[string]int{},
+		network:     cfg.Network,
 	}
 
 	// The socket has to exist before the client, and the client before the
@@ -663,6 +677,8 @@ func (e *Engine) DeleteTorrent(ctx context.Context, hash, requireCategory string
 	e.mu.Lock()
 	delete(e.progress, dropped)
 	delete(e.unchecked, dropped)
+	delete(e.paused, dropped)
+	delete(e.pausedConns, dropped)
 	e.mu.Unlock()
 
 	if !deleteFiles {
@@ -778,7 +794,13 @@ func (e *Engine) describe(t *anacrolix.Torrent) torrent.Torrent {
 	// progress on is not failed, it is stalled — nobody is seeding it — and
 	// saying `failed` would tell somebody their download died when what
 	// happened is that they picked an unpopular release.
-	if out.State == torrent.StateQueued || out.State == torrent.StateDownloading {
+	// **Not on a paused torrent.** It gains no bytes by design, so the detector
+	// is correct that nothing is arriving and wrong about why — after
+	// DefaultStallAfter it would say "no peers are connected" about a download
+	// curator stopped on request. PauseTorrent also clears this hash's mark, so
+	// the clock restarts on resume rather than firing on the first tick after it.
+	if !e.isPaused(out.Hash) &&
+		(out.State == torrent.StateQueued || out.State == torrent.StateDownloading) {
 		if stalled, reason := e.stalled(t, out, m, stalledNow, firstReport); stalled {
 			out.State = torrent.StateStalled
 			out.Reason = reason
@@ -788,10 +810,25 @@ func (e *Engine) describe(t *anacrolix.Torrent) torrent.Torrent {
 		}
 	}
 
+	// A pause outranks the stall diagnosis for the same reason a hold does, and
+	// sits between them: it is more specific than "nothing is arriving" and less
+	// authoritative than the kill switch. `completed` is exempt exactly as it is
+	// for a hold — there is nothing left to stop, and rewriting it would keep
+	// the importer away from a payload that is on disk.
+	if out.State != torrent.StateCompleted && e.isPaused(out.Hash) {
+		out.State = torrent.StatePaused
+		// No sentence. A pause needs no explanation — the badge IS the
+		// explanation, and a reason left here would outlive the state it
+		// explains the moment somebody presses Resume.
+		out.Reason = ""
+		out.DownloadRate = 0
+	}
+
 	// The hold wins over any stall diagnosis, and it has to be last. A held
 	// torrent gains no bytes, so e.stalled is perfectly correct that it is
 	// stalled and perfectly wrong about why — it would report "nobody appears to
 	// be seeding this release" about a download curator switched off itself.
+	// It outranks a pause too: the kill switch is not a preference.
 	if reason := e.holdReason(); reason != "" {
 		out = heldState(out, reason)
 	}

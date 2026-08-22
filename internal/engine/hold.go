@@ -76,6 +76,13 @@ func (e *Engine) Release() error {
 	}
 
 	for _, t := range e.client.Torrents() {
+		// **A torrent somebody paused stays paused.** This loop is the reason
+		// the pause needs a set of its own: without the check, any tunnel blip
+		// would silently restart every download a person had deliberately
+		// stopped, and nothing on screen would say it had happened.
+		if e.isPaused(hashOf(t)) {
+			continue
+		}
 		t.AllowDataDownload()
 		t.AllowDataUpload()
 		if old, ok := conns[hashOf(t)]; ok && old > 0 {

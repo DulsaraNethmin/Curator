@@ -74,6 +74,16 @@ const (
 // wrap this one.
 var ErrWrongCategory = errors.New("the torrent is not in the required category")
 
+// ErrNotFound reports that the backend has no torrent with that hash.
+//
+// It lives here for the same reason ErrWrongCategory does: internal/api tests
+// for it with errors.Is to answer 404, and reaching into one particular backend
+// for an error value is the coupling this package exists to remove. It is
+// distinct from "already gone is success" — DeleteTorrent keeps that behaviour,
+// because a delete that has already happened is a delete nobody can retry,
+// while pausing a torrent that is not there is a request about nothing.
+var ErrNotFound = errors.New("no torrent with that hash")
+
 // WrongCategory is ErrWrongCategory carrying the two category names, because
 // which app owns the torrent is the only actionable word in that refusal and a
 // handler has no other way to reach it.
