@@ -55,11 +55,13 @@ type fakeStore struct {
 	order  []*store.Movie // insertion order; ListMovies reverses it
 	nextID int64
 
-	upsertErr error
-	listErr   error
-	missErr   error
-	setErr    error // e.g. the UNIQUE violation two folders matching one TMDB id causes
-	matchErr  error // forces MatchMovie's failure path without staging a row for it
+	upsertErr     error
+	listErr       error
+	missErr       error
+	artworkErr    error // MoviesMissingArtwork's own failure, separate so one pass cannot mask the other
+	artworkSetErr error // and SetTMDBArtwork's, so a read failure and a write failure are distinguishable
+	setErr        error // e.g. the UNIQUE violation two folders matching one TMDB id causes
+	matchErr      error // forces MatchMovie's failure path without staging a row for it
 	// Separate from matchErr so a test cannot force one method's failure and
 	// accidentally assert it against the other — the two answer different 409s.
 	correctErr error
@@ -378,6 +380,49 @@ func (f *fakeStore) MoviesMissingMetadata(_ context.Context, mediaType string) (
 		}
 	}
 	return out, nil
+}
+
+// MoviesMissingArtwork is MoviesMissingMetadata's complement, and the fake keeps
+// them disjoint exactly as the SQL does: matched by this media type's own id
+// column, and no poster.
+func (f *fakeStore) MoviesMissingArtwork(_ context.Context, mediaType string) ([]store.Movie, error) {
+	if f.artworkErr != nil {
+		return nil, f.artworkErr
+	}
+	var out []store.Movie
+	for _, row := range f.order {
+		if row.MediaType != mediaType {
+			continue
+		}
+		matched := row.TMDBID != nil
+		if mediaType == store.MediaTypeTV {
+			matched = row.TMDBTVID != nil
+		}
+		if matched && row.PosterPath == nil {
+			out = append(out, *row)
+		}
+	}
+	return out, nil
+}
+
+// SetTMDBArtwork is COALESCE in the real store, and the fake reproduces that
+// rather than assigning: a fake that overwrote with nil would let a caller that
+// blanks an existing overview pass every test here.
+func (f *fakeStore) SetTMDBArtwork(_ context.Context, id int64, overview, posterPath *string) error {
+	if f.artworkSetErr != nil {
+		return f.artworkSetErr
+	}
+	row, ok := f.byID[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if overview != nil {
+		row.Overview = overview
+	}
+	if posterPath != nil {
+		row.PosterPath = posterPath
+	}
+	return nil
 }
 
 // matcherFunc adapts a function to Matcher.
