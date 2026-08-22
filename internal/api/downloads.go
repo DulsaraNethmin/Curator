@@ -357,7 +357,13 @@ func (s *Server) failPause(w http.ResponseWriter, err error) {
 		// this point, and the category is the only word a reader can act on.
 		s.fail(w, http.StatusConflict, errors.New(wrongCategorySentence(err)))
 	case errors.Is(err, download.ErrNotRunning):
-		s.fail(w, http.StatusConflict, err)
+		// The sentence is written here rather than passed through, for the
+		// reason failDelete gives for its own: by this point `err` is prefixed
+		// with the verb and the info hash, and neither is a word a reader acts
+		// on. D39 — a failure's sentence is true of every situation its status
+		// covers, and is written at the boundary that answers it.
+		s.fail(w, http.StatusConflict, errors.New(
+			"that download is already in the library, so there is nothing running to stop"))
 	case errors.Is(err, download.ErrUnconfigured):
 		s.fail(w, http.StatusServiceUnavailable, err)
 	case errors.Is(err, download.ErrClient):

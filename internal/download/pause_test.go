@@ -92,6 +92,40 @@ func TestDownloadsJoinsTheLiveRateAndDerivesTheETA(t *testing.T) {
 	}
 }
 
+// A paused torrent has no rate, whatever the backend said. The engine zeroes it
+// itself; qBittorrent is trusted to report dlspeed 0 for a stopped torrent and
+// mostly does — but "paused · 4.1 MB/s" is a nonsense line, and which backend is
+// running must not decide whether it appears. Found with a stub that kept
+// reporting 4 MiB/s after a stop.
+func TestAPausedRowCarriesNoRateEvenIfTheBackendSaysOne(t *testing.T) {
+	st := newFakeStore()
+	seedRows(st, "AAAA")
+
+	client := &fakeClient{torrents: []torrent.Torrent{{
+		Hash: "AAAA", Category: "curator",
+		State:        torrent.StatePaused,
+		Progress:     0.42,
+		SizeBytes:    8 << 30,
+		DownloadRate: 4 << 20, // the backend is still claiming a rate
+	}}}
+
+	rows, err := pauseService(client, st).Downloads(context.Background())
+	if err != nil {
+		t.Fatalf("Downloads: %v", err)
+	}
+	if rows[0].DownloadRate != 0 {
+		t.Errorf("DownloadRate = %d on a paused row, want 0", rows[0].DownloadRate)
+	}
+	if rows[0].ETASeconds != 0 {
+		t.Errorf("ETASeconds = %d on a paused row, want 0 — there is no rate to derive one from", rows[0].ETASeconds)
+	}
+	// The size is still true and still useful: "42% of 8.0 GB" reads fine on a
+	// paused row, and it is a fact about the payload rather than about motion.
+	if rows[0].SizeBytes != 8<<30 {
+		t.Errorf("SizeBytes = %d, want it kept — the size is not a rate", rows[0].SizeBytes)
+	}
+}
+
 // No rate, no size, or nothing left to fetch: there is no honest number, so
 // there is no key. Omitted rather than 0 — a screen cannot tell a computed zero
 // from an absent one.

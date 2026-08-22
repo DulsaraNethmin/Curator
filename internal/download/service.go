@@ -776,9 +776,17 @@ func (s *Service) Downloads(ctx context.Context) ([]Active, error) {
 	for _, row := range rows {
 		active := Active{Download: row}
 		if t, ok := live[row.TorrentHash]; ok {
-			active.DownloadRate = t.DownloadRate
 			active.SizeBytes = t.SizeBytes
-			active.ETASeconds = eta(t.SizeBytes, t.Progress, t.DownloadRate)
+			// **A paused torrent has no rate, whatever the backend said.** The
+			// embedded engine already zeroes it; qBittorrent is trusted to
+			// report dlspeed 0 for a stopped torrent and mostly does, but
+			// "paused · 4.1 MB/s" is a nonsense line and which backend is
+			// running must not decide whether it appears. Enforced here, above
+			// both, for the same reason the ETA is computed here.
+			if t.State != torrent.StatePaused {
+				active.DownloadRate = t.DownloadRate
+				active.ETASeconds = eta(t.SizeBytes, t.Progress, t.DownloadRate)
+			}
 		}
 		out = append(out, active)
 	}

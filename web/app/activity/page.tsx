@@ -200,7 +200,7 @@ export default function Activity() {
               <tr>
                 <th>Release</th>
                 <th>State</th>
-                <th style={{ width: '11rem' }}>Progress</th>
+                <th style={{ width: '12rem' }}>Progress</th>
                 <th>Source</th>
                 <th className="tight">Added</th>
                 <th />
@@ -413,7 +413,17 @@ function Progress({ download }: { download: Download }) {
   const rate = download.download_rate ? `${formatBytes(download.download_rate)}/s` : null;
   const eta = formatETA(download.eta_seconds);
 
-  return <>{[percent, size, rate, eta].filter(Boolean).join(' · ')}</>;
+  // Two deliberate lines rather than one that wraps wherever the column ends:
+  // how much (a fact about the payload) above how fast (a fact about right now).
+  // The second disappears entirely on a paused or finished row, which is the
+  // shape the reader should see rather than a reflow.
+  const moving = [rate, eta].filter(Boolean).join(' · ');
+  return (
+    <>
+      <div>{[percent, size].filter(Boolean).join(' · ')}</div>
+      {moving && <div>{moving}</div>}
+    </>
+  );
 }
 
 function State({ state }: { state: string }) {
