@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -106,6 +107,11 @@ func (s *Server) WithJellyfin(m MediaServer, publicURL string) *Server {
 // film ends up rendered as a show.
 func (s *Server) RegisterBrowse(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tmdb/discover", s.handleDiscover)
+	// The same screen, sent a rail at a time. Two routes and not one content
+	// negotiated on Accept: a `curl /api/tmdb/discover | jq` has to keep meaning
+	// what it means, and a route whose whole body shape turns over on a request
+	// header is one somebody debugs twice.
+	mux.HandleFunc("GET /api/tmdb/discover/stream", s.handleDiscoverStream)
 	mux.HandleFunc("GET /api/tmdb/search", s.handleTMDBSearch)
 	mux.HandleFunc("GET /api/tmdb/movies/{id}", s.handleTMDBMovie)
 	mux.HandleFunc("GET /api/tmdb/shows/{id}", s.handleTMDBShow)
@@ -628,6 +634,101 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	s.eachRail(r.Context(), set, func(i int, row discoverRow) { rows[i] = row })
 
 	s.respond(w, http.StatusOK, map[string]any{"media": set.media, "rows": rows})
+}
+
+// railSlot is a rail the stream has named but not yet filled.
+//
+// It is deliberately NOT a discoverRow with OK left false, which is what the
+// obvious version of this was. A row's `ok: false` already means "this rail
+// failed", and the screen draws that as a warning banner — so an opening event
+// made of empty rows would announce twelve broken rails and then repair them one
+// at a time. Two shapes, because they are two facts.
+type railSlot struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// handleDiscoverStream is handleDiscover's screen, sent a rail at a time.
+//
+// Same rails, same rows, same cache — the only difference is when the bytes
+// leave. It opens with every rail's id and title in the order they are drawn, so
+// the page can lay out its real headings and skeletons immediately, and then
+// sends one `row` event per rail as it resolves. The billboard is what this is
+// for: it needs only the trending rail and used to wait on the documentaries.
+//
+// The wire format is SSE, and the browser reads it with fetch rather than
+// EventSource — see D54. Nothing here depends on that choice except the framing.
+func (s *Server) handleDiscoverStream(w http.ResponseWriter, r *http.Request) {
+	set, ok := s.beginDiscover(w, r)
+	if !ok {
+		// Still a JSON status code, because nothing has been written yet. Every
+		// refusal this screen has — 400, 503, 500 — happens before the stream
+		// starts, which is what makes them expressible at all.
+		return
+	}
+
+	w.Header().Set("content-type", "text/event-stream")
+	w.Header().Set("cache-control", "no-store")
+	// Reverse proxies buffer a response body by default, which would hold every
+	// rail until the last one and turn this route back into the one it exists to
+	// replace. nginx, Traefik and Caddy all honour this header, and curator is a
+	// `docker run` somebody is entirely likely to put one in front of.
+	w.Header().Set("x-accel-buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	slots := make([]railSlot, len(set.rails))
+	for i, rail := range set.rails {
+		slots[i] = railSlot{ID: rail.id, Title: rail.title}
+	}
+
+	// A write failure stops the sending and not the fetching: eachRail owns
+	// goroutines that must be allowed to finish and put their rails in the
+	// cache, so the callback goes quiet rather than returning early. The reader
+	// is gone, but the next reader gets a warm cache out of it.
+	err := sendEvent(w, "rails", map[string]any{"media": set.media, "rails": slots})
+	s.eachRail(r.Context(), set, func(_ int, row discoverRow) {
+		if err != nil {
+			return
+		}
+		err = sendEvent(w, "row", row)
+	})
+	if err != nil {
+		s.log.Debug("discover stream: the reader went away", "err", err)
+		return
+	}
+
+	// The end is stated rather than implied, because a stream that stopped and a
+	// stream that finished are the same silence otherwise. A truncated response
+	// would leave rails skeletal for ever with nothing to distinguish it from a
+	// rail still in flight, and the client would have no moment at which it was
+	// entitled to give up.
+	_ = sendEvent(w, "done", struct{}{})
+}
+
+// sendEvent writes one SSE record and pushes it at the client.
+//
+// It parses-and-emits only the subset curator speaks: one `event:` line, one
+// `data:` line, and the blank line that ends the record. One data line is always
+// enough because encoding/json escapes newlines inside strings and never emits a
+// bare one, so the payload cannot contain the character that would split it —
+// which is the whole reason this framing can be four lines instead of a parser.
+//
+// json.Marshal and not json.Encoder: the encoder appends a newline of its own,
+// which would land in the middle of a record.
+func sendEvent(w http.ResponseWriter, name string, body any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("discover stream: encode %s: %w", name, err)
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, payload); err != nil {
+		return fmt.Errorf("discover stream: write %s: %w", name, err)
+	}
+	// Without this the rails sit in Go's 4 KB write buffer and arrive together,
+	// which is the bug this route exists to fix, silently.
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		return fmt.Errorf("discover stream: flush %s: %w", name, err)
+	}
+	return nil
 }
 
 func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
