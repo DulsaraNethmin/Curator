@@ -13,7 +13,7 @@
 //
 //   make units           # runs this
 //   node --experimental-strip-types web/scripts/check-lib.mjs
-import { parseGoDuration } from '../lib/duration.ts';
+import { ago, parseGoDuration } from '../lib/duration.ts';
 import { forget, recall, releaseKey, remember } from '../lib/recent.ts';
 
 let failed = 0;
@@ -45,6 +45,20 @@ function check(label, ok, detail = '') {
   check('nothing is null', parseGoDuration(undefined) === null);
   check('empty is null', parseGoDuration('') === null);
   check('prose is null', parseGoDuration('nonsense') === null);
+}
+
+// ---------------------------------------------------------------------------
+// ago — three cases, because its one caller shows a list that cannot outlive
+// SEARCH_CACHE_TTL. Anything at or past the hour says so in words rather than
+// in a number: past the TTL the honest statement is that it is old.
+{
+  const t = 10_000_000;
+  check('under a minute', ago(t, t + 30_000) === 'moments ago');
+  check('exactly one minute is singular', ago(t, t + 60_000) === '1 minute ago');
+  check('minutes are plural', ago(t, t + 240_000) === '4 minutes ago');
+  check('just under an hour', ago(t, t + 59 * 60_000) === '59 minutes ago');
+  check('an hour and over', ago(t, t + 3_600_000) === 'over an hour ago');
+  check('a clock that went backwards does not say -3', ago(t, t - 5000) === 'moments ago');
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,8 @@ import { Empty, Failure, Working } from '@/components/states';
 import { LibraryBadge, Poster } from '@/components/movie-card';
 import { Rating } from '@/components/rating';
 import { Releases } from '@/components/releases';
+import { recall, releaseKey } from '@/lib/recent';
+import { ago } from '@/lib/duration';
 import { Loading, SkeletonHero } from '@/components/skeleton';
 
 /**
@@ -71,6 +73,10 @@ function Show() {
   // answers 400 for an episode without one.
   const [episode, setEpisode] = useState(0);
 
+  // When the list on screen was fetched, when it came back from the cache. Null
+  // after a real search — see the notice below <Releases>.
+  const [restored, setRestored] = useState<number | null>(null);
+
   // One fetch, and the release search is emphatically not part of it. TMDB
   // answers in about 150 ms; a cold release search takes up to thirteen seconds
   // because a real browser is clearing Cloudflare behind minter. Browsing must
@@ -81,10 +87,20 @@ function Show() {
 
     setDetails(null);
     setError(null);
-    setReleases(null);
     setSearchError(null);
     setSeason(0);
     setEpisode(0);
+
+    // The last search for THIS show, if it was for the whole series rather than
+    // a season — which is what the two lines above have just reset to. A season
+    // list is keyed on its own number and is not what this arrival is asking
+    // for, so it correctly misses (T108).
+    //
+    // Only this effect reads the cache; `findReleases` never does, so a season
+    // button and "Search again" both always reach the network.
+    const held = recall(releaseKey('tv', id, 0, 0) ?? '');
+    setReleases(held?.result ?? null);
+    setRestored(held?.at ?? null);
 
     api
       .tmdbShow(id)
@@ -127,6 +143,7 @@ function Show() {
           details.imdb_id || undefined,
         ),
       );
+      setRestored(null);
     } catch (e) {
       setSearchError(e);
       setReleases(null);
@@ -260,6 +277,17 @@ function Show() {
           <span className="mono">{details.title}</span>. Season packs and single episodes both
           import.
         </Empty>
+      )}
+
+      {/* Same sentence as the film screen's, and for the same reason: a list
+          that appeared instantly where a 13-second wait used to be has to say
+          that it is the old one. Only ever the whole-series list — a season
+          search is keyed on its own number and is never restored on arrival. */}
+      {releases && restored !== null && (
+        <p className="small muted">
+          These are the releases from your last search for this show, {ago(restored)}. Press{' '}
+          <strong>Search again</strong> for fresh ones.
+        </p>
       )}
 
       <Releases
