@@ -16,6 +16,7 @@ import { Icon } from '@/components/icons';
 import { MediaSwitch } from '@/components/media-switch';
 import { FirstRun, isFirstRun } from '@/components/first-run';
 import { Billboard } from '@/components/billboard';
+import { Loading, SkeletonBillboard, SkeletonRails } from '@/components/skeleton';
 import { Rail } from '@/components/rail';
 
 /**
@@ -104,10 +105,18 @@ export default function Home() {
   const decided = (movies !== null || error !== null) && (settings !== null || settingsFailed);
 
   if (!decided) {
+    // The screen this almost always becomes is the one below, so its stand-in
+    // is that screen's shape — not a sentence that shoves everything down when
+    // the real page lands a beat later. The rare other outcome is FirstRun,
+    // and one brief skeleton before a setup page is a fair price for the
+    // common path never shifting.
     return (
       <>
-        <h1>curator</h1>
-        <p className="lede">Loading…</p>
+        <h1 className="visually-hidden">Discover</h1>
+        <Loading>
+          <SkeletonBillboard />
+          <SkeletonRails rails={2} />
+        </Loading>
       </>
     );
   }
@@ -138,6 +147,12 @@ export default function Home() {
 
       {billboard ? (
         <Billboard film={billboard} media={media} />
+      ) : rows === null && discoverError === null ? (
+        // The billboard's own shape while trending is in flight. The pitch
+        // below is for an install whose trending rail truly answered with
+        // nothing — drawing it for the loading beat instead meant the whole
+        // page shoved down when the billboard landed.
+        <SkeletonBillboard />
       ) : (
         <p className="lede" style={{ marginTop: 'var(--sp-8)' }}>
           Pick {tvOn ? 'a film or a show' : 'a film'}, and it downloads, hardlinks itself into the
@@ -203,7 +218,11 @@ export default function Home() {
           the library above it is still true and still worth seeing. */}
       {discoverError !== null && <Failure error={discoverError} />}
 
-      {!rows && discoverError === null && <p className="lede">Loading…</p>}
+      {!rows && discoverError === null && (
+        <Loading>
+          <SkeletonRails />
+        </Loading>
+      )}
 
       {/* The rail titles are the same for both media types where they mean the
           same thing — "Trending this week" is unambiguous because this screen

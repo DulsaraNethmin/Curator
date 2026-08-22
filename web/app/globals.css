@@ -579,6 +579,104 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   transition: width var(--dur-slow) var(--ease);
 }
 
+/* --- skeletons --------------------------------------------------------------
+
+   Placeholders sized to the content they become (components/skeleton.tsx).
+   The block is the shape; the ::after sweep is the "still working" signal, and
+   it is the one INFINITE animation this file is allowed — a loading indicator.
+   Decoration never loops. Under reduced motion the global rule above stops it
+   and the still block stands. */
+.skel {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-sunk);
+  border-radius: var(--r-sm);
+}
+.skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--text) 6%, transparent),
+    transparent
+  );
+  animation: shimmer 1.6s var(--ease) infinite;
+}
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+/* Bars are children of a shimmering block or stand in running prose; they get
+   the shape without a sweep of their own, so one screen is one sweep. */
+.skel-bar {
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: var(--r-xs);
+  height: .8em;
+}
+
+/* The billboard's stand-in carries the billboard's own geometry — same
+   break-out, same clamp — so the hero landing replaces it without a shift. */
+.skel-billboard {
+  margin-inline: calc(50% - 50vw);
+  width: 100vw;
+  max-width: 100vw;
+  margin-bottom: var(--sp-8);
+  min-height: clamp(21rem, 58vh, 30rem);
+  border-radius: 0;
+  display: flex;
+  align-items: flex-end;
+}
+.skel-billboard-inner {
+  padding: var(--sp-12) var(--sp-5) var(--sp-10);
+  width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
+}
+@media (min-width: 78.5rem) {
+  .skel-billboard-inner {
+    padding-inline: calc((100vw - 76rem) / 2 + var(--sp-5));
+    margin: 0;
+    max-width: none;
+  }
+}
+.skel-eyebrow { width: 7rem; height: var(--fs-2xs); margin-bottom: var(--sp-3); }
+.skel-headline { width: min(24rem, 70%); height: 2.4rem; margin-bottom: var(--sp-3); }
+.skel-meta { width: 9rem; height: var(--fs-xs); margin-bottom: var(--sp-3); }
+.skel-text { width: min(30rem, 90%); height: var(--fs-sm); margin-bottom: var(--sp-2); }
+.skel-text-short { width: min(18rem, 60%); height: var(--fs-sm); }
+
+/* A card's stand-in: the poster box is what fixes the row height, and the two
+   bars land where .movie's clamped title and meta line will. */
+.skel-card .skel-poster { aspect-ratio: 2 / 3; width: 100%; }
+.skel-card .skel-title { width: 80%; height: var(--fs-md); margin-top: var(--sp-3); }
+.skel-card .skel-meta { width: 55%; margin-top: var(--sp-2); margin-bottom: 0; }
+.skel-rail-title { width: 11rem; height: var(--fs-lg); margin-bottom: var(--sp-3); }
+
+/* The film screen's hero, panel and all, so the border does not pop in. */
+.skel-hero {
+  display: flex;
+  gap: var(--sp-6);
+  margin: var(--sp-6) 0 var(--sp-5);
+  padding: var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+}
+.skel-hero-poster { width: 11rem; flex: none; aspect-ratio: 2 / 3; }
+.skel-hero-text { flex: 1; min-width: 0; padding-top: var(--sp-2); }
+.skel-hero-text .skel-headline { margin-bottom: var(--sp-4); }
+@media (max-width: 40rem) {
+  .skel-hero { flex-direction: column; padding: var(--sp-4); }
+  .skel-hero-poster { width: 8rem; }
+}
+
+.skel-lines { margin: var(--sp-6) 0; }
+.skel-lines .skel-text { height: var(--fs-base); margin-bottom: var(--sp-3); }
+
 /* --- cards ---------------------------------------------------------------- */
 
 .cards { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }

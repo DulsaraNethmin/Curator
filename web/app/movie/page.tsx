@@ -16,6 +16,7 @@ import { Icon } from '@/components/icons';
 import { LibraryBadge } from '@/components/movie-card';
 import { Rating } from '@/components/rating';
 import { Releases } from '@/components/releases';
+import { Loading, SkeletonHero } from '@/components/skeleton';
 import { Player } from '@/components/player';
 
 /**
@@ -29,7 +30,13 @@ import { Player } from '@/components/player';
  */
 export default function MoviePage() {
   return (
-    <Suspense fallback={<p className="lede">Loading…</p>}>
+    <Suspense
+      fallback={
+        <Loading>
+          <SkeletonHero />
+        </Loading>
+      }
+    >
       <Movie />
     </Suspense>
   );
@@ -123,7 +130,13 @@ function Movie() {
     );
   }
 
-  if (!details) return <p className="lede">Loading…</p>;
+  if (!details) {
+    return (
+      <Loading>
+        <SkeletonHero />
+      </Loading>
+    );
+  }
 
   const backdrop = backdropURL(details.backdrop_path);
   const poster = posterURL(details.poster_path);

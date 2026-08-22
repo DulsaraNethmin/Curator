@@ -15,6 +15,7 @@ import { Empty, Failure, Working } from '@/components/states';
 import { LibraryBadge } from '@/components/movie-card';
 import { Rating } from '@/components/rating';
 import { Releases } from '@/components/releases';
+import { Loading, SkeletonHero } from '@/components/skeleton';
 
 /**
  * The show's page: /show/?id=95396.
@@ -39,7 +40,13 @@ import { Releases } from '@/components/releases';
  */
 export default function ShowPage() {
   return (
-    <Suspense fallback={<p className="lede">Loading…</p>}>
+    <Suspense
+      fallback={
+        <Loading>
+          <SkeletonHero />
+        </Loading>
+      }
+    >
       <Show />
     </Suspense>
   );
@@ -155,7 +162,13 @@ function Show() {
     );
   }
 
-  if (!details) return <p className="lede">Loading…</p>;
+  if (!details) {
+    return (
+      <Loading>
+        <SkeletonHero />
+      </Loading>
+    );
+  }
 
   const backdrop = backdropURL(details.backdrop_path);
   const poster = posterURL(details.poster_path);

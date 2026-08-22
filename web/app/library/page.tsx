@@ -13,6 +13,7 @@ import {
   type ScanResult,
 } from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
+import { Loading, SkeletonGrid } from '@/components/skeleton';
 import { MediaSwitch, mediaFromParams, useTelevision } from '@/components/media-switch';
 
 /**
@@ -32,7 +33,13 @@ import { MediaSwitch, mediaFromParams, useTelevision } from '@/components/media-
  */
 export default function LibraryPage() {
   return (
-    <Suspense fallback={<p className="lede">Loading…</p>}>
+    <Suspense
+      fallback={
+        <Loading>
+          <SkeletonGrid />
+        </Loading>
+      }
+    >
       <Library />
     </Suspense>
   );
@@ -278,6 +285,14 @@ function Library() {
           onCancel={() => setConfirming(null)}
           onConfirm={() => remove(confirming)}
         />
+      )}
+
+      {/* The grid's own shape while the list is fetched, so the screen does
+          not sit as a heading over blank space and then jump to posters. */}
+      {rows === null && error === null && (
+        <Loading>
+          <SkeletonGrid />
+        </Loading>
       )}
 
       {rows && shown.length === 0 && (

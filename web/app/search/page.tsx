@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { api, type MediaType, type MovieSummary, type SearchResult } from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
+import { Loading, SkeletonGrid, SkeletonLines } from '@/components/skeleton';
 import { MovieCard } from '@/components/movie-card';
 import { MediaSwitch, mediaFromParams, useTelevision } from '@/components/media-switch';
 import { Releases } from '@/components/releases';
@@ -29,7 +30,13 @@ import { Releases } from '@/components/releases';
  */
 export default function SearchPage() {
   return (
-    <Suspense fallback={<p className="lede">Loading…</p>}>
+    <Suspense
+      fallback={
+        <Loading>
+          <SkeletonLines />
+        </Loading>
+      }
+    >
       <Search />
     </Suspense>
   );
@@ -271,10 +278,18 @@ function Search() {
 
       {mode === 'films' ? (
         <>
-          {looking && <Working what="Asking TMDB" />}
+          {/* A grid of card shapes, not a Working banner: TMDB answers in
+              ~150 ms, so what this state needs is the layout holding still
+              rather than an explanation of why it is slow. The release mode
+              below keeps Working, because thirteen seconds does need one. */}
+          {looking && (
+            <Loading>
+              <SkeletonGrid />
+            </Loading>
+          )}
           {filmError !== null && <Failure error={filmError} onRetry={() => findFilms(query.trim())} />}
 
-          {films && films.length === 0 && (
+          {!looking && films && films.length === 0 && (
             <Empty>
               TMDB has nothing for <strong>{found}</strong>.{' '}
               {tv
@@ -283,7 +298,7 @@ function Search() {
             </Empty>
           )}
 
-          {films && films.length > 0 && (
+          {!looking && films && films.length > 0 && (
             <>
               <p className="small muted">
                 {films.length} {tv ? 'show' : 'film'}
