@@ -1869,3 +1869,16 @@ of T74's four `swarmState` cases nor the choked-versus-never-asked reading cover
 The lead worth chasing is in both dumps that ever printed per-peer lines: `peers active=2 seeders=2`
 and `pex: 2 conns` for the **one** seeder the test adds, with the two connections in different states
 (`i:e,v1:` against `i:U,e,v1:`). It was noticed at v0.4.0 and not pursued.
+
+### T105's load measurement, and a wasted occurrence
+
+`internal/engine` alone is **six seconds** — 6.030s, 5.865s, 5.828s, three consecutive
+`go test -race -count=1` in a worktree with no `.env` on 2026-08-22 — against **50.4s** for the same
+package inside a full `go test ./...`, and a 60s deadline. The stall is load-sensitive, like the
+other two flakes here, and that is why hammering the package alone has never reproduced it: T74's 20
+runs, `await-names-its-cause`'s 12, and these 3. Reproduce it under `./...` or not at all.
+
+The gate on `d1c3ae2` then failed once locally in the `-race` run and passed on re-run, and **which
+package failed was not captured** — the run was logged with `tail -6`, so only `FAIL` and
+`make: *** [race] Error 1` survive. Recorded as a lesson rather than as evidence: **capture the whole
+gate log.** A flake four sessions have chased was in hand and unreadable.
