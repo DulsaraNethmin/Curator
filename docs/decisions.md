@@ -2955,6 +2955,21 @@ manager ([D25](#d25--authentication-is-optional-and-off-by-default),
 EventSource, a logged-out visitor's home screen would be skeletons that never fill instead of a
 password box.
 
+That was **measured rather than reasoned about**, and it needed isolating, because loading the page
+logged out does not prove it: `<Gate>` also calls `/api/auth` on mount and that 401 lights the lock
+screen on its own. So — log in, let all twelve rails fill, rotate the password from outside the
+browser (which invalidates the cookie, since the session is signed with a key mixed from the
+credential), then press Shows. A media switch makes **exactly one request**, the stream, because the
+other effect on that screen runs once on mount. The screen went from twelve filled rails to the
+password box.
+
+```
+1. logged out         locked, 0 rails
+2. after login        12 rails, 12 filled, 0 skeletons
+3. password rotated   HTTP 200, from outside the browser
+4. press Shows        locked, 0 rails      <- the only request made was the stream
+```
+
 **It reconnects on its own.** A stream that ends normally is re-requested a few seconds later unless
 something remembers to close it, which turns a one-shot request into a poll nobody wrote.
 

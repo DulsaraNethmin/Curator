@@ -50,6 +50,20 @@ hOverflow                         0
 **Payload:** 112,395 bytes buffered against 113,119 streamed. The SSE framing costs **724 bytes,
 0.6%**, for 12 records.
 
+**The login gate, isolated.** `GET /api/tmdb/discover/stream` with no cookie and `auth_enabled` on
+answers `401` with `{"error":"authentication is required: …"}` — a status code, not an SSE error
+event, because every refusal happens before the stream opens. In the browser, proving the gate fires
+needs the `/api/auth` call ruled out, so: log in, rotate the password from outside the browser
+(the session is signed with a key mixed from the credential, so the cookie stops verifying), then
+press Shows — a media switch makes exactly one request.
+
+```
+1. logged out         locked, 0 rails
+2. after login        12 rails, 12 filled, 0 skeletons
+3. password rotated   HTTP 200
+4. press Shows        locked, 0 rails      <- the only request made was the stream
+```
+
 ### Read that table before repeating what this task was for
 
 T102 and T103 both recorded the outstanding work as *"a cold cache waits for the slowest rail"*, and
