@@ -330,6 +330,44 @@ func (s *Store) SetTMDBMetadata(ctx context.Context, id int64, match TMDBMatch) 
 	return nil
 }
 
+// SetTMDBArtwork records the overview and poster of a row whose identity is
+// already settled, and writes nothing else.
+//
+// **It is deliberately not SetTMDBMetadata, and the difference is COALESCE.**
+// That function sets `overview = ?` and `poster_path = ?` unconditionally,
+// which is right for its caller: the matching pass has just resolved a row from
+// nothing, so what TMDB said is the whole truth about it. This caller has
+// already been told the id by the row itself and is only filling gaps — so a
+// title TMDB has no overview for must not blank an overview the row already
+// carries. That is reachable: a hand-matched row (CorrectMatch) can hold an
+// overview and no poster, and it is on MoviesMissingArtwork's list precisely
+// because of the missing poster.
+//
+// It also does not rewrite the TMDB id. Reasserting a value read off the row a
+// moment ago is noise, and leaving both id columns alone means this write can
+// never trip their UNIQUE constraints.
+//
+// Every write here can only ever ADD. Passing nil for both is a no-op that
+// still reports ErrNotFound for a row that is not there.
+func (s *Store) SetTMDBArtwork(ctx context.Context, id int64, overview, posterPath *string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE movies
+		SET overview = COALESCE(?, overview), poster_path = COALESCE(?, poster_path)
+		WHERE id = ?`,
+		overview, posterPath, id)
+	if err != nil {
+		return fmt.Errorf("set tmdb artwork %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set tmdb artwork %d: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("set tmdb artwork %d: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // MatchMovie records a match a human chose, against a row that has none.
 // CorrectMatch is its counterpart for a row that already has one.
 //
@@ -561,6 +599,40 @@ func (s *Store) MoviesMissingMetadata(ctx context.Context, mediaType string) ([]
 		tmdbColumn(mediaType)), mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("list movies missing metadata: %w", err)
+	}
+	return movies, nil
+}
+
+// MoviesMissingArtwork returns the rows of one media type TMDB HAS matched and
+// that still have no poster.
+//
+// **It is not MoviesMissingMetadata widened, and the difference is not
+// tidiness.** That function means "TMDB could not match this row", and three
+// screens read it that way: the unmatched badge on the library card, the manual
+// matcher's work list, and the scan's own matched/unmatched counts. Widening its
+// predicate to include matched-but-artworkless rows would put a row that is
+// perfectly well matched onto a list that means the opposite, and hand it to
+// /search/movie to be re-guessed from its folder name.
+//
+// The rows this returns exist because UpsertWanted writes a TMDB id and nothing
+// else — it is called on dispatch, where the id is known and the poster is not —
+// and MoviesMissingMetadata's `IS NULL` excludes them by construction. Measured
+// on the Pi 2026-08-22: five of five rows carried an id and no artwork, which is
+// every row curator had ever written for itself.
+//
+// The media_type predicate is required for the same reason it is there: the
+// caller picks TMDB's /movie/{id} or /tv/{id} from it, and the two id spaces
+// overlap (D48).
+func (s *Store) MoviesMissingArtwork(ctx context.Context, mediaType string) ([]Movie, error) {
+	if !validMediaType(mediaType) {
+		return nil, fmt.Errorf("list movies missing artwork: %w", badMediaType(mediaType))
+	}
+	movies, err := s.queryMovies(ctx, fmt.Sprintf(
+		selectMovie+` WHERE media_type = ? AND %s IS NOT NULL AND poster_path IS NULL
+		              ORDER BY added_at DESC, id DESC`,
+		tmdbColumn(mediaType)), mediaType)
+	if err != nil {
+		return nil, fmt.Errorf("list movies missing artwork: %w", err)
 	}
 	return movies, nil
 }
