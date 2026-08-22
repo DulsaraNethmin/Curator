@@ -1003,7 +1003,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
     });
   } catch (cause) {
-    // A transport failure is curator itself being unreachable, which is a
+    // **An abort is not a transport failure.** The caller superseded this
+    // request on purpose, and dressing that up as "cannot reach curator" is the
+    // one thing a search-as-you-type must never do — every overtaken keystroke
+    // would paint an error banner over a screen that is working perfectly.
+    //
+    // Rethrown as-is rather than wrapped, so `err.name === 'AbortError'` still
+    // answers at the call site. That is the same check `discoverStream` already
+    // makes with `signal.aborted` (T104).
+    if (init?.signal?.aborted) throw cause;
+
+    // A real transport failure is curator itself being unreachable, which is a
     // different sentence from any status it could return.
     throw new ApiError(0, `cannot reach curator at ${base || 'this origin'}: ${cause}`);
   }
@@ -1274,11 +1284,19 @@ export const api = {
   // one, and the two would drift in the direction nobody was looking.
   discoverStream,
 
-  tmdbSearch: (query: string, year?: number, media?: MediaType) => {
+  /**
+   * `signal` is what makes a search-as-you-type honest. Without it a slow first
+   * answer overwrites a fast second one, and every superseded keystroke stays
+   * on the wire as a real TMDB call this server is proxying (T109). `request`
+   * spreads `init` before it forces credentials and headers, so this needs no
+   * second HTTP path — and it grew one guard for it, so an abort does not
+   * surface as "cannot reach curator".
+   */
+  tmdbSearch: (query: string, year?: number, media?: MediaType, signal?: AbortSignal) => {
     const params = new URLSearchParams({ query });
     if (year) params.set('year', String(year));
     if (media && media !== 'movie') params.set('media', media);
-    return request<TMDBSearchResult>(`/api/tmdb/search?${params}`);
+    return request<TMDBSearchResult>(`/api/tmdb/search?${params}`, { signal });
   },
 
   tmdbMovie: (id: number) => request<MovieDetails>(`/api/tmdb/movies/${id}`),

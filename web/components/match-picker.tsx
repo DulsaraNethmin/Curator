@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { api, ApiError, type MovieRow, type MovieSummary } from '@/lib/api';
 import { MovieCard } from '@/components/movie-card';
 import { Empty } from '@/components/states';
+import { useDebounced } from '@/lib/debounce';
 
 /**
  * MatchPicker points a library row at the right film — establishing a match on a
@@ -55,28 +56,56 @@ export function MatchPicker({
   // ambiguously. null means nothing is in flight.
   const [picking, setPicking] = useState<number | null>(null);
 
-  // The seeded search, once, on the terms the folder already carries.
-  useEffect(() => {
-    void find(movie.title, movie.year > 0 ? String(movie.year) : '');
-    // Seeding is a mount-time action and re-running it on every keystroke is
-    // exactly what the editable box exists to avoid.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  /**
+   * The search, seeded from the folder and re-run as either box is edited.
+   *
+   * The seeding used to be a mount-only effect with an exhaustive-deps
+   * suppression on it, because re-running on every keystroke was exactly what
+   * the editable boxes existed to avoid. With a debounce that reason is gone:
+   * `useDebounced` returns its FIRST value immediately, so the folder's own
+   * terms are still searched on mount, and edits cost one request after typing
+   * stops rather than one per character. The suppression went with it.
+   *
+   * Both boxes are in one debounced value because they are one question — a
+   * title and the year that disambiguates it — and debouncing them separately
+   * would fire twice for somebody who edits both.
+   */
+  const terms = useDebounced(`${query}\u0000${year}`);
 
-  async function find(q: string, y: string) {
+  useEffect(() => {
+    const [q, y] = terms.split('\u0000');
+    if (q.trim() === '') {
+      setResults(null);
+      setFailure(null);
+      return;
+    }
+    const abort = new AbortController();
+    void find(q, y, abort.signal);
+    return () => abort.abort();
+  }, [terms]);
+
+  async function find(q: string, y: string, signal?: AbortSignal) {
     const trimmed = q.trim();
     if (trimmed === '') return;
 
     setLooking(true);
     setFailure(null);
     try {
-      const answer = await api.tmdbSearch(trimmed, y === '' ? undefined : Number(y));
+      const answer = await api.tmdbSearch(
+        trimmed,
+        y === '' ? undefined : Number(y),
+        undefined,
+        signal,
+      );
       setResults(answer.results);
     } catch (cause) {
+      // Superseded, not failed — another search is already in flight, so this
+      // leaves the screen alone rather than painting an error over it.
+      if (signal?.aborted) return;
       setFailure(cause instanceof Error ? cause.message : String(cause));
       setResults(null);
     } finally {
-      setLooking(false);
+      if (!signal?.aborted) setLooking(false);
     }
   }
 
@@ -145,6 +174,9 @@ export function MatchPicker({
 
       <form
         className="matcher-search"
+        // Enter is a shortcut past the 300 ms wait, not the only way in. The
+        // debounced effect will settle on the same terms a moment later and
+        // find them already searched, so this does not double-fire.
         onSubmit={(event) => {
           event.preventDefault();
           void find(query, year);
