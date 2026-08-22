@@ -1731,7 +1731,8 @@ bug report.
 
 ### Still live going out
 
-- **The Pi has not seen any of this.** T102 is laptop-only; `compose.pi.yaml`'s pin has not moved.
+- ~~**The Pi has not seen any of this.**~~ **Corrected 2026-08-22:** T102 was laptop-only for a day;
+  0.6.0 put it on the box with T103 and T104. See *0.6.0 is on the Pi* at the end of this document.
 - **`internal/remux`'s `TestTheCapRefusesTheNextOneAndFreesItsSlot` flaked again**, on the first of
   three `make check` runs, and it is still unfiled. So did `internal/vpn`'s
   `TestLiveTheTunnelIsTornDownUnderADownload` on the second run — 222 s in isolation, four minutes of
@@ -1831,7 +1832,8 @@ screen has now happens before the first write.
 
 ### Still live going out
 
-- **The Pi has still seen none of T102, T103 or T104.** `compose.pi.yaml`'s pin has not moved.
+- ~~**The Pi has still seen none of T102, T103 or T104.**~~ **Corrected 2026-08-22:** the pin moved
+  to 0.6.0 and the box is running all three — see *0.6.0 is on the Pi* at the end of this document.
 - **`api.discover` is gone from the client and the route is not.** The buffered route is checked
   against the stream server-side, but nothing in the UI exercises it any more — so a change that
   broke only it would be caught by `TestTheStreamAndTheOneResponseAgreeRailForRail` and by nothing
@@ -1882,3 +1884,52 @@ The gate on `d1c3ae2` then failed once locally in the `-race` run and passed on 
 package failed was not captured** — the run was logged with `tail -6`, so only `FAIL` and
 `make: *** [race] Error 1` survive. Recorded as a lesson rather than as evidence: **capture the whole
 gate log.** A flake four sessions have chased was in hand and unreadable.
+
+## 0.6.0 is on the Pi
+
+Deployed 2026-08-22 with `make deploy-pi`, which is the first deploy this repository has run through
+[T101](tasks/T101-deploy-pi.md)'s script rather than by hand ([D53](decisions.md#d53--the-pi-deploy-is-a-script-run-from-a-laptop-not-a-github-workflow)).
+The pin moved on `deploy-0.6.0-to-the-pi`, as it should; the script read it and never wrote it.
+
+It carried **three tasks the box had never run** — T102's twelve rails, T103's motion and skeletons,
+and T104's streamed Discover — which is the deepest single jump the Pi has taken.
+
+```
+manifest   arm64 present for curator:0.6.0
+release    run for v0.6.0 is green
+currently  0.5.0 (ghcr.io/dulsaranethmin/curator:0.5.0)
+rollback   ghcr.io/dulsaranethmin/curator:0.5.0 is still on the box
+!          2 download(s) in flight
+serving    0.6.0 after 1s
+health     healthy after 32s
+```
+
+Still six containers, and **jellyfin was not touched** — `Up 2 days` before and after, which is D43's
+rule holding because the script only ever names `/opt/curator`'s two files.
+
+### The in-flight downloads resumed, and this is the first time that was checked
+
+D44 refused to let watchtower recreate a downloading curator on a timer, and the script counts what
+is in flight and says so rather than deciding. Two were, and both came back to **the same figure they
+left at**:
+
+```
+                          before      after (queued)   recovered
+Prison Break S01-S05      35.2%       0.0%             35.2%
+Dracula Untold (2014)     61.5%       0.0%             61.4%
+```
+
+The 0.0% in the middle column is worth knowing, because it is alarming and it is nothing: both rows
+reappear as `queued` at zero while the engine re-verifies pieces off disk, and the real figure comes
+back a minute or two later. Prison Break sat at `queued 0.0%` through six polls — about two minutes —
+before reporting 35.2%. **Do not roll back on the strength of that reading.**
+
+### What was verified on the box, not inferred
+
+- `/healthz` reports `0.6.0`; the UI answers 200 from the LAN in 7.8ms
+- `/api/tmdb/discover/stream` sends **1 `rails` + 12 `row` + 1 `done`**, with `content-type:
+  text/event-stream` and `x-accel-buffering: no`
+- `?media=tv` sends twelve rails under television's own genre ids — `genre_10759`, `genre_10765`,
+  `genre_80`, `genre_9648` — so D48's two vocabularies survived the trip
+- in a browser against `192.168.1.26:8090`, warm: twelve real headings, the billboard and the first
+  card all at **68ms**, all twelve rails filled by **99ms**, **CLS 0.00025**, no horizontal overflow
