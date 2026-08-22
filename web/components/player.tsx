@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api, type PlaybackURLs } from '@/lib/api';
 import { Failure } from '@/components/states';
+import { Icon } from '@/components/icons';
 
 /**
  * The player, and the fallback chain behind it.
@@ -149,7 +150,13 @@ export function Player({
           loading && <p className="small muted">Starting…</p>
         ) : (
           <button className="primary" onClick={start} disabled={loading}>
-            {loading ? 'Starting…' : '▶ Play'}
+            {loading ? (
+              'Starting…'
+            ) : (
+              <>
+                <Icon name="play" size="sm" /> Play
+              </>
+            )}
           </button>
         )}
         {error !== null && <Failure error={error} onRetry={start} />}

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { api, type Movie, type SettingsResult } from '@/lib/api';
 import { Failure } from '@/components/states';
 import { FirstRun } from '@/components/first-run';
+import { Loading, SkeletonLines } from '@/components/skeleton';
 
 /**
  * The first run at a permanent URL.
@@ -53,7 +54,9 @@ export default function Setup() {
     return (
       <>
         <h1>Set curator up</h1>
-        <p className="lede">Loading…</p>
+        <Loading>
+          <SkeletonLines lines={4} />
+        </Loading>
       </>
     );
   }

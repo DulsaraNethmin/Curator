@@ -12,9 +12,11 @@ import {
   type SettingsResult,
 } from '@/lib/api';
 import { Failure } from '@/components/states';
+import { Icon } from '@/components/icons';
 import { MediaSwitch } from '@/components/media-switch';
 import { FirstRun, isFirstRun } from '@/components/first-run';
 import { Billboard } from '@/components/billboard';
+import { Loading, SkeletonBillboard, SkeletonRails } from '@/components/skeleton';
 import { Rail } from '@/components/rail';
 
 /**
@@ -103,10 +105,18 @@ export default function Home() {
   const decided = (movies !== null || error !== null) && (settings !== null || settingsFailed);
 
   if (!decided) {
+    // The screen this almost always becomes is the one below, so its stand-in
+    // is that screen's shape — not a sentence that shoves everything down when
+    // the real page lands a beat later. The rare other outcome is FirstRun,
+    // and one brief skeleton before a setup page is a fair price for the
+    // common path never shifting.
     return (
       <>
-        <h1>curator</h1>
-        <p className="lede">Loading…</p>
+        <h1 className="visually-hidden">Discover</h1>
+        <Loading>
+          <SkeletonBillboard />
+          <SkeletonRails rails={2} />
+        </Loading>
       </>
     );
   }
@@ -122,11 +132,14 @@ export default function Home() {
     );
   }
 
-  // The billboard is the trending rail's first card. It is drawn only when that
+  // The billboard is the trending rail's top few cards, drawn only when that
   // rail actually answered — a failed trending rail is a banner further down,
   // and a blank hero above it would be the same failure said twice, in the
-  // largest element on the page.
-  const billboard = rows?.find((row) => row.id === 'trending' && row.ok)?.results[0];
+  // largest element on the page. The backdrop check mirrors the component's
+  // own contract (a billboard IS the image), so the pitch can be drawn when
+  // Billboard would render nothing.
+  const trending = rows?.find((row) => row.id === 'trending' && row.ok)?.results;
+  const billboard = trending?.some((film) => film.backdrop_path) ? trending : undefined;
 
   return (
     <>
@@ -136,7 +149,13 @@ export default function Home() {
       <h1 className="visually-hidden">Discover</h1>
 
       {billboard ? (
-        <Billboard film={billboard} media={media} />
+        <Billboard films={billboard} media={media} />
+      ) : rows === null && discoverError === null ? (
+        // The billboard's own shape while trending is in flight. The pitch
+        // below is for an install whose trending rail truly answered with
+        // nothing — drawing it for the loading beat instead meant the whole
+        // page shoved down when the billboard landed.
+        <SkeletonBillboard />
       ) : (
         <p className="lede" style={{ marginTop: 'var(--sp-8)' }}>
           Pick {tvOn ? 'a film or a show' : 'a film'}, and it downloads, hardlinks itself into the
@@ -166,7 +185,9 @@ export default function Home() {
           <span>unmatched by TMDB</span>
         </Link>
         <Link href="/search/" className="push">
-          <span>Search for a film →</span>
+          <span>
+            Search for a film <Icon name="arrow-right" size="sm" />
+          </span>
         </Link>
       </div>
 
@@ -200,15 +221,19 @@ export default function Home() {
           the library above it is still true and still worth seeing. */}
       {discoverError !== null && <Failure error={discoverError} />}
 
-      {!rows && discoverError === null && <p className="lede">Loading…</p>}
+      {!rows && discoverError === null && (
+        <Loading>
+          <SkeletonRails />
+        </Loading>
+      )}
 
       {/* The rail titles are the same for both media types where they mean the
           same thing — "Trending this week" is unambiguous because this screen
           shows one media type at a time, and a "Trending shows" heading would be
           the switch's job said twice. `media` is what makes each card open the
           right page. */}
-      {rows?.map((row) => (
-        <Rail key={row.id} row={row} media={media} />
+      {rows?.map((row, index) => (
+        <Rail key={row.id} row={row} media={media} index={index} />
       ))}
     </>
   );

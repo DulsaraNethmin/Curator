@@ -13,7 +13,9 @@ import {
   type ScanResult,
 } from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
+import { Loading, SkeletonGrid } from '@/components/skeleton';
 import { MediaSwitch, mediaFromParams, useTelevision } from '@/components/media-switch';
+import { Poster } from '@/components/movie-card';
 
 /**
  * The library, in one of two halves: /library/ and /library/?media=tv.
@@ -32,7 +34,13 @@ import { MediaSwitch, mediaFromParams, useTelevision } from '@/components/media-
  */
 export default function LibraryPage() {
   return (
-    <Suspense fallback={<p className="lede">Loading…</p>}>
+    <Suspense
+      fallback={
+        <Loading>
+          <SkeletonGrid />
+        </Loading>
+      }
+    >
       <Library />
     </Suspense>
   );
@@ -280,6 +288,14 @@ function Library() {
         />
       )}
 
+      {/* The grid's own shape while the list is fetched, so the screen does
+          not sit as a heading over blank space and then jump to posters. */}
+      {rows === null && error === null && (
+        <Loading>
+          <SkeletonGrid />
+        </Loading>
+      )}
+
       {rows && shown.length === 0 && (
         <Empty>
           {onlyUnmatched ? (
@@ -392,13 +408,9 @@ function Card({
   const body = (
     <>
       {/* A poster is the exception, not the rule: the unmatched rows have none,
-          so the fallback has to look deliberate rather than broken. Plain <img>
-          because a static export has no image optimiser. */}
-      {poster ? (
-        <img src={poster} alt="" loading="lazy" />
-      ) : (
-        <div className="noposter">{movie.title}</div>
-      )}
+          so the fallback has to look deliberate rather than broken. Poster is a
+          plain <img> underneath — a static export has no image optimiser. */}
+      <Poster src={poster} title={movie.title} />
 
       {/* title attribute because the CSS clamps to two lines: a longer name is
           ellipsised on screen but still readable on hover. */}

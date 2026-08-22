@@ -55,6 +55,14 @@ PAIRS = [
     ("accent", "bg", 3.0, "focus ring on the page"),
     ("accent", "panel", 3.0, "focus ring in a panel"),
     ("accent", "bg-sunk", 3.0, "focus ring on a well"),
+    # The rating ring's three bands (T103). Graphics, so 3:1 (WCAG 1.4.11).
+    # The high band is --accent and already checked above; these are the other
+    # two, on the two grounds a card's meta row actually sits on. The billboard
+    # overrides all three with dark literals and is an image, not checkable.
+    ("warn", "bg", 3.0, "rating ring, middling score"),
+    ("warn", "panel", 3.0, "rating ring in a panel"),
+    ("error", "bg", 3.0, "rating ring, low score"),
+    ("error", "panel", 3.0, "rating ring in a panel, low"),
 ]
 
 

@@ -12,8 +12,10 @@ import {
   type ShowDetails,
 } from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
-import { LibraryBadge } from '@/components/movie-card';
+import { LibraryBadge, Poster } from '@/components/movie-card';
+import { Rating } from '@/components/rating';
 import { Releases } from '@/components/releases';
+import { Loading, SkeletonHero } from '@/components/skeleton';
 
 /**
  * The show's page: /show/?id=95396.
@@ -38,7 +40,13 @@ import { Releases } from '@/components/releases';
  */
 export default function ShowPage() {
   return (
-    <Suspense fallback={<p className="lede">Loading…</p>}>
+    <Suspense
+      fallback={
+        <Loading>
+          <SkeletonHero />
+        </Loading>
+      }
+    >
       <Show />
     </Suspense>
   );
@@ -154,7 +162,13 @@ function Show() {
     );
   }
 
-  if (!details) return <p className="lede">Loading…</p>;
+  if (!details) {
+    return (
+      <Loading>
+        <SkeletonHero />
+      </Loading>
+    );
+  }
 
   const backdrop = backdropURL(details.backdrop_path);
   const poster = posterURL(details.poster_path);
@@ -166,11 +180,7 @@ function Show() {
     <>
       <div className="hero" style={backdrop ? { backgroundImage: `url(${backdrop})` } : undefined}>
         <div className="hero-scrim">
-          {poster ? (
-            <img className="hero-poster" src={poster} alt="" />
-          ) : (
-            <div className="hero-poster noposter">{details.title}</div>
-          )}
+          <Poster className="hero-poster" src={poster} title={details.title} />
 
           <div className="hero-text">
             <h1>
@@ -187,7 +197,7 @@ function Show() {
               )}
               {runtime && <span>{runtime} an episode</span>}
               {details.genres.length > 0 && <span>{details.genres.join(' · ')}</span>}
-              {details.vote_average > 0 && <span>★ {details.vote_average.toFixed(1)}</span>}
+              <Rating score={details.vote_average} size="md" />
               {details.library && <LibraryBadge library={details.library} />}
             </div>
 

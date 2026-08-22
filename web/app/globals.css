@@ -63,12 +63,29 @@
   --r-full: 999px;
   --radius: var(--r-md);
 
+  /* Icons are inline SVG from components/icons.tsx — no font, no package.
+     Three sizes so a glyph never invents its own. */
+  --icon-sm: .875rem;
+  --icon-md: 1.125rem;
+  --icon-lg: 1.5rem;
+
   /* Motion. One curve, two durations. --dur-slow belongs to the progress bar,
      where the width is data and a snappy tween reads as a jump. */
   --ease: cubic-bezier(.2, .7, .3, 1);
   --dur-fast: 110ms;
   --dur: 190ms;
   --dur-slow: 400ms;
+
+  /* Entrance motion (T103). Measured presets, not taste: the standard
+     entrance is 300–450ms on a back-out curve with a .06s stagger, the subtle
+     one 250–350ms on power1.out, and the scroll reveal triggers near the
+     fold. The overshoot curve is for posters and heroes ONLY — on dense
+     informational UI it reads as sloppy, so tables, panels and grids take
+     --ease-out. Never stagger more than .1s per item. */
+  --ease-out-back: cubic-bezier(.34, 1.56, .64, 1);
+  --ease-out: cubic-bezier(.25, .46, .45, .94);
+  --dur-enter: 380ms;
+  --dur-enter-subtle: 300ms;
 
   /* --- colour: light ------------------------------------------------------ */
   --bg: #f7f6f3;
@@ -200,6 +217,69 @@ a { color: inherit; }
   }
 }
 
+/* --- entrance motion ---------------------------------------------------------
+
+   Everything here is gated on prefers-reduced-motion: no-preference, and that
+   is the WHOLE mechanism for reduced motion — content then renders in its
+   final state immediately, because none of these rules exist to slow down.
+   Only opacity and transform, ever: nothing animates width, height or
+   position, so entrances cannot shift layout.
+
+   A card must NOT take an entrance of its own inside .rail — the strip is an
+   overflow container and a transform there is shaved off top and bottom, the
+   same trap the hover lift already documents. The rail-SECTION animates
+   instead, and it sits in normal flow. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(16px) scale(.92); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes rise-subtle {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Scroll reveal (components/reveal.ts). Hidden until the observer says the
+     element has reached the last tenth of the viewport, then the standard
+     entrance, with --enter-delay carrying the load-time stagger. `backwards`
+     keeps the from-state painted through the delay. */
+  [data-reveal] { opacity: 0; }
+  [data-reveal='shown'] {
+    opacity: 1;
+    animation: rise var(--dur-enter) var(--ease-out-back) backwards;
+    animation-delay: var(--enter-delay, 0ms);
+  }
+
+  /* The subtle entrance for surfaces that are information first: panels,
+     the counter strip, the log view, the facts table, both heroes. power1.out,
+     no overshoot — the back-out curve on informational UI reads as sloppy.
+     .billboard-text is keyed per slide, so the same rule doubles as the
+     rotation's text crossfade. */
+  .billboard, .billboard-text, .hero, .strip, .panel, .logs, .facts {
+    animation: rise-subtle var(--dur-enter-subtle) var(--ease-out) backwards;
+  }
+
+  /* Grid cards rise together with a short ramp. The stagger is .03s and the
+     ramp is CAPPED — from the ninth card on they move as one, because a
+     29-folder library taking a second to settle is sluggish, not cinematic. */
+  .grid > * { animation: rise-subtle var(--dur-enter-subtle) var(--ease-out) backwards; }
+  .grid > :nth-child(2) { animation-delay: 30ms; }
+  .grid > :nth-child(3) { animation-delay: 60ms; }
+  .grid > :nth-child(4) { animation-delay: 90ms; }
+  .grid > :nth-child(5) { animation-delay: 120ms; }
+  .grid > :nth-child(6) { animation-delay: 150ms; }
+  .grid > :nth-child(7) { animation-delay: 180ms; }
+  .grid > :nth-child(8) { animation-delay: 210ms; }
+  .grid > :nth-child(n + 9) { animation-delay: 240ms; }
+}
+
+/* A poster arrives as a fade, not a pop. data-loaded comes from the Poster
+   component, which also catches the already-cached case; the box it fades
+   into (aspect-ratio plus background) was always there, so nothing shifts.
+   Reduced motion collapses the transition via the global rule above. */
+img[data-loaded] { transition: opacity var(--dur-slow) var(--ease-out); }
+img[data-loaded='false'] { opacity: 0; }
+
 .shell { max-width: 76rem; margin: 0 auto; padding: 0 var(--sp-5) var(--sp-12); }
 
 /* --- nav ---------------------------------------------------------------- */
@@ -215,6 +295,17 @@ a { color: inherit; }
   position: sticky;
   top: 0;
   z-index: 10;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+/* At rest at the top the bar has no ground to earn: nothing is under it yet,
+   so it sits transparent on the page and picks up its panel, border and blur
+   the moment anything scrolls beneath (components/topbar.tsx, one passive
+   listener). The nav's own text is --muted on --bg here, a checked pair. */
+.topbar[data-scrolled='false'] {
+  background: transparent;
+  border-bottom-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .topbar-inner {
   max-width: 76rem;
@@ -451,6 +542,48 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 form.row { margin-bottom: var(--sp-4); }
 form.row input[name="title"] { flex: 1 1 20rem; }
 
+/* --- icons and the rating ring --------------------------------------------- */
+
+/* currentColor throughout, so an icon is the colour of the words beside it and
+   needs no rules of its own per site. The nudge keeps a 24-grid outline sitting
+   on the text baseline when it is inline rather than in a flex row. */
+.icon {
+  width: var(--icon-md);
+  height: var(--icon-md);
+  flex: none;
+  vertical-align: -0.2em;
+}
+.icon-sm { width: var(--icon-sm); height: var(--icon-sm); vertical-align: -0.125em; }
+.icon-lg { width: var(--icon-lg); height: var(--icon-lg); }
+
+/* The score as an arc plus the number — never the arc alone, which is what
+   lets the band colours be supplementary. Rotated so the arc opens from
+   12 o'clock. The three bands owe 3:1 as graphics (WCAG 1.4.11) on --bg and
+   --panel; they are in check-contrast.py's PAIRS, so re-run `make contrast`
+   before touching one. */
+.rating {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-variant-numeric: tabular-nums;
+}
+.rating svg { width: var(--icon-sm); height: var(--icon-sm); flex: none; transform: rotate(-90deg); }
+.rating-md svg { width: var(--icon-md); height: var(--icon-md); }
+.rating circle { fill: none; stroke-width: 3; }
+/* The track inherits the text colour beside it at low opacity, so it works on
+   the page, in a panel and on the billboard's photograph without a rule each. */
+.rating-track { stroke: currentColor; opacity: .25; }
+.rating-arc { stroke: var(--accent); stroke-linecap: round; }
+.rating[data-band='mid'] .rating-arc { stroke: var(--warn); }
+.rating[data-band='low'] .rating-arc { stroke: var(--error); }
+
+/* The billboard is dark in BOTH themes, so the light theme's dark greens and
+   browns vanish on it. These are the dark palette's literals on purpose — the
+   same reasoning as the scrim they sit on. */
+.billboard .rating-arc { stroke: #57cf9a; }
+.billboard .rating[data-band='mid'] .rating-arc { stroke: #e0ad4e; }
+.billboard .rating[data-band='low'] .rating-arc { stroke: #f0837a; }
+
 /* --- status --------------------------------------------------------------- */
 
 .badge {
@@ -530,6 +663,104 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   border-radius: var(--r-full);
   transition: width var(--dur-slow) var(--ease);
 }
+
+/* --- skeletons --------------------------------------------------------------
+
+   Placeholders sized to the content they become (components/skeleton.tsx).
+   The block is the shape; the ::after sweep is the "still working" signal, and
+   it is the one INFINITE animation this file is allowed — a loading indicator.
+   Decoration never loops. Under reduced motion the global rule above stops it
+   and the still block stands. */
+.skel {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-sunk);
+  border-radius: var(--r-sm);
+}
+.skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--text) 6%, transparent),
+    transparent
+  );
+  animation: shimmer 1.6s var(--ease) infinite;
+}
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+/* Bars are children of a shimmering block or stand in running prose; they get
+   the shape without a sweep of their own, so one screen is one sweep. */
+.skel-bar {
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border-radius: var(--r-xs);
+  height: .8em;
+}
+
+/* The billboard's stand-in carries the billboard's own geometry — same
+   break-out, same clamp — so the hero landing replaces it without a shift. */
+.skel-billboard {
+  margin-inline: calc(50% - 50vw);
+  width: 100vw;
+  max-width: 100vw;
+  margin-bottom: var(--sp-8);
+  min-height: clamp(21rem, 58vh, 30rem);
+  border-radius: 0;
+  display: flex;
+  align-items: flex-end;
+}
+.skel-billboard-inner {
+  padding: var(--sp-12) var(--sp-5) var(--sp-10);
+  width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
+}
+@media (min-width: 78.5rem) {
+  .skel-billboard-inner {
+    padding-inline: calc((100vw - 76rem) / 2 + var(--sp-5));
+    margin: 0;
+    max-width: none;
+  }
+}
+.skel-eyebrow { width: 7rem; height: var(--fs-2xs); margin-bottom: var(--sp-3); }
+.skel-headline { width: min(24rem, 70%); height: 2.4rem; margin-bottom: var(--sp-3); }
+.skel-meta { width: 9rem; height: var(--fs-xs); margin-bottom: var(--sp-3); }
+.skel-text { width: min(30rem, 90%); height: var(--fs-sm); margin-bottom: var(--sp-2); }
+.skel-text-short { width: min(18rem, 60%); height: var(--fs-sm); }
+
+/* A card's stand-in: the poster box is what fixes the row height, and the two
+   bars land where .movie's clamped title and meta line will. */
+.skel-card .skel-poster { aspect-ratio: 2 / 3; width: 100%; }
+.skel-card .skel-title { width: 80%; height: var(--fs-md); margin-top: var(--sp-3); }
+.skel-card .skel-meta { width: 55%; margin-top: var(--sp-2); margin-bottom: 0; }
+.skel-rail-title { width: 11rem; height: var(--fs-lg); margin-bottom: var(--sp-3); }
+
+/* The film screen's hero, panel and all, so the border does not pop in. */
+.skel-hero {
+  display: flex;
+  gap: var(--sp-6);
+  margin: var(--sp-6) 0 var(--sp-5);
+  padding: var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+}
+.skel-hero-poster { width: 11rem; flex: none; aspect-ratio: 2 / 3; }
+.skel-hero-text { flex: 1; min-width: 0; padding-top: var(--sp-2); }
+.skel-hero-text .skel-headline { margin-bottom: var(--sp-4); }
+@media (max-width: 40rem) {
+  .skel-hero { flex-direction: column; padding: var(--sp-4); }
+  .skel-hero-poster { width: 8rem; }
+}
+
+.skel-lines { margin: var(--sp-6) 0; }
+.skel-lines .skel-text { height: var(--fs-base); margin-bottom: var(--sp-3); }
 
 /* --- cards ---------------------------------------------------------------- */
 
@@ -628,6 +859,67 @@ html, body { overflow-x: clip; }
   background-size: cover;
   background-repeat: no-repeat;
 }
+
+/* The rotation's two layers: the previous slide sits still and the new one
+   fades in over it, keyed so the animation re-runs per slide. Opacity only.
+   Under reduced motion the fade collapses to a cut via the global rule, and
+   the JS never auto-advances at all. */
+.billboard-bg {
+  position: absolute;
+  inset: 0;
+  background-position: center 18%;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+.billboard-bg-top { animation: fade-in 700ms var(--ease-out) both; }
+
+/* The dots and the pause. Fixed light-on-dark literals like the eyebrow —
+   this surface does not flip. The pause control is what licenses the
+   rotation: an infinite animation without one is the kind this file bans. */
+.billboard-controls {
+  position: absolute;
+  right: var(--sp-5);
+  bottom: var(--sp-4);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.billboard-dot {
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, .35);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.billboard-dot:hover { background: rgba(255, 255, 255, .7); }
+.billboard-dot[data-active='true'] { background: #fff; transform: scale(1.2); }
+.billboard-pauseplay {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  margin-left: var(--sp-1);
+  border-radius: var(--r-full);
+  border: 1px solid rgba(255, 255, 255, .45);
+  background: rgba(6, 7, 8, .55);
+  color: #fff;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.billboard-pauseplay:hover:not(:disabled) {
+  background: rgba(6, 7, 8, .8);
+  border-color: rgba(255, 255, 255, .8);
+}
+/* The shared ring is the light theme's dark green here, invisible on a
+   photograph — the controls take the eyebrow's light green instead. */
+.billboard-controls button:focus-visible { outline-color: #8fe3ba; }
 
 /* The billboard dissolves into the page instead of ending at a line.
    It fades to --bg and therefore flips with the theme, which is the one part of
@@ -822,8 +1114,6 @@ html, body { overflow-x: clip; }
   padding: 0;
   display: grid;
   place-items: center;
-  font-size: 1.75rem;
-  line-height: 1;
   border: none;
   border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--panel) 82%, transparent);
@@ -848,6 +1138,64 @@ html, body { overflow-x: clip; }
    strip is already a drag. */
 @media (hover: none) {
   .rail-arrow { display: none; }
+}
+
+/* --- the hover preview ------------------------------------------------------
+
+   components/preview.tsx. A portal fixed on the body, never a child of the
+   card: a card lives in an overflow container and anything growing inside one
+   is shaved off. Hover-only and a pure duplicate of the card's link, which is
+   why (hover: none) removes it outright rather than adapting it. */
+.preview {
+  position: fixed;
+  z-index: 40;
+  display: block;
+  text-decoration: none;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-3);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .preview { animation: preview-in 200ms var(--ease-out-back) both; }
+}
+@keyframes preview-in {
+  from { opacity: 0; transform: scale(.9); }
+}
+.preview-backdrop {
+  aspect-ratio: 16 / 9;
+  background: var(--bg-sunk) center 25% / cover no-repeat;
+}
+.preview-body { padding: var(--sp-3) var(--sp-4) var(--sp-4); }
+.preview-title {
+  font-weight: 620;
+  font-size: var(--fs-base);
+  line-height: var(--lh-tight);
+  margin-bottom: var(--sp-1);
+}
+.preview-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.preview-overview {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@media (hover: none) {
+  .preview { display: none; }
 }
 
 /* --- library grid --------------------------------------------------------- */

@@ -1742,3 +1742,34 @@ bug report.
   this task was requested through a skill built on both and left it standing on a comment.
 - **Discover is one response**, so a cold cache waits for the slowest rail. Per-rail streaming would
   need SSE and was not built.
+
+## T103 — motion, skeletons, and an icon set of its own
+
+T102 gave the UI a token system and twelve rails; what it did not give it was arrival. Nothing
+moved — rails, cards and the billboard popped into place, ten screens said "Loading…" as a
+paragraph, and there was not one SVG in the application: ratings were the glyph ★, the rail arrows
+were ‹ and ›, and ▶ sat in front of Watch. T103 is that gap, closed under one constraint that
+shaped everything: **no new runtime dependency**. The motion presets' numbers transferred; the
+library that ships them did not. CSS animations plus an IntersectionObserver do the standard
+380ms back-out entrance with a capped stagger, and the reveal-on-scroll, in about forty lines.
+
+The order of payoff, from [the task file](tasks/T103-motion-and-a-modern-discover.md): skeletons
+sized to the content they become — the billboard's stand-in carries its exact clamp and break-out,
+so the trending rail's arrival stopped shoving the page down, which makes this the CLS fix and not
+just a nicer spinner; entrance motion, opacity and transform only, every hiding rule inside
+`prefers-reduced-motion: no-preference` so reduced motion means the final state immediately; seven
+outline paths drawn in-tree instead of an icon package, with the rating redrawn as a banded ring
+beside its number (four new contrast pairs, 54 now, all green); and the two streaming-service
+gestures — a billboard that rotates through trending's top five backdrops with dots, a pause
+control and a hold on hover, and a card preview that opens on a 350ms rest as a portal on the
+body, because anything that grows inside `.rail`'s overflow is shaved off.
+
+Two mechanisms earned their shape the hard way. The rotation is an interval stepping state
+functionally because a re-armed timeout dies the first time a hidden tab skips its tick; and the
+`Poster` fade's ref callback checks `complete` at attach because a cached image fires `load`
+before React listens — without it every warm reload holds its posters at opacity 0 for ever.
+
+View Transitions for the poster → detail morph was assessed and skipped on the handoff's own
+verify-first rule: experimental flag on a static export, and the detail page draws a skeleton
+until TMDB answers, so the morph would land on a placeholder. The reasoning is in the task file
+so nobody re-runs the experiment blind.

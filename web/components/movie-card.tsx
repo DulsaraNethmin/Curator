@@ -1,7 +1,52 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { posterURL, type LibraryState, type MediaType, type MovieSummary } from '@/lib/api';
+import { Rating } from '@/components/rating';
+import { useHoverPreview } from '@/components/preview';
+
+/**
+ * A poster that fades in when its bytes have actually decoded, instead of
+ * popping. data-loaded drives the CSS; the box it fades into (aspect-ratio
+ * plus background) is laid out regardless, so the fade never shifts anything.
+ *
+ * The ref callback is not decoration: a cached image can be `complete` before
+ * React attaches onLoad, and without the check such a poster would stay at
+ * opacity 0 for ever. `alt=""` because the title is always written next to
+ * the artwork — a screen reader should not hear it twice.
+ *
+ * No src renders the deliberate fallback instead, same as always.
+ */
+export function Poster({
+  src,
+  title,
+  className,
+}: {
+  src: string | null;
+  title: string;
+  className?: string;
+}) {
+  const [loaded, setLoaded] = useState(false);
+
+  if (!src) {
+    return <div className={className ? `${className} noposter` : 'noposter'}>{title}</div>;
+  }
+  return (
+    <img
+      className={className}
+      src={src}
+      alt=""
+      loading="lazy"
+      data-loaded={loaded}
+      ref={(el) => {
+        if (el?.complete && el.naturalWidth > 0) setLoaded(true);
+      }}
+      onLoad={() => setLoaded(true)}
+      onError={() => setLoaded(true)}
+    />
+  );
+}
 
 /**
  * MovieCard is one film — or one show — in a grid or a rail, and a link to its
@@ -37,16 +82,18 @@ export function MovieCard({
 }) {
   const poster = posterURL(film.poster_path);
 
+  // The hover preview (T103). Called for both variants because hooks must be,
+  // but only the link spreads its handlers: the matcher's button asks "which
+  // of these is the folder", and a preview opening over the next candidate
+  // would be noise in the middle of an answer.
+  const preview = useHoverPreview(film, media);
+
   const inside = (
     <>
       {/* A poster is usual here and absent in the library, which is the
           opposite of the Library screen's problem — but the fallback still has
           to look deliberate, because TMDB has films with no artwork. */}
-      {poster ? (
-        <img src={poster} alt="" loading="lazy" />
-      ) : (
-        <div className="noposter">{film.title}</div>
-      )}
+      <Poster src={poster} title={film.title} />
 
       {/* title attribute because the CSS clamps to two lines. */}
       <div className="title" title={film.title}>
@@ -57,7 +104,7 @@ export function MovieCard({
             first air date. Neither is a folder curator can write, and saying
             "no date" is the honest version of that. */}
         <span>{film.year || 'no date'}</span>
-        {film.vote_average > 0 && <span>★ {film.vote_average.toFixed(1)}</span>}
+        <Rating score={film.vote_average} />
         {film.library && <LibraryBadge library={film.library} />}
       </div>
     </>
@@ -72,12 +119,16 @@ export function MovieCard({
   }
 
   return (
-    <Link
-      className="movie"
-      href={media === 'tv' ? `/show/?id=${film.tmdb_id}` : `/movie/?id=${film.tmdb_id}`}
-    >
-      {inside}
-    </Link>
+    <>
+      <Link
+        className="movie"
+        href={media === 'tv' ? `/show/?id=${film.tmdb_id}` : `/movie/?id=${film.tmdb_id}`}
+        {...preview.bind}
+      >
+        {inside}
+      </Link>
+      {preview.node}
+    </>
   );
 }
 

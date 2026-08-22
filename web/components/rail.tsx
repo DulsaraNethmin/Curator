@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DiscoverRow, MediaType } from '@/lib/api';
 import { Empty } from '@/components/states';
+import { Icon } from '@/components/icons';
 import { MovieCard } from '@/components/movie-card';
+import { useReveal } from '@/components/reveal';
 
 /**
  * One rail, its scroll controls, and its own failure.
@@ -22,10 +24,31 @@ import { MovieCard } from '@/components/movie-card';
  * that only move pixels, and `aria-hidden` on a control that duplicates existing
  * keyboard access is the correct reading of it.
  */
-export function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
+export function Rail({
+  row,
+  media,
+  index = 0,
+}: {
+  row: DiscoverRow;
+  media: MediaType;
+  /** Position on the screen, for the load-time stagger only. */
+  index?: number;
+}) {
   const strip = useRef<HTMLDivElement>(null);
   const [atStart, setAtStart] = useState(true);
   const [atEnd, setAtEnd] = useState(true);
+
+  // The entrance: rails in the first viewport stagger in on load (.06s a
+  // step, capped — a twelfth rail must not owe 660ms to its position), and
+  // rails below the fold reveal when scrolled to. The SECTION animates, never
+  // a card inside the strip: .rail is an overflow container and a transform
+  // in there is shaved off, which is the trap .rail's padding documents.
+  const reveal = useReveal<HTMLElement>();
+  const enter = {
+    ref: reveal.ref,
+    'data-reveal': reveal.shown ? ('shown' as const) : ('' as const),
+    style: { '--enter-delay': `${Math.min(index, 5) * 60}ms` } as React.CSSProperties,
+  };
 
   // Which arrows are live. scrollWidth and clientWidth are both integers, and
   // sub-pixel layout means a fully-scrolled strip lands a fraction short of the
@@ -61,7 +84,7 @@ export function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
 
   if (!row.ok) {
     return (
-      <section className="rail-section">
+      <section className="rail-section" {...enter}>
         <h2>{row.title}</h2>
         <div className="banner warn">
           <strong>{row.title} could not be loaded</strong>
@@ -73,7 +96,7 @@ export function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
 
   if (row.results.length === 0) {
     return (
-      <section className="rail-section">
+      <section className="rail-section" {...enter}>
         <h2>{row.title}</h2>
         <Empty>TMDB returned nothing for {row.title.toLowerCase()}.</Empty>
       </section>
@@ -81,7 +104,7 @@ export function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
   }
 
   return (
-    <section className="rail-section">
+    <section className="rail-section" {...enter}>
       <h2>{row.title}</h2>
 
       {/* data-* rather than conditional classes so the two arrows and the two
@@ -94,7 +117,7 @@ export function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
           tabIndex={-1}
           onClick={() => page(-1)}
         >
-          ‹
+          <Icon name="chevron-left" size="lg" />
         </button>
 
         <div className="rail" ref={strip} onScroll={measure}>
@@ -112,7 +135,7 @@ export function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
           tabIndex={-1}
           onClick={() => page(1)}
         >
-          ›
+          <Icon name="chevron-right" size="lg" />
         </button>
       </div>
     </section>
