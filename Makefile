@@ -9,7 +9,7 @@ SHELL := /bin/bash
 ARM   := GOOS=linux GOARCH=arm64
 
 .DEFAULT_GOAL := help
-.PHONY: help status check build ui lists contrast go test race vet cross run restart ui-dev deploy-pi live live-tunnel live-rss clean
+.PHONY: help status check build ui lists units contrast go test race vet cross run restart ui-dev deploy-pi live live-tunnel live-rss clean
 
 help: ## the targets, and what they are for
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk -F':.*?## ' '{printf "  \033[1m%-12s\033[0m %s\n", $$1, $$2}'
@@ -19,7 +19,7 @@ status: ## where the build is, derived from the repo
 
 ## ---------------------------------------------------------------------------
 
-check: ui lists go vet race cross ## the per-commit gate: build, vet, test -race, cross-compile
+check: ui lists units go vet race cross ## the per-commit gate: build, vet, test -race, cross-compile
 	@echo "  ok — this commit stands on its own"
 
 build: ui go ## the UI export, then the binary that embeds it
@@ -34,6 +34,14 @@ ui: ## the Next.js static export into internal/web/dist
 # .ts modules directly, against captured answers in testdata/search/.
 lists: ## the release-list rules (TypeScript), against captured answers
 	node --experimental-strip-types web/scripts/check-lists.mjs
+
+# Beside `lists` rather than inside it, and the split is by subject: that one is
+# the ranked-list rules against captured answers, and every assertion in it reads
+# testdata/search/. These have no fixtures and take an injected clock instead, so
+# folding them in would give that target two modes and a name half true — and its
+# name is quoted in four records.
+units: ## the shared lib modules (TypeScript), against an injected clock
+	node --experimental-strip-types web/scripts/check-lib.mjs
 
 # Deliberately NOT in `check`. The gate already needs Go and node; python3 would
 # be a third language to install for a file that changes rarely. Run it when you
