@@ -52,6 +52,24 @@ function SkeletonCard() {
   );
 }
 
+/**
+ * One rail's strip of card shapes, under a heading the caller already drew.
+ *
+ * This is what a rail the stream has NAMED but not yet filled shows: the real
+ * title is known from the opening event, so only the cards are a placeholder.
+ * Same `.rail` class as the strip it becomes, so the geometry is identical and
+ * the posters fade in over boxes that were already the right size.
+ */
+export function SkeletonRailStrip({ cards = 7 }: { cards?: number }) {
+  return (
+    <div className="rail" aria-hidden="true">
+      {Array.from({ length: cards }, (_, card) => (
+        <SkeletonCard key={card} />
+      ))}
+    </div>
+  );
+}
+
 /** Rails the shape of <Rail> — heading bar, then a strip of card shapes. */
 export function SkeletonRails({ rails = 3, cards = 7 }: { rails?: number; cards?: number }) {
   return (
@@ -59,14 +77,31 @@ export function SkeletonRails({ rails = 3, cards = 7 }: { rails?: number; cards?
       {Array.from({ length: rails }, (_, rail) => (
         <section className="rail-section" key={rail}>
           <div className="skel skel-rail-title" />
-          <div className="rail">
-            {Array.from({ length: cards }, (_, card) => (
-              <SkeletonCard key={card} />
-            ))}
-          </div>
+          <SkeletonRailStrip cards={cards} />
         </section>
       ))}
     </>
+  );
+}
+
+/**
+ * The one thing that speaks while the rails fill in.
+ *
+ * A streamed screen cannot use `Loading`: its skeletons are inside twelve real
+ * sections now, and twelve polite live regions announcing "Loading…" is twelve
+ * announcements of one fact. So the sections stay silent and this says it once.
+ *
+ * It is mounted whether or not anything is pending, and only its TEXT changes. A
+ * live region added to the document with its message already in it may not be
+ * announced at all — the region has to exist first for the change to be a
+ * change — and the count is deliberately left out, because a number ticking from
+ * twelve to zero is eleven more announcements nobody asked for.
+ */
+export function LoadingRails({ pending }: { pending: boolean }) {
+  return (
+    <div role="status" aria-live="polite" className="visually-hidden">
+      {pending ? 'Loading…' : ''}
+    </div>
   );
 }
 

@@ -1773,3 +1773,74 @@ View Transitions for the poster → detail morph was assessed and skipped on the
 verify-first rule: experimental flag on a static export, and the detail page draws a skeleton
 until TMDB answers, so the morph would land on a placeholder. The reasoning is in the task file
 so nobody re-runs the experiment blind.
+
+## T104 — Discover streams, and the screen lays out before TMDB answers
+
+T102 and T103 both ended with the same open item: *"Discover is one response, so a cold cache waits
+for the slowest rail."* It is closed. `GET /api/tmdb/discover/stream` sends the home screen as
+`text/event-stream` — every rail named in draw order first, then one event per rail as it resolves,
+then `done` — and `web/app/page.tsx` reads it with fetch. The buffered route is untouched and still
+what `curl … | jq` gets. The reasoning is
+[D54](decisions.md#d54--discover-streams-and-the-browser-reads-it-with-fetch-rather-than-eventsource);
+the numbers are in [T104's file](tasks/T104-discover-streams.md).
+
+### The item was right and the diagnosis inside it was not
+
+The implied fix was that rails arriving separately would each arrive sooner. Measured against live
+TMDB, **twelve rails answer within about 160ms of each other** — they are twelve parallel requests to
+one host, and they finish together. Rail-at-a-time delivery is worth roughly 150ms of an 800ms wait.
+
+What is worth the other 800 is the **opening event**. The page had no idea of its own shape until the
+response landed, so it drew three generic skeleton rails and then reflowed into twelve; it now has
+twelve real headings at 18–37ms and only the cards are placeholders. In headless Chrome at
+1440×900, cold:
+
+```
+                                COLD              WARM        the one response, cold
+twelve real rail headings       18-37ms           15-17ms     nothing at all for 754ms
+first real card                 736-810ms         15-17ms     and 817ms, two runs
+the billboard                   860-899ms         15-17ms
+all twelve rails filled         895-971ms         30ms
+CLS 0.00025, hOverflow 0, both themes
+```
+
+The billboard gained what it was supposed to gain and it is smaller than the framing suggested:
+about 80ms on films, about 100ms on television, where the spread is wider. The place per-rail
+delivery genuinely pays is the **tail** — one rail hitting TMDB's ten-second timeout used to be ten
+seconds of blank home page for all twelve — and that is what
+`TestARailIsSentWhileASlowerOneIsStillInFlight` holds, over a real connection with no sleep in it.
+
+### T103's CLS win survived the thing most likely to undo it
+
+Rails that fill in place is exactly the change that could have reintroduced the shift T103 removed.
+It did not: **0.00025, one shift, in both themes**, because `SkeletonRailStrip` is the same `.rail`
+class with the same `grid-auto-columns` as the strip it becomes. Nothing moves when twenty posters
+replace seven grey boxes.
+
+### One fan-out, and the lockstep trap in a second language
+
+`handleDiscover` and the stream share `beginDiscover`, `eachRail` and `railRow`, so the rail table,
+the cache and the library merge exist once. `eachRail` hands its callback an **index** rather than
+letting it append, and the client holds one `DiscoverSlot[]` of `{id, title, row|null}` rather than a
+titles list beside a rows list — T102's two-slices bug is available in TypeScript on exactly the same
+terms, and rails arriving in TMDB's order rather than the screen's is precisely when it bites.
+
+The library read moved **before** the fan-out. A stream has written bytes by the time the last rail
+lands, so a store failure discovered there could not be a status code any more; every refusal this
+screen has now happens before the first write.
+
+### Still live going out
+
+- **The Pi has still seen none of T102, T103 or T104.** `compose.pi.yaml`'s pin has not moved.
+- **`api.discover` is gone from the client and the route is not.** The buffered route is checked
+  against the stream server-side, but nothing in the UI exercises it any more — so a change that
+  broke only it would be caught by `TestTheStreamAndTheOneResponseAgreeRailForRail` and by nothing
+  else.
+- **Nothing else in the UI streams**, and this is not an argument that it should. Activity, VPN, logs
+  and the player poll because the thing they watch keeps changing; Discover streams because one
+  answer arrives in twelve pieces.
+- **There is still no decision record refusing Tailwind and shadcn.** Unchanged since T102, and still
+  standing on three lines of a CSS comment. Nethmin has been asked and has not answered.
+- **The three flaky live tests are still unfiled** — `internal/remux`'s cap test, `internal/vpn`'s
+  teardown-under-download, and engine-over-tunnel. Not hit this task, because all four gates ran in a
+  worktree without `.env`.

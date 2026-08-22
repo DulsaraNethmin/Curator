@@ -2912,3 +2912,99 @@ trade is not made here.
 **Nothing is automatic.** D44 already refused unattended updating on a timer; this refuses it again
 by being a command somebody runs. `DRY_RUN=1` exists because the question "would this work" is most
 wanted exactly when the answer is expensive — mid-download, or in front of a release.
+
+---
+
+## D54 — Discover streams, and the browser reads it with fetch rather than EventSource
+
+**Status:** decided and **built** ([T104](tasks/T104-discover-streams.md)) · **Closes** the item
+[T102](tasks/T102-more-rails-and-a-visual-refresh.md) and
+[T103](tasks/T103-motion-and-a-modern-discover.md) both left open · **Does not disturb**
+[D41](#d41--a-dependencys-failure-has-two-readers-and-the-chain-belongs-to-the-second-one)'s
+failure envelope
+or T102's per-rail cache, both of which the stream reuses unchanged
+
+`GET /api/tmdb/discover/stream` sends the home screen as `text/event-stream`: one `rails` event
+naming every rail in draw order, one `row` event per rail as it resolves, one `done`. The buffered
+`GET /api/tmdb/discover` stays exactly as it was.
+
+### The reason it was worth doing is not the reason it was proposed
+
+The open item, in both task files, was *"a cold cache waits for the slowest rail"*. Measured against
+live TMDB, twelve rails answer within about **160ms of each other** — they are twelve parallel
+requests to one host — so rail-at-a-time delivery is worth roughly 150ms of an 800ms wait.
+
+The **opening event** is worth the other 800. The page used to learn its own shape only when the
+response landed, so it drew three generic skeleton rails and then reflowed into twelve. It now has
+twelve real headings at 18–37ms and only the cards are placeholders. Do not re-argue this from the
+premise the original note implied; the numbers are in the task file.
+
+Per-rail delivery still earns its place in the **tail**: one rail hitting TMDB's ten-second timeout
+used to be ten seconds of blank home page for all twelve.
+
+### fetch, not EventSource, and the reason is the login gate
+
+`EventSource` is the obvious client for SSE and it was refused on three counts, of which the first is
+decisive.
+
+**It cannot see an HTTP status.** A failed handshake surfaces as an anonymous `error` event with no
+code, so a 401 could not be told from a dropped connection. `web/lib/api.ts` routes every 401 through
+one `unauthorized?.()` hook — the whole of how `<Gate>` works, and why authentication needs no state
+manager ([D25](#d25--authentication-is-optional-and-off-by-default),
+[D28](#d28--settings-are-writable-secrets-are-encrypted-at-rest-and-write-only-across-the-api)). With
+EventSource, a logged-out visitor's home screen would be skeletons that never fill instead of a
+password box.
+
+That was **measured rather than reasoned about**, and it needed isolating, because loading the page
+logged out does not prove it: `<Gate>` also calls `/api/auth` on mount and that 401 lights the lock
+screen on its own. So — log in, let all twelve rails fill, rotate the password from outside the
+browser (which invalidates the cookie, since the session is signed with a key mixed from the
+credential), then press Shows. A media switch makes **exactly one request**, the stream, because the
+other effect on that screen runs once on mount. The screen went from twelve filled rails to the
+password box.
+
+```
+1. logged out         locked, 0 rails
+2. after login        12 rails, 12 filled, 0 skeletons
+3. password rotated   HTTP 200, from outside the browser
+4. press Shows        locked, 0 rails      <- the only request made was the stream
+```
+
+**It reconnects on its own.** A stream that ends normally is re-requested a few seconds later unless
+something remembers to close it, which turns a one-shot request into a poll nobody wrote.
+
+**It would be a second HTTP client in a file whose first line says it is the only place that calls
+fetch** — a second base URL rule and a second credentials rule, in the one file that exists so there
+is one of each.
+
+What EventSource would have bought is automatic reconnection, and this stream lives for under a
+second. Nothing was given up.
+
+### The wire format is still SSE, because of what is between curator and the browser
+
+Reading with fetch means the framing could have been anything — NDJSON is simpler to parse. It is
+`text/event-stream` because that media type is what reverse proxies recognise as "do not buffer",
+alongside `x-accel-buffering: no`, and curator is a `docker run` somebody is entirely likely to put
+nginx, Traefik or Caddy in front of. A proxy that buffered the body would hold every rail until the
+last one and turn this route silently back into the one it replaces. The framing costs 724 bytes on
+112 KB.
+
+### Two routes, not one negotiated on Accept
+
+`curl /api/tmdb/discover | jq` has to keep meaning what it means, and a route whose body shape turns
+over on a request header is one somebody debugs twice. The cost of two routes is drift, paid for by
+`TestTheStreamAndTheOneResponseAgreeRailForRail`, which asks both from identical fakes and compares
+every row as JSON.
+
+The UI, though, has **one** way onto this screen. `api.discover` was removed from the client when the
+stream replaced it: a second client path would be an untested one.
+
+### What this does not settle
+
+**The rails are still all fetched at once.** Nothing became lazy, and a rail below the fold is
+requested with the rest. That is deliberate — the alternative trades twelve parallel requests for
+twelve serial ones spread across a scroll — but it is a choice, not a law.
+
+**Nothing else in the UI streams.** Activity, the VPN screen, the logs and the player all still poll
+on a `setInterval`, and this decision is not an argument for converting them. Those poll because the
+thing they watch keeps changing; Discover streams because one answer arrives in twelve pieces.

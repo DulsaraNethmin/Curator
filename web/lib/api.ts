@@ -501,15 +501,27 @@ export type DiscoverRow = {
 };
 
 /**
- * The rails, and which catalogue they came from.
+ * DiscoverSlot is a rail's place on the screen, and what is in it yet.
+ *
+ * The stream names every rail before it has fetched any of them, so the page
+ * knows its own headings and its own shape immediately and fills them in as they
+ * land. A slot whose `row` is still null draws a skeleton under a real heading.
+ *
+ * **One array of these rather than a titles list beside a rows list**, which is
+ * the shape this wanted to be. Two slices indexed in lockstep is exactly the bug
+ * T102 found on the Go side: both stay the right length under a transposition,
+ * every count still passes, and the screen draws top-rated films under "Trending
+ * this week".
  *
  * The row ids and titles are the SAME for both media types — "Trending this
  * week" is unambiguous because the screen asks one media type at a time, and a
- * "Trending shows" title would be the switch's job said twice. `media` is what
- * the cards are linked by, and it is echoed rather than assumed for the same
- * reason `SearchResult.media` is.
+ * "Trending shows" title would be the switch's job said twice.
  */
-export type DiscoverResult = { media: MediaType | string; rows: DiscoverRow[] };
+export type DiscoverSlot = {
+  id: string;
+  title: string;
+  row: DiscoverRow | null;
+};
 
 export type LogEntry = {
   seq: number;
@@ -997,31 +1009,150 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const text = await response.text();
-  if (!response.ok) {
-    // Every handler answers {"error": "..."} — phase 1 established the shape and
-    // phases 2-4 kept it, so the message is worth showing verbatim.
-    let message = text || response.statusText;
-    let fields: Record<string, string> = {};
-    let parsed: Record<string, unknown> = {};
-    try {
-      const body = JSON.parse(text);
-      if (body && typeof body === 'object') parsed = body;
-      if (typeof body?.error === 'string') message = body.error;
-      if (body?.fields && typeof body.fields === 'object') fields = body.fields;
-    } catch {
-      // A non-JSON body means something in front of curator answered, not
-      // curator. Showing it raw is more useful than hiding it.
-    }
-
-    // The login endpoint is excluded deliberately: its 401 is "wrong password",
-    // which belongs under the password box on a form that is already showing.
-    // Routing it through the gate would reset the form somebody is typing in.
-    if (response.status === 401 && path !== authLoginPath) unauthorized?.();
-
-    throw new ApiError(response.status, message, fields, parsed);
-  }
+  if (!response.ok) throw refuse(path, response, text);
 
   return (text ? JSON.parse(text) : null) as T;
+}
+
+/**
+ * One refused response, read into the error the UI shows — and the one place
+ * that trips the login gate.
+ *
+ * Extracted from `request` when the discover stream needed a second caller.
+ * That gate is the whole reason the stream is read with fetch and not with
+ * EventSource (D54): EventSource does not expose an HTTP status at all, so a 401
+ * on the stream would surface as an anonymous `onerror`, the gate would never
+ * fire, and a logged-out visitor would get a home screen of skeletons that never
+ * fill instead of the password box.
+ */
+function refuse(path: string, response: Response, text: string): ApiError {
+  // Every handler answers {"error": "..."} — phase 1 established the shape and
+  // phases 2-4 kept it, so the message is worth showing verbatim.
+  let message = text || response.statusText;
+  let fields: Record<string, string> = {};
+  let parsed: Record<string, unknown> = {};
+  try {
+    const body = JSON.parse(text);
+    if (body && typeof body === 'object') parsed = body;
+    if (typeof body?.error === 'string') message = body.error;
+    if (body?.fields && typeof body.fields === 'object') fields = body.fields;
+  } catch {
+    // A non-JSON body means something in front of curator answered, not
+    // curator. Showing it raw is more useful than hiding it.
+  }
+
+  // The login endpoint is excluded deliberately: its 401 is "wrong password",
+  // which belongs under the password box on a form that is already showing.
+  // Routing it through the gate would reset the form somebody is typing in.
+  if (response.status === 401 && path !== authLoginPath) unauthorized?.();
+
+  return new ApiError(response.status, message, fields, parsed);
+}
+
+/**
+ * The discover rails, read a rail at a time off `text/event-stream`.
+ *
+ * `onRails` fires once with every rail's id and title, before any of them have
+ * answered; `onRow` fires once per rail as it lands, in whatever order TMDB
+ * answers. Measured cold against live TMDB: the names arrive at 3ms and the
+ * cards between 811ms and 968ms, where the buffered route showed nothing at all
+ * for 754ms. The names are most of the win — the page lays out once instead of
+ * reflowing from three generic skeletons into twelve real rails.
+ *
+ * **fetch and not EventSource**, for three reasons that are all about this being
+ * the same client as every other call (D54): the login gate above needs a status
+ * code EventSource does not expose; `base` and `credentials: 'include'` are the
+ * rules the rest of this file already follows; and EventSource RECONNECTS on
+ * its own, so a stream that ended normally would be re-requested every few
+ * seconds unless something remembered to close it.
+ *
+ * It resolves when the server says `done`. Anything else — a dropped
+ * connection, a proxy that gave up — throws, because a stream that stopped and a
+ * stream that finished are the same silence otherwise, and the screen would sit
+ * on skeletons that never fill with nothing to say why.
+ */
+async function discoverStream(
+  media: MediaType | undefined,
+  handlers: {
+    onRails: (media: string, slots: DiscoverSlot[]) => void;
+    onRow: (row: DiscoverRow) => void;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  const path = `/api/tmdb/discover/stream${media && media !== 'movie' ? `?media=${media}` : ''}`;
+
+  let response: Response;
+  try {
+    response = await fetch(base + path, {
+      credentials: 'include',
+      headers: { accept: 'text/event-stream' },
+      signal,
+    });
+  } catch (cause) {
+    // An abort is this screen's own doing — a media switch, or leaving the page
+    // — and is not a failure anybody should be shown.
+    if (signal?.aborted) return;
+    throw new ApiError(0, `cannot reach curator at ${base || 'this origin'}: ${cause}`);
+  }
+
+  // Every refusal this route has — 400, 503, 500 — happens before the stream
+  // opens, which is what keeps them status codes with a sentence in them.
+  if (!response.ok) throw refuse(path, response, await response.text());
+
+  let finished = false;
+  const record = (chunk: string) => {
+    let name = '';
+    let data = '';
+    for (const line of chunk.split('\n')) {
+      if (line.startsWith('event: ')) name = line.slice(7);
+      else if (line.startsWith('data: ')) data = line.slice(6);
+    }
+    if (!name || !data) return;
+    if (name === 'rails') {
+      const opening = JSON.parse(data) as { media: string; rails: { id: string; title: string }[] };
+      handlers.onRails(
+        opening.media,
+        opening.rails.map((rail) => ({ id: rail.id, title: rail.title, row: null })),
+      );
+    } else if (name === 'row') {
+      handlers.onRow(JSON.parse(data) as DiscoverRow);
+    } else if (name === 'done') {
+      finished = true;
+    }
+  };
+
+  if (!response.body) {
+    // No streaming reader: an old browser, or a test double. The same events are
+    // all in the body — they simply arrive together — so this parses rather than
+    // making a second request to a second route.
+    (await response.text()).split('\n\n').forEach(record);
+  } else {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        // A record ends at a blank line. Everything before the LAST blank line
+        // is complete; what follows it is a half-arrived record and waits for
+        // more bytes, which is the whole reason this cannot just parse each
+        // chunk — 112 KB of cards does not arrive in twelve tidy pieces.
+        const records = buffer.split('\n\n');
+        buffer = records.pop() ?? '';
+        records.forEach(record);
+      }
+    } catch (cause) {
+      if (signal?.aborted) return;
+      throw new ApiError(0, `curator stopped sending the rails: ${cause}`);
+    }
+    if (buffer.trim()) record(buffer);
+  }
+
+  if (!finished && !signal?.aborted) {
+    throw new ApiError(0, 'curator stopped sending the rails before it had sent them all');
+  }
 }
 
 const authLoginPath = '/api/auth/login';
@@ -1135,8 +1266,13 @@ export const api = {
   // LIBRARY_TV FIRST, because television being off is not something a key
   // changes and pointing somebody at TMDB_API_KEY would send them to fix the
   // wrong line.
-  discover: (media?: MediaType) =>
-    request<DiscoverResult>(`/api/tmdb/discover${media && media !== 'movie' ? `?media=${media}` : ''}`),
+  //
+  // The UI has ONE way onto this screen and it is the stream. GET
+  // /api/tmdb/discover still exists and still answers the same rows in one
+  // JSON body — it is what `curl … | jq` gets, and what the stream is pinned
+  // against server-side — but a second client path here would be an untested
+  // one, and the two would drift in the direction nobody was looking.
+  discoverStream,
 
   tmdbSearch: (query: string, year?: number, media?: MediaType) => {
     const params = new URLSearchParams({ query });

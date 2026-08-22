@@ -5,7 +5,7 @@ import Link from 'next/link';
 import {
   api,
   televisionOn,
-  type DiscoverRow,
+  type DiscoverSlot,
   type Download,
   type MediaType,
   type Movie,
@@ -16,7 +16,12 @@ import { Icon } from '@/components/icons';
 import { MediaSwitch } from '@/components/media-switch';
 import { FirstRun, isFirstRun } from '@/components/first-run';
 import { Billboard } from '@/components/billboard';
-import { Loading, SkeletonBillboard, SkeletonRails } from '@/components/skeleton';
+import {
+  Loading,
+  LoadingRails,
+  SkeletonBillboard,
+  SkeletonRails,
+} from '@/components/skeleton';
 import { Rail } from '@/components/rail';
 
 /**
@@ -38,7 +43,7 @@ export default function Home() {
   const [downloads, setDownloads] = useState<Download[] | null>(null);
   const [error, setError] = useState<unknown>(null);
 
-  const [rows, setRows] = useState<DiscoverRow[] | null>(null);
+  const [slots, setSlots] = useState<DiscoverSlot[] | null>(null);
   const [discoverError, setDiscoverError] = useState<unknown>(null);
   const [media, setMedia] = useState<MediaType>('movie');
 
@@ -70,21 +75,53 @@ export default function Home() {
     };
   }, []);
 
-  // The rails, on their own, because the switch re-runs them. Two more TMDB
-  // calls per press and no cache in front of them, which is what the strip
+  // The rails, on their own, because the switch re-runs them. Twelve more TMDB
+  // calls per press behind a fifteen-minute cache, which is what the strip
   // above deliberately does not pay: /api/movies is the library and answers
   // whether TMDB is reachable or not.
+  //
+  // The stream names every rail first and then fills them in, so `slots` goes
+  // from null to twelve titled placeholders in one step and each row lands
+  // where its id already sits. An AbortController and not a `cancelled` flag,
+  // because there is a live connection to close: a media switch with a flag
+  // would leave the old stream reading twelve rails nobody is going to draw.
   useEffect(() => {
-    let cancelled = false;
-    setRows(null);
+    const abort = new AbortController();
+    setSlots(null);
     setDiscoverError(null);
+
     api
-      .discover(media)
-      .then((d) => !cancelled && setRows(d.rows))
-      .catch((e) => !cancelled && setDiscoverError(e));
-    return () => {
-      cancelled = true;
-    };
+      .discoverStream(
+        media,
+        {
+          onRails: (_, opening) => setSlots(opening),
+          // Placed by id, never appended: rails arrive in the order TMDB
+          // answers, which is not the order they are drawn (T102).
+          onRow: (row) =>
+            setSlots(
+              (current) =>
+                current?.map((slot) => (slot.id === row.id ? { ...slot, row } : slot)) ?? current,
+            ),
+        },
+        abort.signal,
+      )
+      .catch((e) => {
+        if (abort.signal.aborted) return;
+        setDiscoverError(e);
+        // Whatever arrived stays; what did not is marked failed rather than
+        // left shimmering. A skeleton that never fills is the one state this
+        // screen must not have, because it is indistinguishable from a rail
+        // still in flight and there is nothing left to fill it.
+        setSlots((current) =>
+          current?.map((slot) =>
+            slot.row
+              ? slot
+              : { ...slot, row: { id: slot.id, title: slot.title, ok: false, results: [] } },
+          ) ?? current,
+        );
+      });
+
+    return () => abort.abort();
   }, [media]);
 
   // Television, read off the settings call this screen already makes rather
@@ -138,8 +175,17 @@ export default function Home() {
   // largest element on the page. The backdrop check mirrors the component's
   // own contract (a billboard IS the image), so the pitch can be drawn when
   // Billboard would render nothing.
-  const trending = rows?.find((row) => row.id === 'trending' && row.ok)?.results;
+  //
+  // **It waits on the trending rail and nothing else now, which is the whole
+  // point of the stream.** It used to wait on the response, so the largest
+  // element on the screen was held up by whichever of twelve rails TMDB
+  // answered last — documentaries, usually.
+  const trendingSlot = slots?.find((slot) => slot.id === 'trending');
+  const trendingRow = trendingSlot?.row ?? null;
+  const trending = trendingRow?.ok ? trendingRow.results : undefined;
   const billboard = trending?.some((film) => film.backdrop_path) ? trending : undefined;
+  const trendingPending = discoverError === null && trendingRow === null;
+  const pending = slots === null || slots.some((slot) => slot.row === null);
 
   return (
     <>
@@ -150,7 +196,7 @@ export default function Home() {
 
       {billboard ? (
         <Billboard films={billboard} media={media} />
-      ) : rows === null && discoverError === null ? (
+      ) : trendingPending ? (
         // The billboard's own shape while trending is in flight. The pitch
         // below is for an install whose trending rail truly answered with
         // nothing — drawing it for the loading beat instead meant the whole
@@ -221,19 +267,29 @@ export default function Home() {
           the library above it is still true and still worth seeing. */}
       {discoverError !== null && <Failure error={discoverError} />}
 
-      {!rows && discoverError === null && (
+      {/* The only beat with no rails at all: the moment before the stream's
+          opening event, which measured 3ms against a live server. Generic,
+          because nothing yet knows how many rails there are or what they are
+          called — and short enough that it is mostly a guard against a slow
+          connection rather than a screen anybody reads. */}
+      {slots === null && discoverError === null && (
         <Loading>
           <SkeletonRails />
         </Loading>
       )}
+
+      {/* One status for twelve rails. The sections below are silent: they are
+          skeletons inside real headings now, not a loading screen, and twelve
+          polite announcements of "Loading…" is one fact said twelve times. */}
+      <LoadingRails pending={pending} />
 
       {/* The rail titles are the same for both media types where they mean the
           same thing — "Trending this week" is unambiguous because this screen
           shows one media type at a time, and a "Trending shows" heading would be
           the switch's job said twice. `media` is what makes each card open the
           right page. */}
-      {rows?.map((row, index) => (
-        <Rail key={row.id} row={row} media={media} index={index} />
+      {slots?.map((slot, index) => (
+        <Rail key={slot.id} slot={slot} media={media} index={index} />
       ))}
     </>
   );

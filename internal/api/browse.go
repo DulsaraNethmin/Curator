@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -106,6 +107,11 @@ func (s *Server) WithJellyfin(m MediaServer, publicURL string) *Server {
 // film ends up rendered as a show.
 func (s *Server) RegisterBrowse(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tmdb/discover", s.handleDiscover)
+	// The same screen, sent a rail at a time. Two routes and not one content
+	// negotiated on Accept: a `curl /api/tmdb/discover | jq` has to keep meaning
+	// what it means, and a route whose whole body shape turns over on a request
+	// header is one somebody debugs twice.
+	mux.HandleFunc("GET /api/tmdb/discover/stream", s.handleDiscoverStream)
 	mux.HandleFunc("GET /api/tmdb/search", s.handleTMDBSearch)
 	mux.HandleFunc("GET /api/tmdb/movies/{id}", s.handleTMDBMovie)
 	mux.HandleFunc("GET /api/tmdb/shows/{id}", s.handleTMDBShow)
@@ -482,51 +488,41 @@ func (c *discoverCache) put(key string, matches []tmdb.Match) {
 	c.entries[key] = railEntry{matches: matches, at: c.clock()}
 }
 
-func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
+// discoverSet is everything a discover request needs before a single rail is
+// fetched: which catalogue was asked for, the rails to draw, and the library
+// snapshot their cards are badged against.
+//
+// It exists because there are two routes onto this screen — one response and one
+// stream — and every fact they disagree about would be a bug nobody could see
+// from either one alone. The rail table is built once, here, and both routes
+// walk it.
+type discoverSet struct {
+	media   string
+	rails   []discoverRail
+	library map[int64]store.LibraryState
+}
+
+// beginDiscover runs the gates both discover routes share and reads the library.
+// It answers the request itself and returns false when the screen cannot be
+// drawn at all.
+//
+// **The library read happens BEFORE the fan-out, and it has to.** A stream has
+// written its first bytes by the time the last rail lands, so a store failure
+// discovered then could not be a status code any more — it would be a 200 that
+// stopped halfway. Reading it first keeps the one thing here that is a hard 5xx
+// (D41's shape: the rails are soft failures, the database is not) able to answer
+// as one. The cost is a snapshot taken a second earlier than it used to be,
+// against a fifteen-minute rail cache; the badge it carries is still re-read on
+// every request, which is the guarantee T102 actually made.
+func (s *Server) beginDiscover(w http.ResponseWriter, r *http.Request) (discoverSet, bool) {
 	mediaType, ok := s.media(w, r)
 	if !ok {
-		return
+		return discoverSet{}, false
 	}
 	if s.browser == nil {
 		s.failTMDB(w, errTMDBUnconfigured)
-		return
+		return discoverSet{}, false
 	}
-
-	rails := s.discoverRails(mediaType)
-	rows := make([]discoverRow, len(rails))
-	for i, rail := range rails {
-		rows[i] = discoverRow{ID: rail.id, Title: rail.title}
-	}
-
-	// Concurrently, and at twelve rails it is the difference between a screen
-	// and a stall: these are twelve sequential ten-second timeouts otherwise,
-	// which is two minutes of home page. The fan-out is bounded by the table
-	// above and TMDB is one host at ~50 requests a second, so twelve in flight
-	// is not something to rate-limit against — and on a warm cache it is zero.
-	var (
-		wg      sync.WaitGroup
-		results = make([][]tmdb.Match, len(rails))
-		errs    = make([]error, len(rails))
-	)
-	for i := range rails {
-		// Keyed by media type as well as rail id: "genre_16" is Animation in
-		// both vocabularies and two entirely different pages, and one shared key
-		// would serve cartoons to whichever tab asked second.
-		key := mediaType + "/" + rails[i].id
-		if cached, ok := s.rails.get(key); ok {
-			results[i] = cached
-			continue
-		}
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			results[i], errs[i] = rails[i].fetch(r.Context())
-			if errs[i] == nil {
-				s.rails.put(key, results[i])
-			}
-		}(i)
-	}
-	wg.Wait()
 
 	// Scoped to the media type these cards are, because TMDB's two id
 	// sequences overlap: one map keyed on a bare number would badge Severance's
@@ -534,36 +530,205 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	library, err := s.store.LibraryByTMDBID(r.Context(), mediaType)
 	if err != nil {
 		s.fail(w, http.StatusInternalServerError, err)
+		return discoverSet{}, false
+	}
+
+	return discoverSet{media: mediaType, rails: s.discoverRails(mediaType), library: library}, true
+}
+
+// eachRail fetches every rail concurrently and calls emit once per rail, **in
+// the order the rails resolve** — which is not the order they are drawn in, and
+// is why emit is handed the index rather than left to append.
+//
+// That signature is T102's lesson restated for a second caller. Two slices
+// indexed in lockstep drew top-rated films under "Trending this week" and passed
+// every test, because both were still the right length; an emit that appended
+// would do the same thing here the first time a cached rail overtook a fetched
+// one, which is every request with a warm cache and one cold entry.
+//
+// emit is called from this goroutine and never concurrently, so a caller may
+// write to the response from inside it without a lock.
+func (s *Server) eachRail(ctx context.Context, set discoverSet, emit func(int, discoverRow)) {
+	type finished struct {
+		index int
+		row   discoverRow
+	}
+
+	// Buffered by the rail count, so a fetch never blocks on the writer. An
+	// unbuffered channel would hold a TMDB goroutine open behind a slow client
+	// for as long as it took that client to read, and there is one send per rail
+	// so this can never fill.
+	done := make(chan finished, len(set.rails))
+
+	// Concurrently, and at twelve rails it is the difference between a screen
+	// and a stall: these are twelve sequential ten-second timeouts otherwise,
+	// which is two minutes of home page. The fan-out is bounded by the table
+	// above and TMDB is one host at ~50 requests a second, so twelve in flight
+	// is not something to rate-limit against — and on a warm cache it is zero.
+	var wg sync.WaitGroup
+	for i := range set.rails {
+		rail := set.rails[i]
+		// Keyed by media type as well as rail id: "genre_16" is Animation in
+		// both vocabularies and two entirely different pages, and one shared key
+		// would serve cartoons to whichever tab asked second.
+		key := set.media + "/" + rail.id
+		if cached, ok := s.rails.get(key); ok {
+			done <- finished{i, s.railRow(set, rail, cached, nil)}
+			continue
+		}
+		wg.Add(1)
+		go func(i int, rail discoverRail, key string) {
+			defer wg.Done()
+			matches, err := rail.fetch(ctx)
+			if err == nil {
+				s.rails.put(key, matches)
+			}
+			done <- finished{i, s.railRow(set, rail, matches, err)}
+		}(i, rail, key)
+	}
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	for rail := range done {
+		emit(rail.index, rail.row)
+	}
+}
+
+// railRow turns one rail's answer into the row a screen draws.
+func (s *Server) railRow(set discoverSet, rail discoverRail, matches []tmdb.Match, err error) discoverRow {
+	row := discoverRow{ID: rail.id, Title: rail.title}
+	if err != nil {
+		// A failed rail is named, never hidden, and never fatal.
+		//
+		// The sentence is the same one failTMDB writes, because this is the
+		// same failure — it is only the envelope that differs, and a reader
+		// should not learn two vocabularies for one dependency. What was here
+		// before was `err.Error()` under a comment calling the chain "exactly
+		// what the operator needs", which is true and is the reason it now goes
+		// to the log instead of onto the home screen (D41).
+		//
+		// Logged here rather than through logCause: this envelope is 200, so a
+		// gate on the status would drop the one 5xx-shaped failure in the
+		// response. Warn rather than Error, because the page still draws and
+		// /api/logs is a screen where red means something is broken.
+		s.log.Warn("discover: a rail failed and is drawn empty", "row", row.ID, "err", err)
+		row.OK = false
+		row.Error = tmdbSentence(err)
+		row.Results = []movieCard{}
+		return row
+	}
+	row.OK = true
+	row.Results = toCards(matches, set.library)
+	return row
+}
+
+func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
+	set, ok := s.beginDiscover(w, r)
+	if !ok {
 		return
 	}
 
-	for i := range rows {
-		if errs[i] != nil {
-			// A failed rail is named, never hidden, and never fatal.
-			//
-			// The sentence is the same one failTMDB writes, because this is the
-			// same failure — it is only the envelope that differs, and a reader
-			// should not learn two vocabularies for one dependency. What was here
-			// before was `errs[i].Error()` under a comment calling the chain
-			// "exactly what the operator needs", which is true and is the reason
-			// it now goes to the log instead of onto the home screen (D41).
-			//
-			// Logged here rather than through logCause: this envelope is 200, so
-			// a gate on the status would drop the one 5xx-shaped failure in the
-			// response. Warn rather than Error, because the page still draws and
-			// /api/logs is a screen where red means something is broken.
-			s.log.Warn("discover: a rail failed and is drawn empty",
-				"row", rows[i].ID, "err", errs[i])
-			rows[i].OK = false
-			rows[i].Error = tmdbSentence(errs[i])
-			rows[i].Results = []movieCard{}
-			continue
-		}
-		rows[i].OK = true
-		rows[i].Results = toCards(results[i], library)
+	rows := make([]discoverRow, len(set.rails))
+	s.eachRail(r.Context(), set, func(i int, row discoverRow) { rows[i] = row })
+
+	s.respond(w, http.StatusOK, map[string]any{"media": set.media, "rows": rows})
+}
+
+// railSlot is a rail the stream has named but not yet filled.
+//
+// It is deliberately NOT a discoverRow with OK left false, which is what the
+// obvious version of this was. A row's `ok: false` already means "this rail
+// failed", and the screen draws that as a warning banner — so an opening event
+// made of empty rows would announce twelve broken rails and then repair them one
+// at a time. Two shapes, because they are two facts.
+type railSlot struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// handleDiscoverStream is handleDiscover's screen, sent a rail at a time.
+//
+// Same rails, same rows, same cache — the only difference is when the bytes
+// leave. It opens with every rail's id and title in the order they are drawn, so
+// the page can lay out its real headings and skeletons immediately, and then
+// sends one `row` event per rail as it resolves. The billboard is what this is
+// for: it needs only the trending rail and used to wait on the documentaries.
+//
+// The wire format is SSE, and the browser reads it with fetch rather than
+// EventSource — see D54. Nothing here depends on that choice except the framing.
+func (s *Server) handleDiscoverStream(w http.ResponseWriter, r *http.Request) {
+	set, ok := s.beginDiscover(w, r)
+	if !ok {
+		// Still a JSON status code, because nothing has been written yet. Every
+		// refusal this screen has — 400, 503, 500 — happens before the stream
+		// starts, which is what makes them expressible at all.
+		return
 	}
 
-	s.respond(w, http.StatusOK, map[string]any{"media": mediaType, "rows": rows})
+	w.Header().Set("content-type", "text/event-stream")
+	w.Header().Set("cache-control", "no-store")
+	// Reverse proxies buffer a response body by default, which would hold every
+	// rail until the last one and turn this route back into the one it exists to
+	// replace. nginx, Traefik and Caddy all honour this header, and curator is a
+	// `docker run` somebody is entirely likely to put one in front of.
+	w.Header().Set("x-accel-buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	slots := make([]railSlot, len(set.rails))
+	for i, rail := range set.rails {
+		slots[i] = railSlot{ID: rail.id, Title: rail.title}
+	}
+
+	// A write failure stops the sending and not the fetching: eachRail owns
+	// goroutines that must be allowed to finish and put their rails in the
+	// cache, so the callback goes quiet rather than returning early. The reader
+	// is gone, but the next reader gets a warm cache out of it.
+	err := sendEvent(w, "rails", map[string]any{"media": set.media, "rails": slots})
+	s.eachRail(r.Context(), set, func(_ int, row discoverRow) {
+		if err != nil {
+			return
+		}
+		err = sendEvent(w, "row", row)
+	})
+	if err != nil {
+		s.log.Debug("discover stream: the reader went away", "err", err)
+		return
+	}
+
+	// The end is stated rather than implied, because a stream that stopped and a
+	// stream that finished are the same silence otherwise. A truncated response
+	// would leave rails skeletal for ever with nothing to distinguish it from a
+	// rail still in flight, and the client would have no moment at which it was
+	// entitled to give up.
+	_ = sendEvent(w, "done", struct{}{})
+}
+
+// sendEvent writes one SSE record and pushes it at the client.
+//
+// It parses-and-emits only the subset curator speaks: one `event:` line, one
+// `data:` line, and the blank line that ends the record. One data line is always
+// enough because encoding/json escapes newlines inside strings and never emits a
+// bare one, so the payload cannot contain the character that would split it —
+// which is the whole reason this framing can be four lines instead of a parser.
+//
+// json.Marshal and not json.Encoder: the encoder appends a newline of its own,
+// which would land in the middle of a record.
+func sendEvent(w http.ResponseWriter, name string, body any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("discover stream: encode %s: %w", name, err)
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, payload); err != nil {
+		return fmt.Errorf("discover stream: write %s: %w", name, err)
+	}
+	// Without this the rails sit in Go's 4 KB write buffer and arrive together,
+	// which is the bug this route exists to fix, silently.
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		return fmt.Errorf("discover stream: flush %s: %w", name, err)
+	}
+	return nil
 }
 
 func (s *Server) handleTMDBSearch(w http.ResponseWriter, r *http.Request) {
