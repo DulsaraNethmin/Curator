@@ -153,6 +153,9 @@ round of requests instead of three. The clock is injectable so the expiry test d
 - **No theme toggle.** Dark mode is still `prefers-color-scheme` alone.
 - **No per-rail streaming.** Twelve rails are one response, so a cold cache waits for the slowest;
   the concurrent fan-out is what keeps that near one request rather than twelve.
+  **Done in [T104](T104-discover-streams.md), and the diagnosis in this bullet was wrong** — the
+  twelve rails answer within ~160ms of each other, so the wait was never the slowest rail. What was
+  worth 800ms was telling the page its own shape before any rail answered.
 - **No personalised ordering.** The genres are a fixed list. curator has no idea what anybody likes
   and inventing a ranking from nothing would be a lie told in a layout.
 - **The film-side `top_rated` and `now_playing` fixtures reuse `popular.json`.** The envelope is

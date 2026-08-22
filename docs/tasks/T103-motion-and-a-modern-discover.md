@@ -121,3 +121,6 @@ init — but it is there, and moving `LibraryBadge` out is the fix if a bundler 
   Cloudflare needs an explanation; the film mode's ~150ms TMDB call got the skeleton instead.
 - **Still outstanding from T102, untouched here:** per-rail streaming (SSE), the missing D-number
   for the no-Tailwind/no-shadcn ruling, and the Pi, which has seen none of this.
+  **Streaming is done in [T104](T104-discover-streams.md)** ([D54](../decisions.md#d54--discover-streams-and-the-browser-reads-it-with-fetch-rather-than-eventsource)),
+  and it kept this task's CLS win intact — 0.00025, measured, because a rail's skeleton strip and the
+  strip it becomes are the same `.rail` geometry. The other two are still open.
