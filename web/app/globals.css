@@ -76,6 +76,17 @@
   --dur: 190ms;
   --dur-slow: 400ms;
 
+  /* Entrance motion (T103). Measured presets, not taste: the standard
+     entrance is 300–450ms on a back-out curve with a .06s stagger, the subtle
+     one 250–350ms on power1.out, and the scroll reveal triggers near the
+     fold. The overshoot curve is for posters and heroes ONLY — on dense
+     informational UI it reads as sloppy, so tables, panels and grids take
+     --ease-out. Never stagger more than .1s per item. */
+  --ease-out-back: cubic-bezier(.34, 1.56, .64, 1);
+  --ease-out: cubic-bezier(.25, .46, .45, .94);
+  --dur-enter: 380ms;
+  --dur-enter-subtle: 300ms;
+
   /* --- colour: light ------------------------------------------------------ */
   --bg: #f7f6f3;
   --bg-sunk: #eeece6;
@@ -206,6 +217,67 @@ a { color: inherit; }
   }
 }
 
+/* --- entrance motion ---------------------------------------------------------
+
+   Everything here is gated on prefers-reduced-motion: no-preference, and that
+   is the WHOLE mechanism for reduced motion — content then renders in its
+   final state immediately, because none of these rules exist to slow down.
+   Only opacity and transform, ever: nothing animates width, height or
+   position, so entrances cannot shift layout.
+
+   A card must NOT take an entrance of its own inside .rail — the strip is an
+   overflow container and a transform there is shaved off top and bottom, the
+   same trap the hover lift already documents. The rail-SECTION animates
+   instead, and it sits in normal flow. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(16px) scale(.92); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes rise-subtle {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Scroll reveal (components/reveal.ts). Hidden until the observer says the
+     element has reached the last tenth of the viewport, then the standard
+     entrance, with --enter-delay carrying the load-time stagger. `backwards`
+     keeps the from-state painted through the delay. */
+  [data-reveal] { opacity: 0; }
+  [data-reveal='shown'] {
+    opacity: 1;
+    animation: rise var(--dur-enter) var(--ease-out-back) backwards;
+    animation-delay: var(--enter-delay, 0ms);
+  }
+
+  /* The subtle entrance for surfaces that are information first: panels,
+     the counter strip, the log view, the facts table, both heroes. power1.out,
+     no overshoot — the back-out curve on informational UI reads as sloppy. */
+  .billboard, .hero, .strip, .panel, .logs, .facts {
+    animation: rise-subtle var(--dur-enter-subtle) var(--ease-out) backwards;
+  }
+
+  /* Grid cards rise together with a short ramp. The stagger is .03s and the
+     ramp is CAPPED — from the ninth card on they move as one, because a
+     29-folder library taking a second to settle is sluggish, not cinematic. */
+  .grid > * { animation: rise-subtle var(--dur-enter-subtle) var(--ease-out) backwards; }
+  .grid > :nth-child(2) { animation-delay: 30ms; }
+  .grid > :nth-child(3) { animation-delay: 60ms; }
+  .grid > :nth-child(4) { animation-delay: 90ms; }
+  .grid > :nth-child(5) { animation-delay: 120ms; }
+  .grid > :nth-child(6) { animation-delay: 150ms; }
+  .grid > :nth-child(7) { animation-delay: 180ms; }
+  .grid > :nth-child(8) { animation-delay: 210ms; }
+  .grid > :nth-child(n + 9) { animation-delay: 240ms; }
+}
+
+/* A poster arrives as a fade, not a pop. data-loaded comes from the Poster
+   component, which also catches the already-cached case; the box it fades
+   into (aspect-ratio plus background) was always there, so nothing shifts.
+   Reduced motion collapses the transition via the global rule above. */
+img[data-loaded] { transition: opacity var(--dur-slow) var(--ease-out); }
+img[data-loaded='false'] { opacity: 0; }
+
 .shell { max-width: 76rem; margin: 0 auto; padding: 0 var(--sp-5) var(--sp-12); }
 
 /* --- nav ---------------------------------------------------------------- */
@@ -221,6 +293,17 @@ a { color: inherit; }
   position: sticky;
   top: 0;
   z-index: 10;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+/* At rest at the top the bar has no ground to earn: nothing is under it yet,
+   so it sits transparent on the page and picks up its panel, border and blur
+   the moment anything scrolls beneath (components/topbar.tsx, one passive
+   listener). The nav's own text is --muted on --bg here, a checked pair. */
+.topbar[data-scrolled='false'] {
+  background: transparent;
+  border-bottom-color: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .topbar-inner {
   max-width: 76rem;

@@ -229,8 +229,8 @@ export default function Home() {
           shows one media type at a time, and a "Trending shows" heading would be
           the switch's job said twice. `media` is what makes each card open the
           right page. */}
-      {rows?.map((row) => (
-        <Rail key={row.id} row={row} media={media} />
+      {rows?.map((row, index) => (
+        <Rail key={row.id} row={row} media={media} index={index} />
       ))}
     </>
   );

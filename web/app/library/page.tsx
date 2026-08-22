@@ -15,6 +15,7 @@ import {
 import { Empty, Failure, Working } from '@/components/states';
 import { Loading, SkeletonGrid } from '@/components/skeleton';
 import { MediaSwitch, mediaFromParams, useTelevision } from '@/components/media-switch';
+import { Poster } from '@/components/movie-card';
 
 /**
  * The library, in one of two halves: /library/ and /library/?media=tv.
@@ -407,13 +408,9 @@ function Card({
   const body = (
     <>
       {/* A poster is the exception, not the rule: the unmatched rows have none,
-          so the fallback has to look deliberate rather than broken. Plain <img>
-          because a static export has no image optimiser. */}
-      {poster ? (
-        <img src={poster} alt="" loading="lazy" />
-      ) : (
-        <div className="noposter">{movie.title}</div>
-      )}
+          so the fallback has to look deliberate rather than broken. Poster is a
+          plain <img> underneath — a static export has no image optimiser. */}
+      <Poster src={poster} title={movie.title} />
 
       {/* title attribute because the CSS clamps to two lines: a longer name is
           ellipsised on screen but still readable on hover. */}

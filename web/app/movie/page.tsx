@@ -13,7 +13,7 @@ import {
 } from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
 import { Icon } from '@/components/icons';
-import { LibraryBadge } from '@/components/movie-card';
+import { LibraryBadge, Poster } from '@/components/movie-card';
 import { Rating } from '@/components/rating';
 import { Releases } from '@/components/releases';
 import { Loading, SkeletonHero } from '@/components/skeleton';
@@ -153,11 +153,7 @@ function Movie() {
     <>
       <div className="hero" style={backdrop ? { backgroundImage: `url(${backdrop})` } : undefined}>
         <div className="hero-scrim">
-          {poster ? (
-            <img className="hero-poster" src={poster} alt="" />
-          ) : (
-            <div className="hero-poster noposter">{details.title}</div>
-          )}
+          <Poster className="hero-poster" src={poster} title={details.title} />
 
           <div className="hero-text">
             <h1>

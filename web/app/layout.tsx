@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Nav } from '@/components/nav';
+import { Topbar } from '@/components/topbar';
 import { Gate } from '@/components/gate';
 import './globals.css';
 
@@ -15,14 +15,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <header className="topbar">
-          <div className="topbar-inner">
-            <a className="brand" href="/">
-              curator<span>one binary</span>
-            </a>
-            <Nav />
-          </div>
-        </header>
+        {/* A client component so this layout is not one: it owns the
+            scrolled/at-rest state and nothing else moved. */}
+        <Topbar />
         {/* Gate stands between the shell and the page, not in front of the
             whole document: the nav stays drawn while curator is locked, so the
             URL a deep link asked for is still the URL in the bar when the
