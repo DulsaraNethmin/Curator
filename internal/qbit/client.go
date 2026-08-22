@@ -1,11 +1,20 @@
 // Package qbit is a client for qBittorrent's Web API v2 — the one on the Pi is
 // 5.1.2, sharing gluetun's network namespace at http://gluetun:8080.
 //
-// It can log in, add a magnet, read torrents back, and delete a torrent that is
-// in a category it was told to require. It deliberately cannot pause, resume or
-// reprioritise anything: the *arr stack shares this qBittorrent until phase 6
-// (docs/phase-3.md), and a method that does not exist cannot be called by
-// mistake at three in the morning.
+// It can log in, add a magnet, read torrents back, delete a torrent that is in
+// a category it was told to require, and stop or start one.
+//
+// **Stop and start were deliberately absent for four phases**, and the reason
+// is recorded rather than quietly dropped: the \*arr stack shared this
+// qBittorrent until the cutover (docs/phase-3.md), and a method that does not
+// exist cannot be called by mistake at three in the morning. T54 removed that
+// stack from the Pi on 2026-08-18, so the constraint expired and T107 added the
+// two calls the Activity screen needs. What replaced it is the guard that was
+// always the real protection: every mutating call checks the torrent's category
+// first and refuses one that is not curator's (docs/decisions.md D55).
+//
+// It still cannot reprioritise, relocate, or edit trackers. The narrowest
+// surface that does the job is still the rule.
 //
 // Delete was added for D19 and is the one destructive call here, so it carries
 // its own guard rather than trusting its caller: it looks the torrent up first
