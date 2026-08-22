@@ -1,11 +1,20 @@
 // Package qbit is a client for qBittorrent's Web API v2 — the one on the Pi is
 // 5.1.2, sharing gluetun's network namespace at http://gluetun:8080.
 //
-// It can log in, add a magnet, read torrents back, and delete a torrent that is
-// in a category it was told to require. It deliberately cannot pause, resume or
-// reprioritise anything: the *arr stack shares this qBittorrent until phase 6
-// (docs/phase-3.md), and a method that does not exist cannot be called by
-// mistake at three in the morning.
+// It can log in, add a magnet, read torrents back, delete a torrent that is in
+// a category it was told to require, and stop or start one.
+//
+// **Stop and start were deliberately absent for four phases**, and the reason
+// is recorded rather than quietly dropped: the \*arr stack shared this
+// qBittorrent until the cutover (docs/phase-3.md), and a method that does not
+// exist cannot be called by mistake at three in the morning. T54 removed that
+// stack from the Pi on 2026-08-18, so the constraint expired and T107 added the
+// two calls the Activity screen needs. What replaced it is the guard that was
+// always the real protection: every mutating call checks the torrent's category
+// first and refuses one that is not curator's (docs/decisions.md D55).
+//
+// It still cannot reprioritise, relocate, or edit trackers. The narrowest
+// surface that does the job is still the rule.
 //
 // Delete was added for D19 and is the one destructive call here, so it carries
 // its own guard rather than trusting its caller: it looks the torrent up first
@@ -103,8 +112,13 @@ var ErrAuth = errors.New("qbittorrent refused the credentials")
 //
 // Only what curator reads is decoded; qBittorrent sends around forty more
 // fields. `size` and `save_path` used to be decoded here and were read by
-// nothing for three phases, so they are gone — a field nobody reads is a field
-// that can be wrong indefinitely without anyone noticing.
+// nothing for three phases, so they were removed — a field nobody reads is a
+// field that can be wrong indefinitely without anyone noticing.
+//
+// `size` came back in T107 because it acquired exactly one reader: the Activity
+// screen's "3.2 GB of 8.1 GB, 12 minutes left". `save_path` did not, and should
+// not until something reads it. `eta` is on the wire too and is deliberately
+// still ignored — see DownloadRate below.
 type info struct {
 	// Hash is lower-case hex, normalised by wireHash on the way in.
 	Hash string `json:"hash"`
@@ -132,6 +146,19 @@ type info struct {
 	// Category is what scopes a torrent to us: everything curator adds is in
 	// `curator`, and the *arr stack's torrents are in `radarr` and `sonarr`.
 	Category string `json:"category"`
+
+	// DownloadRate is qBittorrent's `dlspeed`, in bytes per second.
+	//
+	// **`eta` sits beside it on the wire and is deliberately not decoded.**
+	// libtorrent's smoothed estimate next to a rate the embedded engine computes
+	// from byte deltas gives two different answers to "minutes left" depending
+	// on which backend is running, and one screen showing two definitions is
+	// worse than one definition being slightly cruder. The arithmetic lives in
+	// internal/download, above both backends (docs/decisions.md D56).
+	DownloadRate int64 `json:"dlspeed"`
+
+	// SizeBytes is `size`: the payload's total length in bytes.
+	SizeBytes int64 `json:"size"`
 }
 
 // DefaultDownloadsPath is the downloads root inside qBittorrent's own
@@ -183,6 +210,13 @@ func (c *Client) neutral(i info) (torrent.Torrent, error) {
 		// two can never disagree: whatever `stalledDL` is spelled as, the
 		// sentence appears exactly when this package answered `stalled`.
 		Reason: stalledReason(state),
+
+		// Straight through. qBittorrent samples the rate itself, so unlike the
+		// embedded engine there is nothing to compute here — which is also why
+		// the two backends cannot share a rate implementation and only share
+		// what the rate MEANS.
+		DownloadRate: i.DownloadRate,
+		SizeBytes:    i.SizeBytes,
 	}, nil
 }
 

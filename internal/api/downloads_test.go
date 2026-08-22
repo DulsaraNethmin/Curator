@@ -38,6 +38,16 @@ type fakeDispatcher struct {
 	deleteErr error
 	deletedID int64
 	deletes   int
+
+	// T107. `live` is positional against `list` so a test can give one row a
+	// rate without inventing a keying scheme the real join does not have.
+	live         []download.Active
+	paused       store.Download
+	pauseErr     error
+	resumeErr    error
+	pauses       int
+	resumes      int
+	gotPauseHash string
 }
 
 func (f *fakeDispatcher) DeleteMovie(_ context.Context, id int64) (download.Deletion, error) {
@@ -58,8 +68,46 @@ func (f *fakeDispatcher) Dispatch(_ context.Context, req download.Request) (stor
 	return f.saved, nil
 }
 
-func (f *fakeDispatcher) Downloads(context.Context) ([]store.Download, error) {
-	return f.list, f.listErr
+// Downloads answers download.Active, which is the row plus what only a backend
+// can say right now. The fake carries plain rows and wraps them, so every test
+// written before T107 keeps asserting the same thing — which is the point of
+// Active embedding store.Download rather than copying its fields.
+func (f *fakeDispatcher) Downloads(context.Context) ([]download.Active, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if f.list == nil {
+		return nil, nil
+	}
+	out := make([]download.Active, 0, len(f.list))
+	for i, row := range f.list {
+		active := download.Active{Download: row}
+		if i < len(f.live) {
+			active.DownloadRate = f.live[i].DownloadRate
+			active.SizeBytes = f.live[i].SizeBytes
+			active.ETASeconds = f.live[i].ETASeconds
+		}
+		out = append(out, active)
+	}
+	return out, nil
+}
+
+func (f *fakeDispatcher) PauseDownload(_ context.Context, hash string) (store.Download, error) {
+	f.pauses++
+	f.gotPauseHash = hash
+	if f.pauseErr != nil {
+		return store.Download{}, f.pauseErr
+	}
+	return f.paused, nil
+}
+
+func (f *fakeDispatcher) ResumeDownload(_ context.Context, hash string) (store.Download, error) {
+	f.resumes++
+	f.gotPauseHash = hash
+	if f.resumeErr != nil {
+		return store.Download{}, f.resumeErr
+	}
+	return f.paused, nil
 }
 
 func (f *fakeDispatcher) Import(_ context.Context, hash string) (store.Movie, error) {

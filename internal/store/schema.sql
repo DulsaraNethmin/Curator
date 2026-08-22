@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS downloads (
   indexer       TEXT NOT NULL,
   release_name  TEXT NOT NULL,
   magnet        TEXT NOT NULL,
-  state         TEXT NOT NULL,              -- queued | downloading | stalled | completed | imported | failed
+  state         TEXT NOT NULL,              -- queued | downloading | stalled | paused | completed | imported | failed
   progress      REAL NOT NULL DEFAULT 0,
   added_at      DATETIME NOT NULL,
   completed_at  DATETIME,

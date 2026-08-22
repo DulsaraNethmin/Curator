@@ -27,10 +27,18 @@ var qbitStates = map[string]string{
 	"checkingDL":         torrent.StateQueued,
 	"checkingResumeData": torrent.StateQueued,
 
-	// A partial download that has been paused is still partial: the file we want
-	// is not there, so it is queued rather than failed.
-	"pausedDL":  torrent.StateQueued,
-	"stoppedDL": torrent.StateQueued,
+	// A partial download that has been stopped is still partial — the file we
+	// want is not there — but it is not QUEUED either, and it read that way for
+	// four phases. `queued` promises a torrent that is about to start; these two
+	// mean one that will not until somebody says so.
+	//
+	// They became distinguishable when there was somewhere to put them: T107
+	// added StatePaused because the row now draws a Resume button, and a button
+	// cannot be drawn on a state that also means "starting shortly". `pausedUP`
+	// and `stoppedUP` below are NOT this — a torrent that finished and was then
+	// stopped has the file, so it stays completed and the importer still runs.
+	"pausedDL":  torrent.StatePaused,
+	"stoppedDL": torrent.StatePaused,
 
 	// stalledDL is qBittorrent's word for exactly what StateStalled describes:
 	// wanted, added, and nobody is sending. It used to map to queued, which is

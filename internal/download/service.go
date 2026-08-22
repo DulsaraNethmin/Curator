@@ -28,10 +28,14 @@ import (
 // torrent.Torrent, and every test in this package runs on a fake, so a new
 // backend is validated by tests that already exist (docs/decisions.md D22).
 //
-// It is add-and-read plus one delete. There is no pause or resume because there
-// is none in either client either: the *arr stack shares that qBittorrent until
-// the cutover, and the narrowest possible interface is the cheapest guarantee
-// that nothing here can disturb it.
+// **It had no pause or resume for four phases and now has both.** The reason it
+// had none is recorded rather than dropped: neither client had them either,
+// because the *arr stack shared that qBittorrent until the cutover, and the
+// narrowest possible interface was the cheapest guarantee that nothing here
+// could disturb it. T54 removed that stack on 2026-08-18, so the constraint
+// expired (docs/decisions.md D55). What did not change is that every mutating
+// call takes the category it requires, which is the guarantee that actually
+// does the work.
 type TorrentClient interface {
 	AddMagnet(ctx context.Context, magnet, category string) error
 	TorrentByHash(ctx context.Context, hash string) (*torrent.Torrent, error)
@@ -41,6 +45,13 @@ type TorrentClient interface {
 	// category it requires and refuses a torrent that is not in it, so curator
 	// cannot remove one of the *arr stack's torrents even by mistake.
 	DeleteTorrent(ctx context.Context, hash, requireCategory string, deleteFiles bool) error
+
+	// PauseTorrent and ResumeTorrent stop and start one torrent, with the same
+	// category guard. Both backends honour them: the engine applies Hold's three
+	// calls to one hash, qBittorrent sends torrents/stop with a fallback to
+	// torrents/pause for a server predating the 5.0 rename.
+	PauseTorrent(ctx context.Context, hash, requireCategory string) error
+	ResumeTorrent(ctx context.Context, hash, requireCategory string) error
 }
 
 // Store is the persistence dispatch, polling and deletion need.
@@ -130,6 +141,16 @@ func (e Unprotected) Unwrap() []error {
 	}
 	return []error{e.cause, ErrUnprotected}
 }
+
+// ErrNotRunning reports that a pause or a resume was asked for a download there
+// is nothing left to stop: an imported row, whose files are in the library and
+// whose torrent may well be gone.
+//
+// Separate from ErrNotCompleted, which is the opposite complaint about the
+// opposite call — that one refuses an IMPORT of something unfinished. Sharing
+// one sentinel would give the API one status for two situations a person acts
+// on differently.
+var ErrNotRunning = errors.New("the download is already imported, so there is nothing running to stop")
 
 // ErrNotCompleted reports that an import was asked for a torrent that is still
 // downloading. It is separated so the API can answer 409 — the request is
@@ -371,6 +392,77 @@ func (s *Service) Dispatch(ctx context.Context, req Request) (store.Download, er
 	return saved, nil
 }
 
+// PauseDownload stops one recorded download, and ResumeDownload starts it again.
+//
+// **The row is looked up first, and it is not ceremony.** The hash is the
+// caller's, and the store is the record of what curator dispatched — so a hash
+// with no row is a request about a torrent this instance did not start, and
+// answering it would let the API stop a torrent nobody here can account for.
+// The category guard on the backend is the second half of the same rule.
+//
+// An imported row is refused. The files are in the library and the torrent may
+// well be gone; "pause" has nothing to mean, and offering it would be a button
+// that fails.
+func (s *Service) PauseDownload(ctx context.Context, hash string) (store.Download, error) {
+	return s.setPaused(ctx, hash, true)
+}
+
+func (s *Service) ResumeDownload(ctx context.Context, hash string) (store.Download, error) {
+	return s.setPaused(ctx, hash, false)
+}
+
+func (s *Service) setPaused(ctx context.Context, hash string, pause bool) (store.Download, error) {
+	verb := "resume"
+	if pause {
+		verb = "pause"
+	}
+	if s.client == nil {
+		return store.Download{}, ErrUnconfigured
+	}
+
+	row, err := s.store.GetDownloadByHash(ctx, hash)
+	if err != nil {
+		return store.Download{}, fmt.Errorf("%s %s: %w", verb, hash, err)
+	}
+	if row.State == store.DownloadImported {
+		return store.Download{}, fmt.Errorf("%s %s: %w", verb, hash, ErrNotRunning)
+	}
+
+	if pause {
+		err = s.client.PauseTorrent(ctx, row.TorrentHash, s.category)
+	} else {
+		err = s.client.ResumeTorrent(ctx, row.TorrentHash, s.category)
+	}
+	if err != nil {
+		return store.Download{}, fmt.Errorf("%s %s: %w: %w", verb, hash, ErrClient, err)
+	}
+
+	// Written here rather than left to the next poll tick, for two reasons that
+	// both matter. The screen has to change on the click instead of up to ten
+	// seconds later; and **the row is what makes a pause survive a restart** —
+	// Service.Resume re-adds every non-imported row by magnet at boot, and the
+	// embedded engine rebuilds its torrents from disk with no memory of a
+	// preference, so a pause that lived only in the backend would be quietly
+	// undone by the first reboot.
+	state := store.DownloadPaused
+	if !pause {
+		// Not `downloading`: what it actually is now is the backend's to say on
+		// the next tick, and claiming a state here would be this layer guessing.
+		// `queued` is the honest interim — added, wanted, not yet moving.
+		state = store.DownloadQueued
+	}
+	if err := s.store.UpdateDownloadProgress(ctx, row.TorrentHash, state, row.Progress, "", nil); err != nil {
+		return store.Download{}, fmt.Errorf("%s %s: %w", verb, hash, err)
+	}
+
+	updated, err := s.store.GetDownloadByHash(ctx, row.TorrentHash)
+	if err != nil {
+		return store.Download{}, fmt.Errorf("%s %s: %w", verb, hash, err)
+	}
+	s.log.Info("download "+verb+"d", "hash", row.TorrentHash, "release", row.ReleaseName)
+	return updated, nil
+}
+
 // Import hardlinks one already-completed download into the library now, without
 // waiting for the next poll tick.
 //
@@ -594,6 +686,24 @@ func (s *Service) Resume(ctx context.Context) error {
 			failed++
 			continue
 		}
+
+		// **A pause has to be re-applied, or the first reboot undoes it.** This
+		// loop has just re-added the magnet, and the embedded engine rebuilds
+		// its torrents from disk with no memory of a preference — so without
+		// this, everything somebody deliberately stopped starts downloading
+		// again, unattended, on a box that has just come back up. qBittorrent
+		// remembers a stop by itself and never reaches this line: the
+		// TorrentByHash check above finds it still there and counts it `held`.
+		//
+		// Re-applied rather than skipped, because the row must still be added —
+		// a paused download the client does not have at all cannot be resumed
+		// later. The few seconds between the add and this is the honest cost.
+		if row.State == store.DownloadPaused {
+			if err := s.client.PauseTorrent(ctx, row.TorrentHash, s.category); err != nil {
+				s.log.Warn("re-added a download that was paused, and could not stop it again",
+					"hash", row.TorrentHash, "release", row.ReleaseName, "err", err)
+			}
+		}
 		resumed++
 	}
 
@@ -603,11 +713,96 @@ func (s *Service) Resume(ctx context.Context) error {
 	return nil
 }
 
-// Downloads lists every recorded download, newest first.
+// Active is one recorded download plus what only the backend can say right now.
 //
-// It reads through to the store rather than qBittorrent: the table is the record
-// of what curator dispatched, and it stays answerable when qBittorrent is down —
-// which is exactly when someone is most likely to be looking.
-func (s *Service) Downloads(ctx context.Context) ([]store.Download, error) {
-	return s.store.ListDownloads(ctx)
+// The embedded store.Download is what encoding/json flattens, so the wire shape
+// is exactly the object GET /api/downloads has always sent plus three optional
+// keys. Nothing here is written to the database, and that is the decision rather
+// than an omission: Poller.Tick only writes a row when the state, the progress
+// or the reason moved, and a rate column would change on every single tick and
+// defeat that condition permanently (docs/decisions.md D56).
+type Active struct {
+	store.Download
+
+	// DownloadRate is bytes per second, omitted when the backend did not say —
+	// which is not the same as zero, and the screen draws nothing rather than
+	// "0 B/s" for it.
+	DownloadRate int64 `json:"download_rate,omitempty"`
+
+	// SizeBytes is the payload's total length. Progress is the fraction of it
+	// that has arrived, so the two together are what "3.2 GB of 8.1 GB" is.
+	SizeBytes int64 `json:"size_bytes,omitempty"`
+
+	// ETASeconds is how long the rest would take at the current rate.
+	//
+	// **Computed here, above both backends, and that is the point.** qBittorrent
+	// sends an `eta` of its own and the embedded engine has none, so decoding
+	// theirs would give two different answers to "minutes left" depending on
+	// which backend is running — one screen showing two definitions is worse
+	// than one definition being cruder. Omitted rather than guessed whenever the
+	// rate is 0 or the size is unknown: there is no honest number then.
+	ETASeconds int64 `json:"eta_seconds,omitempty"`
+}
+
+// Downloads lists every recorded download, newest first, with each row's live
+// rate joined on where the backend could supply one.
+//
+// **The rows come from the store and the live half is best-effort**, which is
+// the promise this function has always made: the table is the record of what
+// curator dispatched, and it stays answerable when the backend is down — which
+// is exactly when someone is most likely to be looking. A failed read of the
+// torrent list is one log line and an empty map, never an error, so every row
+// still lists and simply carries no rate.
+func (s *Service) Downloads(ctx context.Context) ([]Active, error) {
+	rows, err := s.store.ListDownloads(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	live := map[string]torrent.Torrent{}
+	if s.client != nil {
+		held, err := s.client.Torrents(ctx, s.category)
+		if err != nil {
+			s.log.Warn("could not read live download rates; listing the recorded rows without them",
+				"err", err)
+		} else {
+			for _, t := range held {
+				live[t.Hash] = t
+			}
+		}
+	}
+
+	out := make([]Active, 0, len(rows))
+	for _, row := range rows {
+		active := Active{Download: row}
+		if t, ok := live[row.TorrentHash]; ok {
+			active.SizeBytes = t.SizeBytes
+			// **A paused torrent has no rate, whatever the backend said.** The
+			// embedded engine already zeroes it; qBittorrent is trusted to
+			// report dlspeed 0 for a stopped torrent and mostly does, but
+			// "paused · 4.1 MB/s" is a nonsense line and which backend is
+			// running must not decide whether it appears. Enforced here, above
+			// both, for the same reason the ETA is computed here.
+			if t.State != torrent.StatePaused {
+				active.DownloadRate = t.DownloadRate
+				active.ETASeconds = eta(t.SizeBytes, t.Progress, t.DownloadRate)
+			}
+		}
+		out = append(out, active)
+	}
+	return out, nil
+}
+
+// eta is how many seconds the rest would take at this rate, or 0 for "cannot
+// say" — which is every case where a number would be invented rather than
+// derived: no rate, no size, or nothing left to fetch.
+func eta(size int64, progress float64, rate int64) int64 {
+	if rate <= 0 || size <= 0 || progress >= 1 {
+		return 0
+	}
+	remaining := float64(size) * (1 - progress)
+	if remaining <= 0 {
+		return 0
+	}
+	return int64(remaining / float64(rate))
 }

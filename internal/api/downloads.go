@@ -11,6 +11,7 @@ import (
 	"github.com/DulsaraNethmin/curator/internal/download"
 	"github.com/DulsaraNethmin/curator/internal/indexer"
 	"github.com/DulsaraNethmin/curator/internal/store"
+	"github.com/DulsaraNethmin/curator/internal/torrent"
 )
 
 // Dispatcher turns a picked release into a running torrent and reports what is
@@ -19,7 +20,15 @@ import (
 // instead of a live qBittorrent.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, req download.Request) (store.Download, error)
-	Downloads(ctx context.Context) ([]store.Download, error)
+	// Downloads is []download.Active, not []store.Download: the recorded row
+	// plus the live rate the backend can supply right now. The wire shape is
+	// unchanged — Active embeds the row, so encoding/json flattens it and the
+	// three new keys are omitempty (docs/decisions.md D56).
+	Downloads(ctx context.Context) ([]download.Active, error)
+
+	// PauseDownload and ResumeDownload stop and start one recorded download.
+	PauseDownload(ctx context.Context, hash string) (store.Download, error)
+	ResumeDownload(ctx context.Context, hash string) (store.Download, error)
 
 	// Import is phase 4's, on this interface rather than a second one because it
 	// is the same service, reached from the same handler set, and a second
@@ -43,6 +52,8 @@ func (s *Server) RegisterDownloads(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/downloads", s.handleDispatch)
 	mux.HandleFunc("GET /api/downloads", s.handleListDownloads)
 	mux.HandleFunc("POST /api/downloads/{hash}/import", s.handleImport)
+	mux.HandleFunc("POST /api/downloads/{hash}/pause", s.handlePause)
+	mux.HandleFunc("POST /api/downloads/{hash}/resume", s.handleResume)
 }
 
 // dispatchRequest is the body of POST /api/downloads.
@@ -295,7 +306,70 @@ func (s *Server) handleListDownloads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if downloads == nil {
-		downloads = []store.Download{} // nothing downloading is [], never null
+		downloads = []download.Active{} // nothing downloading is [], never null
 	}
 	s.respond(w, http.StatusOK, downloads)
+}
+
+// handlePause and handleResume stop and start one download.
+//
+// POST rather than PATCH, matching /import beside them: this is an action taken
+// on a torrent, not an edit of a representation, and one verb across the three
+// is one fewer thing to look up. Both answer the updated row, so the screen
+// redraws from the server's answer rather than from what it hoped happened.
+func (s *Server) handlePause(w http.ResponseWriter, r *http.Request) {
+	s.pauseOrResume(w, r, s.dispatcher.PauseDownload)
+}
+
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	s.pauseOrResume(w, r, s.dispatcher.ResumeDownload)
+}
+
+func (s *Server) pauseOrResume(w http.ResponseWriter, r *http.Request,
+	call func(context.Context, string) (store.Download, error)) {
+	hash := strings.TrimSpace(r.PathValue("hash"))
+	if hash == "" {
+		s.fail(w, http.StatusBadRequest, errors.New("no torrent hash"))
+		return
+	}
+	row, err := call(r.Context(), hash)
+	if err != nil {
+		s.failPause(w, err)
+		return
+	}
+	s.respond(w, http.StatusOK, row)
+}
+
+// failPause maps a stop or start failure onto a status, in the shape
+// failDispatch, failImport and failDelete already established.
+//
+// The 409s are the two worth naming. A wrong category is somebody else's
+// torrent, which is a conflict rather than a missing thing; an imported row has
+// nothing running to stop, which is a conflict with the row's own state. Both
+// are things the screen can explain without a retry.
+func (s *Server) failPause(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, torrent.ErrNotFound):
+		s.fail(w, http.StatusNotFound, errors.New("curator has no download with that hash"))
+	case errors.Is(err, torrent.ErrWrongCategory):
+		// The same guard, the same 409 and the same sentence failDelete writes,
+		// recovered the same way: `err` carries the hash twice in two cases by
+		// this point, and the category is the only word a reader can act on.
+		s.fail(w, http.StatusConflict, errors.New(wrongCategorySentence(err)))
+	case errors.Is(err, download.ErrNotRunning):
+		// The sentence is written here rather than passed through, for the
+		// reason failDelete gives for its own: by this point `err` is prefixed
+		// with the verb and the info hash, and neither is a word a reader acts
+		// on. D39 — a failure's sentence is true of every situation its status
+		// covers, and is written at the boundary that answers it.
+		s.fail(w, http.StatusConflict, errors.New(
+			"that download is already in the library, so there is nothing running to stop"))
+	case errors.Is(err, download.ErrUnconfigured):
+		s.fail(w, http.StatusServiceUnavailable, err)
+	case errors.Is(err, download.ErrClient):
+		s.failCause(w, http.StatusBadGateway,
+			"curator could not reach the torrent client, so the download was left as it was", err)
+	default:
+		s.fail(w, http.StatusInternalServerError, err)
+	}
 }

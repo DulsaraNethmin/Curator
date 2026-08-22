@@ -86,6 +86,29 @@ const (
 	// tight rope — it is long enough that saying "stalled" means it.
 	DefaultStallAfter = 5 * time.Minute
 
+	// rateStaleAfter is how long a computed rate outlives the bytes that
+	// produced it. anacrolix reports cumulative counters and no rate at all, so
+	// a rate here is a delta between two observations that saw the byte count
+	// MOVE — and with nothing moving there is no new delta to take, only an
+	// increasingly old one to keep repeating.
+	//
+	// Thirty seconds, off a number already in this file: DefaultStallAfter's
+	// note says "a healthy download moves every second", and the poll is five to
+	// ten. So anything alive refreshes this several times over, and a torrent
+	// that quietly stops reads 0 B/s within half a minute and `stalled` at five
+	// minutes — two honest signals, in that order.
+	rateStaleAfter = 30 * time.Second
+
+	// rateFloor is the shortest interval a rate may be computed over.
+	//
+	// Two callers now ask for the torrent list at different cadences — the
+	// poller on DOWNLOAD_POLL_INTERVAL and GET /api/downloads on whatever the
+	// Activity screen is doing — so two observations can land milliseconds
+	// apart. A megabyte across 40 ms is a true instantaneous rate and a useless
+	// one: it reads as 25 MB/s on a 3 MB/s download. Below this the previous
+	// rate is carried rather than recomputed.
+	rateFloor = time.Second
+
 	unverifiedBytes = 32 << 20
 
 	// metainfoDir sits inside the data directory, dot-prefixed so that
@@ -148,14 +171,37 @@ type Engine struct {
 	// heldConns is each torrent's own connection limit from before the hold, so
 	// Release restores what was there rather than the global default.
 	heldConns map[string]int
+
+	// paused is the hashes somebody stopped on purpose, and pausedConns is each
+	// one's connection limit from before, restored on resume for the reason
+	// heldConns is.
+	//
+	// **A separate set from the hold, deliberately.** They use the same three
+	// anacrolix calls and mean opposite things: a hold is curator protecting
+	// itself and outranks everything, a pause is a person's preference about one
+	// row. Sharing one set would make a VPN blip silently un-pause whatever
+	// somebody had stopped, because Release loops every torrent and allows it.
+	paused      map[string]bool
+	pausedConns map[string]int
 }
 
 // mark is one torrent's last observed progress, and whether the stall it is in
 // has already been said out loud.
+//
+// `since` is when the byte count last MOVED, not when it was last looked at —
+// which is what makes it a stall clock, and what makes the interval between two
+// moves a real measured rate rather than an assumed one.
 type mark struct {
 	bytes    int64
 	since    time.Time
 	reported bool
+
+	// rate is bytes per second between the last two observations that saw the
+	// count move. It is carried forward across observations that saw no
+	// movement, and `describe` stops reporting it once `since` is older than
+	// rateStaleAfter — a rate nobody has re-measured for half a minute is a
+	// number about the past.
+	rate int64
 }
 
 // Config is what New needs. Only DataDir is required.
@@ -342,17 +388,19 @@ func New(cfg Config) (*Engine, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
-		dataDir:    dataDir,
-		category:   cfg.Category,
-		log:        cfg.Log,
-		ctx:        ctx,
-		cancel:     cancel,
-		stallAfter: cfg.StallAfter,
-		now:        time.Now,
-		unchecked:  map[string]bool{},
-		progress:   map[string]mark{},
-		heldConns:  map[string]int{},
-		network:    cfg.Network,
+		dataDir:     dataDir,
+		category:    cfg.Category,
+		log:         cfg.Log,
+		ctx:         ctx,
+		cancel:      cancel,
+		stallAfter:  cfg.StallAfter,
+		now:         time.Now,
+		unchecked:   map[string]bool{},
+		progress:    map[string]mark{},
+		heldConns:   map[string]int{},
+		paused:      map[string]bool{},
+		pausedConns: map[string]int{},
+		network:     cfg.Network,
 	}
 
 	// The socket has to exist before the client, and the client before the
@@ -629,6 +677,8 @@ func (e *Engine) DeleteTorrent(ctx context.Context, hash, requireCategory string
 	e.mu.Lock()
 	delete(e.progress, dropped)
 	delete(e.unchecked, dropped)
+	delete(e.paused, dropped)
+	delete(e.pausedConns, dropped)
 	e.mu.Unlock()
 
 	if !deleteFiles {
@@ -699,6 +749,13 @@ func (e *Engine) describe(t *anacrolix.Torrent) torrent.Torrent {
 		ContentPath: e.contentPath(t),
 	}
 
+	// One observation per torrent per tick, feeding both the rate and the stall
+	// clock. Taken before the switch so that every branch below — including
+	// `completed`, which needs no rate — leaves the sampler in step; a torrent
+	// whose observations skipped a state would produce a rate measured across
+	// the gap.
+	m, stalledNow, firstReport := e.observe(out.Hash, t.BytesCompleted())
+
 	info := t.Info()
 	switch {
 	case info == nil:
@@ -722,6 +779,14 @@ func (e *Engine) describe(t *anacrolix.Torrent) torrent.Torrent {
 		if length := t.Length(); length > 0 {
 			out.Progress = float64(t.BytesCompleted()) / float64(length)
 		}
+		out.DownloadRate = e.rateOf(m)
+	}
+
+	// Known as soon as the info dict is, which is what lets the screen say
+	// "3.2 GB of 8.1 GB" the moment there is an 8.1 GB to name. Before that it
+	// stays 0 and the screen says nothing rather than "of 0 B".
+	if info != nil {
+		out.SizeBytes = t.Length()
 	}
 
 	// StateFailed is deliberately unreachable. This engine has no equivalent of
@@ -729,17 +794,41 @@ func (e *Engine) describe(t *anacrolix.Torrent) torrent.Torrent {
 	// progress on is not failed, it is stalled — nobody is seeding it — and
 	// saying `failed` would tell somebody their download died when what
 	// happened is that they picked an unpopular release.
-	if out.State == torrent.StateQueued || out.State == torrent.StateDownloading {
-		if stalled, reason := e.stalled(t, out); stalled {
+	// **Not on a paused torrent.** It gains no bytes by design, so the detector
+	// is correct that nothing is arriving and wrong about why — after
+	// DefaultStallAfter it would say "no peers are connected" about a download
+	// curator stopped on request. PauseTorrent also clears this hash's mark, so
+	// the clock restarts on resume rather than firing on the first tick after it.
+	if !e.isPaused(out.Hash) &&
+		(out.State == torrent.StateQueued || out.State == torrent.StateDownloading) {
+		if stalled, reason := e.stalled(t, out, m, stalledNow, firstReport); stalled {
 			out.State = torrent.StateStalled
 			out.Reason = reason
+			// A stalled torrent is not moving by definition, so whatever the
+			// staleness window still allows is a number about the past.
+			out.DownloadRate = 0
 		}
+	}
+
+	// A pause outranks the stall diagnosis for the same reason a hold does, and
+	// sits between them: it is more specific than "nothing is arriving" and less
+	// authoritative than the kill switch. `completed` is exempt exactly as it is
+	// for a hold — there is nothing left to stop, and rewriting it would keep
+	// the importer away from a payload that is on disk.
+	if out.State != torrent.StateCompleted && e.isPaused(out.Hash) {
+		out.State = torrent.StatePaused
+		// No sentence. A pause needs no explanation — the badge IS the
+		// explanation, and a reason left here would outlive the state it
+		// explains the moment somebody presses Resume.
+		out.Reason = ""
+		out.DownloadRate = 0
 	}
 
 	// The hold wins over any stall diagnosis, and it has to be last. A held
 	// torrent gains no bytes, so e.stalled is perfectly correct that it is
 	// stalled and perfectly wrong about why — it would report "nobody appears to
 	// be seeding this release" about a download curator switched off itself.
+	// It outranks a pause too: the kill switch is not a preference.
 	if reason := e.holdReason(); reason != "" {
 		out = heldState(out, reason)
 	}
@@ -782,28 +871,73 @@ func (e *Engine) setUnchecked(hash string, yes bool) {
 //
 // A verifying torrent is exempt: it is busy, just not with the network. So is a
 // completed one, which by definition never gains another byte.
-func (e *Engine) stalled(t *anacrolix.Torrent, out torrent.Torrent) (bool, string) {
-	bytes := t.BytesCompleted()
+// observe records one torrent's byte count and returns what that means.
+//
+// **It is the ONE sampler**, and that is deliberate: the rate and the stall
+// clock are the same measurement read two ways, so computing them separately
+// would be two maps, two lock acquisitions per torrent per tick, and two
+// answers that can disagree about whether anything is arriving. `describe`
+// calls this once and hands the result to `stalled`.
+//
+// The rate's numerator is `t.BytesCompleted()` — the same number `Progress` is
+// built from — rather than `t.Stats().BytesReadUsefulData`, so the rate and the
+// bar can never tell different stories. `t.Stats()` stays what it was: the peer
+// count behind the stall sentence.
+func (e *Engine) observe(hash string, bytes int64) (m mark, stalled, firstReport bool) {
 	now := e.now()
 
 	e.mu.Lock()
-	previous, seen := e.progress[out.Hash]
-	if !seen || previous.bytes != bytes {
-		e.progress[out.Hash] = mark{bytes: bytes, since: now}
-		e.mu.Unlock()
-		return false, ""
-	}
-	stalled := now.Sub(previous.since) >= e.stallAfter
-	firstTime := stalled && !previous.reported
-	if firstTime {
-		previous.reported = true
-		e.progress[out.Hash] = previous
-	}
-	e.mu.Unlock()
+	defer e.mu.Unlock()
 
+	previous, seen := e.progress[hash]
+	if !seen {
+		fresh := mark{bytes: bytes, since: now}
+		e.progress[hash] = fresh
+		return fresh, false, false
+	}
+
+	if previous.bytes != bytes {
+		// It moved. Carry the old rate unless enough time has passed to measure
+		// a new one honestly — see rateFloor.
+		fresh := mark{bytes: bytes, since: now, rate: previous.rate}
+		if elapsed := now.Sub(previous.since); elapsed >= rateFloor {
+			// max(0): a re-hash or a dropped piece can move the count DOWN, and
+			// a negative download rate is not a thing to put on a screen.
+			perSecond := float64(bytes-previous.bytes) / elapsed.Seconds()
+			if perSecond < 0 {
+				perSecond = 0
+			}
+			fresh.rate = int64(perSecond)
+		}
+		e.progress[hash] = fresh
+		return fresh, false, false
+	}
+
+	// It did not move. The stall clock runs from `since`, which is untouched
+	// here on purpose — that is the whole reason it means "last moved".
+	stalled = now.Sub(previous.since) >= e.stallAfter
+	firstReport = stalled && !previous.reported
+	if firstReport {
+		previous.reported = true
+		e.progress[hash] = previous
+	}
+	return previous, stalled, firstReport
+}
+
+// rateOf is what observe's mark is worth reporting as, now.
+func (e *Engine) rateOf(m mark) int64 {
+	if e.now().Sub(m.since) >= rateStaleAfter {
+		return 0
+	}
+	return m.rate
+}
+
+func (e *Engine) stalled(t *anacrolix.Torrent, out torrent.Torrent, m mark, stalled, firstTime bool) (bool, string) {
 	if !stalled {
 		return false, ""
 	}
+	now := e.now()
+	previous := m
 
 	// Said by the backend rather than by the poller, because the reason is a
 	// fact only the backend has: the poller sees a percentage that did not move

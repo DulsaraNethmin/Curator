@@ -40,6 +40,35 @@ type fakeClient struct {
 	deleteErr      error
 	deleteCategory string
 	deleteFiles    bool
+
+	// T107's stop/start path. `paused` records the hashes, in order, so a test
+	// can assert Service.Resume re-applied a pause rather than merely not
+	// erroring — the restart trap is about ORDER, not about a return value.
+	paused        []string
+	resumed       []string
+	pauseErr      error
+	resumeErr     error
+	pauseCategory string
+}
+
+func (f *fakeClient) PauseTorrent(_ context.Context, hash, requireCategory string) error {
+	f.calls = append(f.calls, "pause")
+	if f.pauseErr != nil {
+		return f.pauseErr
+	}
+	f.paused = append(f.paused, strings.ToUpper(hash))
+	f.pauseCategory = requireCategory
+	return nil
+}
+
+func (f *fakeClient) ResumeTorrent(_ context.Context, hash, requireCategory string) error {
+	f.calls = append(f.calls, "resume")
+	if f.resumeErr != nil {
+		return f.resumeErr
+	}
+	f.resumed = append(f.resumed, strings.ToUpper(hash))
+	f.pauseCategory = requireCategory
+	return nil
 }
 
 func (f *fakeClient) DeleteTorrent(_ context.Context, hash, requireCategory string, deleteFiles bool) error {

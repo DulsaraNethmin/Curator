@@ -664,6 +664,29 @@ form.row input[name="title"] { flex: 1 1 20rem; }
   transition: width var(--dur-slow) var(--ease);
 }
 
+/* The three controls on an Activity row. They wrap rather than widen the
+   column, because a narrow window should stack them instead of pushing Added
+   off the screen — and `tight` on that cell means the table gives this one
+   nothing to spare. */
+.row-actions {
+  display: flex;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* Destructive, and it has to look it: Remove on this screen deletes the film,
+   not just the torrent. Text and border rather than a filled block, so it reads
+   as the odd one out beside Pause without shouting on a screen that may hold a
+   dozen of them. */
+button.danger {
+  color: var(--error);
+  border-color: var(--error);
+}
+button.danger:hover:not(:disabled) {
+  background: var(--error-soft);
+}
+
 /* --- skeletons --------------------------------------------------------------
 
    Placeholders sized to the content they become (components/skeleton.tsx).

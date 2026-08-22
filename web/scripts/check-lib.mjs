@@ -13,7 +13,7 @@
 //
 //   make units           # runs this
 //   node --experimental-strip-types web/scripts/check-lib.mjs
-import { ago, parseGoDuration } from '../lib/duration.ts';
+import { ago, formatETA, parseGoDuration } from '../lib/duration.ts';
 import { forget, recall, releaseKey, remember } from '../lib/recent.ts';
 
 let failed = 0;
@@ -59,6 +59,24 @@ function check(label, ok, detail = '') {
   check('just under an hour', ago(t, t + 59 * 60_000) === '59 minutes ago');
   check('an hour and over', ago(t, t + 3_600_000) === 'over an hour ago');
   check('a clock that went backwards does not say -3', ago(t, t - 5000) === 'moments ago');
+}
+
+// ---------------------------------------------------------------------------
+// formatETA — coarse on purpose. An ETA moves every poll, so second-level
+// precision would flicker beside a progress bar that does not.
+{
+  check('nothing is null', formatETA(undefined) === null);
+  check('zero is null', formatETA(0) === null,
+    "the server omits eta_seconds when there is no honest number; 0 must not print as '0 min left'");
+  check('negative is null', formatETA(-5) === null);
+  check('under a minute has no number', formatETA(45) === 'under a minute left');
+  check('minutes', formatETA(12 * 60) === '12 min left');
+  check('rounds to the nearest minute', formatETA(11 * 60 + 47) === '12 min left');
+  check('just under an hour', formatETA(59 * 60) === '59 min left');
+  check('a round hour', formatETA(3600) === '1h left');
+  check('hours and minutes', formatETA(3600 * 2 + 60 * 30) === '2h 30m left');
+  check('a day', formatETA(3600 * 25) === '1 day left');
+  check('days are plural', formatETA(3600 * 24 * 3) === '3 days left');
 }
 
 // ---------------------------------------------------------------------------

@@ -48,6 +48,21 @@ const (
 	// appearing puts it straight back to downloading — and it exists because
 	// "queued" and "a magnet nobody has" looked identical for two phases.
 	StateStalled = "stalled"
+
+	// StatePaused is a torrent somebody stopped on purpose.
+	//
+	// **It is a state and not a Reason, and that is the whole of D55.** The hold
+	// the VPN sentinel applies reuses StateStalled with a sentence, and that is
+	// right for a hold: it is process-wide, has no per-row control, and its
+	// reason is the only actionable thing on screen. A user pause is the
+	// opposite on all three counts, and the decisive one is that **the row has
+	// to draw a Resume button** — testing `reason.includes("paused")` in the UI
+	// is exactly the translation table Reason's own doc forbids.
+	//
+	// It also stops the engine's stall detector lying: a paused torrent gains no
+	// bytes, so after DefaultStallAfter it would report "no peers are connected"
+	// about a download curator switched off on request.
+	StatePaused = "paused"
 )
 
 // ErrWrongCategory reports that a torrent exists but does not belong to the
@@ -58,6 +73,16 @@ const (
 // for an error value is exactly the coupling this package removes. Both backends
 // wrap this one.
 var ErrWrongCategory = errors.New("the torrent is not in the required category")
+
+// ErrNotFound reports that the backend has no torrent with that hash.
+//
+// It lives here for the same reason ErrWrongCategory does: internal/api tests
+// for it with errors.Is to answer 404, and reaching into one particular backend
+// for an error value is the coupling this package exists to remove. It is
+// distinct from "already gone is success" — DeleteTorrent keeps that behaviour,
+// because a delete that has already happened is a delete nobody can retry,
+// while pausing a torrent that is not there is a request about nothing.
+var ErrNotFound = errors.New("no torrent with that hash")
 
 // WrongCategory is ErrWrongCategory carrying the two category names, because
 // which app owns the torrent is the only actionable word in that refusal and a
@@ -137,6 +162,26 @@ type Torrent struct {
 	// else, and it is written in the same tick as the state it explains — a
 	// reason that outlives its state is worse than none.
 	Reason string
+
+	// DownloadRate is bytes per second right now, or 0 when this backend cannot
+	// say — which is not the same as "nothing is arriving", and the screen draws
+	// nothing rather than "0 B/s" for it.
+	//
+	// **Never persisted.** A rate is true for one instant, and download.Poller
+	// only writes a row when something moved (poller.go) — a rate column would
+	// change on every tick and defeat that condition permanently, turning a
+	// five-second poll into a five-second write. It is joined onto the rows at
+	// read time instead (docs/decisions.md D56).
+	DownloadRate int64
+
+	// SizeBytes is the payload's total length, or 0 before the metadata has
+	// arrived.
+	//
+	// There is deliberately no BytesCompleted beside it: Progress is the
+	// fraction of this that is here, so `SizeBytes * Progress` is the number,
+	// and a second field carrying it a second way is a second thing that can
+	// disagree with the bar.
+	SizeBytes int64
 }
 
 // NormalizeHash puts an info hash in the case curator uses: upper, matching
