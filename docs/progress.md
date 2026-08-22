@@ -3,7 +3,7 @@
 Where the build actually is. [`roadmap.md`](roadmap.md) says what each phase is *for*; this says
 what is **done, verified, and outstanding**. Update it when a phase closes or a decision is made.
 
-**Last updated:** 2026-08-21 · **All ten phases are done, and an eleventh is in progress.** Phases
+**Last updated:** 2026-08-22 · **All ten phases are done, and an eleventh is in progress.** Phases
 1–9 built and verified on a laptop; **phase 10, the cutover, executed on the Pi on 2026-08-18** — the
 nine \*arr-stack containers removed, curator and minter in their place, and one film taken end to end
 from an empty disk. `0.2.0` is tagged, published and running on the box, and
@@ -20,6 +20,25 @@ document rather than in the table above. This paragraph used to give as its reas
 has no eleventh phase and inventing one would be tidier than it is true"*; the roadmap has one now
 and it is television, which changes nothing about the VPN work — the reason was never the absence of
 a slot, it was that a piece of work is not a phase because it was large.
+
+**T106–T110 are 0.7.0's four fixes and one flake**, and like T81–T87 and T97–T105 they are not a
+phase. Three were defects a user reported from the running Pi and one was a feature; the fifth is a
+test that failed the gate twice at commits it had nothing to do with. In order: a row curator wrote
+for itself never got a poster ([T106](tasks/T106-a-poster-for-a-row-curator-wrote.md)); Activity
+grew speed, ETA, pause, resume and remove ([T107](tasks/T107-activity-says-how-fast-and-can-stop-it.md),
+[D55](decisions.md#d55--a-pause-is-a-state-a-hold-is-a-reason),
+[D56](decisions.md#d56--speed-and-eta-are-read-never-recorded-and-eta-has-one-definition)); the last
+release list survives leaving the page ([T108](tasks/T108-the-last-release-list-is-still-there.md));
+the film search runs as you type while the release search still does not
+([T109](tasks/T109-the-search-box-answers-as-you-type.md)); and `waitFor` in `internal/remux` stopped
+giving up after five seconds ([T110](tasks/T110-a-gate-that-does-not-flake.md)).
+
+**The thumbnail bug is the one worth remembering**, because it was reported as a UI fault and was
+not one: `store.UpsertWanted` writes a TMDB id and no artwork, and `MoviesMissingMetadata` selects
+`<tmdbcol> IS NULL` — so every row curator created for itself was excluded from every scan that would
+have filled it in, permanently. Five of five rows on the Pi. **T107's live numbers were taken against
+a stub, not a swarm**: the laptop's only NordLynx endpoint was held by a long-running instance, and a
+second tunnel would have made it flap.
 
 The narrative below is a **record**, kept in the order things were found. Where an entry says
 something is missing that now exists — "there is still no Play button" in the T44 section is the one
