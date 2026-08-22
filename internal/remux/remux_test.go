@@ -36,9 +36,22 @@ func fake(t *testing.T, body string) string {
 
 // waitFor polls until cond, or fails. Every wait in this file is for something
 // another process does, so there is nothing to synchronise on but the disk.
+// waitFor polls until a condition holds, or gives up.
+//
+// **The deadline is generous on purpose, and 5 s was not.** What these tests
+// wait for is fake ffmpeg processes to spawn and write a line — and `make check`
+// runs `go test -race` across twenty packages at once, so process spawn is
+// competing with everything else on the machine. Twice in one session this
+// timed out at commits that do not touch this package, taking 10.9 s against a
+// usual 1.8 s; both passed alone and on a re-run.
+//
+// Raising it weakens nothing. When the code under test is actually broken the
+// condition never becomes true, so the test still fails — it just takes longer
+// to say so, which is the right trade for a gate that has to be believed. The
+// only cost is how long a genuine failure takes to report.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
