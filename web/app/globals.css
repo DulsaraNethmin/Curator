@@ -252,8 +252,10 @@ a { color: inherit; }
 
   /* The subtle entrance for surfaces that are information first: panels,
      the counter strip, the log view, the facts table, both heroes. power1.out,
-     no overshoot — the back-out curve on informational UI reads as sloppy. */
-  .billboard, .hero, .strip, .panel, .logs, .facts {
+     no overshoot — the back-out curve on informational UI reads as sloppy.
+     .billboard-text is keyed per slide, so the same rule doubles as the
+     rotation's text crossfade. */
+  .billboard, .billboard-text, .hero, .strip, .panel, .logs, .facts {
     animation: rise-subtle var(--dur-enter-subtle) var(--ease-out) backwards;
   }
 
@@ -858,6 +860,67 @@ html, body { overflow-x: clip; }
   background-repeat: no-repeat;
 }
 
+/* The rotation's two layers: the previous slide sits still and the new one
+   fades in over it, keyed so the animation re-runs per slide. Opacity only.
+   Under reduced motion the fade collapses to a cut via the global rule, and
+   the JS never auto-advances at all. */
+.billboard-bg {
+  position: absolute;
+  inset: 0;
+  background-position: center 18%;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+.billboard-bg-top { animation: fade-in 700ms var(--ease-out) both; }
+
+/* The dots and the pause. Fixed light-on-dark literals like the eyebrow —
+   this surface does not flip. The pause control is what licenses the
+   rotation: an infinite animation without one is the kind this file bans. */
+.billboard-controls {
+  position: absolute;
+  right: var(--sp-5);
+  bottom: var(--sp-4);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.billboard-dot {
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, .35);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.billboard-dot:hover { background: rgba(255, 255, 255, .7); }
+.billboard-dot[data-active='true'] { background: #fff; transform: scale(1.2); }
+.billboard-pauseplay {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  margin-left: var(--sp-1);
+  border-radius: var(--r-full);
+  border: 1px solid rgba(255, 255, 255, .45);
+  background: rgba(6, 7, 8, .55);
+  color: #fff;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.billboard-pauseplay:hover:not(:disabled) {
+  background: rgba(6, 7, 8, .8);
+  border-color: rgba(255, 255, 255, .8);
+}
+/* The shared ring is the light theme's dark green here, invisible on a
+   photograph — the controls take the eyebrow's light green instead. */
+.billboard-controls button:focus-visible { outline-color: #8fe3ba; }
+
 /* The billboard dissolves into the page instead of ending at a line.
    It fades to --bg and therefore flips with the theme, which is the one part of
    this element that is not fixed dark — it has to be, because what it is fading
@@ -1075,6 +1138,64 @@ html, body { overflow-x: clip; }
    strip is already a drag. */
 @media (hover: none) {
   .rail-arrow { display: none; }
+}
+
+/* --- the hover preview ------------------------------------------------------
+
+   components/preview.tsx. A portal fixed on the body, never a child of the
+   card: a card lives in an overflow container and anything growing inside one
+   is shaved off. Hover-only and a pure duplicate of the card's link, which is
+   why (hover: none) removes it outright rather than adapting it. */
+.preview {
+  position: fixed;
+  z-index: 40;
+  display: block;
+  text-decoration: none;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-3);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .preview { animation: preview-in 200ms var(--ease-out-back) both; }
+}
+@keyframes preview-in {
+  from { opacity: 0; transform: scale(.9); }
+}
+.preview-backdrop {
+  aspect-ratio: 16 / 9;
+  background: var(--bg-sunk) center 25% / cover no-repeat;
+}
+.preview-body { padding: var(--sp-3) var(--sp-4) var(--sp-4); }
+.preview-title {
+  font-weight: 620;
+  font-size: var(--fs-base);
+  line-height: var(--lh-tight);
+  margin-bottom: var(--sp-1);
+}
+.preview-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.preview-overview {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+@media (hover: none) {
+  .preview { display: none; }
 }
 
 /* --- library grid --------------------------------------------------------- */

@@ -132,11 +132,14 @@ export default function Home() {
     );
   }
 
-  // The billboard is the trending rail's first card. It is drawn only when that
+  // The billboard is the trending rail's top few cards, drawn only when that
   // rail actually answered — a failed trending rail is a banner further down,
   // and a blank hero above it would be the same failure said twice, in the
-  // largest element on the page.
-  const billboard = rows?.find((row) => row.id === 'trending' && row.ok)?.results[0];
+  // largest element on the page. The backdrop check mirrors the component's
+  // own contract (a billboard IS the image), so the pitch can be drawn when
+  // Billboard would render nothing.
+  const trending = rows?.find((row) => row.id === 'trending' && row.ok)?.results;
+  const billboard = trending?.some((film) => film.backdrop_path) ? trending : undefined;
 
   return (
     <>
@@ -146,7 +149,7 @@ export default function Home() {
       <h1 className="visually-hidden">Discover</h1>
 
       {billboard ? (
-        <Billboard film={billboard} media={media} />
+        <Billboard films={billboard} media={media} />
       ) : rows === null && discoverError === null ? (
         // The billboard's own shape while trending is in flight. The pitch
         // below is for an install whose trending rail truly answered with

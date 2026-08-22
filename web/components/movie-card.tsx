@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { posterURL, type LibraryState, type MediaType, type MovieSummary } from '@/lib/api';
 import { Rating } from '@/components/rating';
+import { useHoverPreview } from '@/components/preview';
 
 /**
  * A poster that fades in when its bytes have actually decoded, instead of
@@ -81,6 +82,12 @@ export function MovieCard({
 }) {
   const poster = posterURL(film.poster_path);
 
+  // The hover preview (T103). Called for both variants because hooks must be,
+  // but only the link spreads its handlers: the matcher's button asks "which
+  // of these is the folder", and a preview opening over the next candidate
+  // would be noise in the middle of an answer.
+  const preview = useHoverPreview(film, media);
+
   const inside = (
     <>
       {/* A poster is usual here and absent in the library, which is the
@@ -112,12 +119,16 @@ export function MovieCard({
   }
 
   return (
-    <Link
-      className="movie"
-      href={media === 'tv' ? `/show/?id=${film.tmdb_id}` : `/movie/?id=${film.tmdb_id}`}
-    >
-      {inside}
-    </Link>
+    <>
+      <Link
+        className="movie"
+        href={media === 'tv' ? `/show/?id=${film.tmdb_id}` : `/movie/?id=${film.tmdb_id}`}
+        {...preview.bind}
+      >
+        {inside}
+      </Link>
+      {preview.node}
+    </>
   );
 }
 
