@@ -147,6 +147,32 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 			"season", body.Season, "hash", saved.TorrentHash)
 	}
 
+	// The row store.UpsertWanted just created carries a TMDB id and no artwork,
+	// because at that layer the id is all there is. Filling it here is what
+	// stops the hole artworkPass exists to heal from opening in the first
+	// place, and it is the same function, so the two cannot drift.
+	//
+	// **Read from TMDB, never taken from the body.** The client had to be told
+	// the id in order to send it, and letting it hand back the poster as well is
+	// how a request starts describing itself (D10) — the same line alreadyHave
+	// draws just above.
+	//
+	// Best-effort, and after the dispatch rather than before it: the torrent is
+	// already added and a poster that did not arrive must not turn a download
+	// that ran into a 502. The row stays on artworkPass's list, so the next scan
+	// tries again.
+	//
+	// Synchronous, on the request's context, and not a goroutine: ~150 ms on a
+	// request that has just resolved a magnet and added a torrent, against an
+	// unowned goroutine outliving the request that spawned it.
+	if body.TMDBID != nil && s.browser != nil {
+		if err := s.fillArtwork(r.Context(), saved.MovieID, mediaType, *body.TMDBID); err != nil {
+			s.log.Warn("dispatched, but could not fetch the artwork for the new row; "+
+				"the next library scan will fill it in",
+				"movie_id", saved.MovieID, "tmdb_id", *body.TMDBID, "media_type", mediaType, "err", err)
+		}
+	}
+
 	s.respond(w, http.StatusCreated, saved)
 }
 

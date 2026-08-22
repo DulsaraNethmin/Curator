@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
@@ -16,6 +17,21 @@ func serverWithBrowser(t *testing.T, st Store, b Browser) http.Handler {
 	t.Helper()
 	mux := http.NewServeMux()
 	New(st, fixtureScanner(), matchAll(), t.TempDir(), quiet()).WithBrowser(b).Register(mux)
+	return mux
+}
+
+// downloadServerWithBrowser is newDownloadServerWithStore plus the catalogue,
+// which is what the dispatch's artwork fill reads.
+func downloadServerWithBrowser(t *testing.T, d Dispatcher, st Store, b Browser) http.Handler {
+	t.Helper()
+	mux := http.NewServeMux()
+	srv := New(st, ScannerFunc(nil), nil, fixtureRoot, quiet()).
+		WithSearch(&fakeSearcher{}).
+		WithBrowser(b).
+		WithDownloads(d)
+	srv.Register(mux)
+	srv.RegisterSearch(mux)
+	srv.RegisterDownloads(mux)
 	return mux
 }
 
@@ -158,6 +174,88 @@ func TestATMDBFailureLeavesTheRowAloneAndTheScanGreen(t *testing.T) {
 	}
 	if row.TMDBID == nil || *row.TMDBID != 293660 {
 		t.Errorf("tmdb_id = %v, want 293660 untouched — a failed enrichment must not unmatch a row", row.TMDBID)
+	}
+}
+
+// The prevention half: a dispatch fills the new row's artwork itself, so the
+// hole artworkPass heals stops opening.
+func TestADispatchFillsTheNewRowsArtwork(t *testing.T) {
+	st := newFakeStore()
+	// The row Dispatch would have created through store.UpsertWanted: an id and
+	// nothing else. movie_id 7 is what savedDownload() points at.
+	row := st.seedDispatched(store.MediaTypeMovie, "Interstellar", 2014, 157336)
+	row.ID = 7
+	st.byID[7] = row
+
+	browser := &fakeBrowser{details: &tmdb.Details{Match: tmdb.Match{
+		TMDBID: 157336, Title: "Interstellar", Overview: "Mankind was born on Earth.",
+		PosterPath: "/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg",
+	}}}
+	h := downloadServerWithBrowser(t, &fakeDispatcher{saved: savedDownload()}, st, browser)
+
+	rec := post(t, h, "/api/downloads",
+		`{"release_id":"3f2a9c1b7d4e5a60","title":"Interstellar","year":2014,"tmdb_id":157336}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+	if browser.gotID != 157336 {
+		t.Errorf("asked TMDB for id %d, want 157336", browser.gotID)
+	}
+	if row.PosterPath == nil || *row.PosterPath != "/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg" {
+		t.Errorf("poster_path = %v, want the one TMDB sent", row.PosterPath)
+	}
+}
+
+// **The one that matters.** A poster that did not arrive must not undo a
+// download that did. The torrent is already added by this point, so anything
+// other than 201 would report a failure that did not happen — and the row stays
+// on artworkPass's list, so the next scan finishes the job.
+func TestADispatchSurvivesTMDBBeingDown(t *testing.T) {
+	st := newFakeStore()
+	row := st.seedDispatched(store.MediaTypeMovie, "Interstellar", 2014, 157336)
+	row.ID = 7
+	st.byID[7] = row
+
+	browser := &fakeBrowser{detailsErr: errors.New("tmdb is down")}
+	fake := &fakeDispatcher{saved: savedDownload()}
+	h := downloadServerWithBrowser(t, fake, st, browser)
+
+	rec := post(t, h, "/api/downloads",
+		`{"release_id":"3f2a9c1b7d4e5a60","title":"Interstellar","year":2014,"tmdb_id":157336}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — a missing poster is not a failed dispatch: %s",
+			rec.Code, rec.Body.String())
+	}
+	if fake.dispatches != 1 {
+		t.Errorf("dispatches = %d, want 1", fake.dispatches)
+	}
+	// And the body is still the row, not an error envelope.
+	var got store.Download
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if got.TorrentHash != savedDownload().TorrentHash {
+		t.Errorf("hash = %q, want the dispatched torrent's", got.TorrentHash)
+	}
+	if row.PosterPath != nil {
+		t.Errorf("poster_path = %v, want none — TMDB never answered", *row.PosterPath)
+	}
+}
+
+// A dispatch with no TMDB id asks TMDB nothing. There is no identity to look up
+// — which is the same hole UpsertWanted's doc names, and it stays open here
+// rather than being closed by guessing from the title.
+func TestADispatchWithoutATMDBIDAsksNothing(t *testing.T) {
+	st := newFakeStore()
+	browser := &fakeBrowser{}
+	h := downloadServerWithBrowser(t, &fakeDispatcher{saved: savedDownload()}, st, browser)
+
+	rec := post(t, h, "/api/downloads", dispatchBody) // no tmdb_id
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+	if browser.gotID != 0 {
+		t.Errorf("asked TMDB for id %d, want nothing", browser.gotID)
 	}
 }
 
