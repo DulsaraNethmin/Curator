@@ -12,7 +12,9 @@ import {
   type SearchResult,
 } from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
+import { Icon } from '@/components/icons';
 import { LibraryBadge } from '@/components/movie-card';
+import { Rating } from '@/components/rating';
 import { Releases } from '@/components/releases';
 import { Player } from '@/components/player';
 
@@ -153,7 +155,7 @@ function Movie() {
             <div className="meta">
               {runtime && <span>{runtime}</span>}
               {details.genres.length > 0 && <span>{details.genres.join(' · ')}</span>}
-              {details.vote_average > 0 && <span>★ {details.vote_average.toFixed(1)}</span>}
+              <Rating score={details.vote_average} size="md" />
               {details.library && <LibraryBadge library={details.library} />}
             </div>
 
@@ -172,7 +174,7 @@ function Movie() {
                   onClick={() => setWatching(true)}
                   disabled={watching}
                 >
-                  ▶ Watch here
+                  <Icon name="play" size="sm" /> Watch here
                 </button>
               ) : (
                 /* Nothing has touched an indexer up to this point, and nothing

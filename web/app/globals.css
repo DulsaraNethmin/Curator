@@ -63,6 +63,12 @@
   --r-full: 999px;
   --radius: var(--r-md);
 
+  /* Icons are inline SVG from components/icons.tsx — no font, no package.
+     Three sizes so a glyph never invents its own. */
+  --icon-sm: .875rem;
+  --icon-md: 1.125rem;
+  --icon-lg: 1.5rem;
+
   /* Motion. One curve, two durations. --dur-slow belongs to the progress bar,
      where the width is data and a snappy tween reads as a jump. */
   --ease: cubic-bezier(.2, .7, .3, 1);
@@ -451,6 +457,48 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 form.row { margin-bottom: var(--sp-4); }
 form.row input[name="title"] { flex: 1 1 20rem; }
 
+/* --- icons and the rating ring --------------------------------------------- */
+
+/* currentColor throughout, so an icon is the colour of the words beside it and
+   needs no rules of its own per site. The nudge keeps a 24-grid outline sitting
+   on the text baseline when it is inline rather than in a flex row. */
+.icon {
+  width: var(--icon-md);
+  height: var(--icon-md);
+  flex: none;
+  vertical-align: -0.2em;
+}
+.icon-sm { width: var(--icon-sm); height: var(--icon-sm); vertical-align: -0.125em; }
+.icon-lg { width: var(--icon-lg); height: var(--icon-lg); }
+
+/* The score as an arc plus the number — never the arc alone, which is what
+   lets the band colours be supplementary. Rotated so the arc opens from
+   12 o'clock. The three bands owe 3:1 as graphics (WCAG 1.4.11) on --bg and
+   --panel; they are in check-contrast.py's PAIRS, so re-run `make contrast`
+   before touching one. */
+.rating {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-variant-numeric: tabular-nums;
+}
+.rating svg { width: var(--icon-sm); height: var(--icon-sm); flex: none; transform: rotate(-90deg); }
+.rating-md svg { width: var(--icon-md); height: var(--icon-md); }
+.rating circle { fill: none; stroke-width: 3; }
+/* The track inherits the text colour beside it at low opacity, so it works on
+   the page, in a panel and on the billboard's photograph without a rule each. */
+.rating-track { stroke: currentColor; opacity: .25; }
+.rating-arc { stroke: var(--accent); stroke-linecap: round; }
+.rating[data-band='mid'] .rating-arc { stroke: var(--warn); }
+.rating[data-band='low'] .rating-arc { stroke: var(--error); }
+
+/* The billboard is dark in BOTH themes, so the light theme's dark greens and
+   browns vanish on it. These are the dark palette's literals on purpose — the
+   same reasoning as the scrim they sit on. */
+.billboard .rating-arc { stroke: #57cf9a; }
+.billboard .rating[data-band='mid'] .rating-arc { stroke: #e0ad4e; }
+.billboard .rating[data-band='low'] .rating-arc { stroke: #f0837a; }
+
 /* --- status --------------------------------------------------------------- */
 
 .badge {
@@ -822,8 +870,6 @@ html, body { overflow-x: clip; }
   padding: 0;
   display: grid;
   place-items: center;
-  font-size: 1.75rem;
-  line-height: 1;
   border: none;
   border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--panel) 82%, transparent);

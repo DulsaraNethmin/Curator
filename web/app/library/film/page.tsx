@@ -11,6 +11,7 @@ import {
   type SettingsResult,
 } from '@/lib/api';
 import { Empty, Failure } from '@/components/states';
+import { Icon } from '@/components/icons';
 import { Player } from '@/components/player';
 import { MatchPicker } from '@/components/match-picker';
 
@@ -183,7 +184,7 @@ function LibraryFilm() {
       <div className="actions">
         {onDisk && (
           <button className="primary" onClick={() => setWatching(true)} disabled={watching}>
-            ▶ Watch here
+            <Icon name="play" size="sm" /> Watch here
           </button>
         )}
 
@@ -203,7 +204,7 @@ function LibraryFilm() {
             one for everything else about it, so the way back stays. */}
         {movie.tmdb_id !== null && (
           <Link className="button" href={`/movie/?id=${movie.tmdb_id}`}>
-            Poster, cast and releases →
+            Poster, cast and releases <Icon name="arrow-right" size="sm" />
           </Link>
         )}
 

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { api, type Movie, type ScanResult, type Setting, type SettingsResult } from '@/lib/api';
+import { Icon } from '@/components/icons';
 import { Section } from './settings/section';
 import { Playback } from './settings/playback';
 
@@ -464,7 +465,11 @@ function ScanStep({ films, tmdb }: { films: number; tmdb: Setting | undefined })
         <button type="button" className="primary" disabled={running} onClick={() => void scan()}>
           {running ? 'Scanning…' : result ? 'Scan again' : 'Scan the library'}
         </button>
-        {(result !== null || films > 0) && <Link href="/library/">Go to the library →</Link>}
+        {(result !== null || films > 0) && (
+          <Link href="/library/">
+            Go to the library <Icon name="arrow-right" size="sm" />
+          </Link>
+        )}
       </div>
     </div>
   );

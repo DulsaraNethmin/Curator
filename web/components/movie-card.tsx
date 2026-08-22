@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { posterURL, type LibraryState, type MediaType, type MovieSummary } from '@/lib/api';
+import { Rating } from '@/components/rating';
 
 /**
  * MovieCard is one film — or one show — in a grid or a rail, and a link to its
@@ -57,7 +58,7 @@ export function MovieCard({
             first air date. Neither is a folder curator can write, and saying
             "no date" is the honest version of that. */}
         <span>{film.year || 'no date'}</span>
-        {film.vote_average > 0 && <span>★ {film.vote_average.toFixed(1)}</span>}
+        <Rating score={film.vote_average} />
         {film.library && <LibraryBadge library={film.library} />}
       </div>
     </>

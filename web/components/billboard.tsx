@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { backdropURL, type MediaType, type MovieSummary } from '@/lib/api';
 import { LibraryBadge } from '@/components/movie-card';
+import { Rating } from '@/components/rating';
 
 /**
  * The billboard: one title, full width, at the top of Discover.
@@ -44,7 +45,7 @@ export function Billboard({ film, media }: { film: MovieSummary; media: MediaTyp
             {/* Year 0 is a title TMDB has no date for — the same honest wording
                 the cards use rather than a blank space. */}
             <span>{film.year || 'no date'}</span>
-            {film.vote_average > 0 && <span>★ {film.vote_average.toFixed(1)}</span>}
+            <Rating score={film.vote_average} />
             {film.library && <LibraryBadge library={film.library} />}
           </div>
 

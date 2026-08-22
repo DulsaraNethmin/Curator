@@ -12,6 +12,7 @@ import {
   type SettingsResult,
 } from '@/lib/api';
 import { Failure } from '@/components/states';
+import { Icon } from '@/components/icons';
 import { MediaSwitch } from '@/components/media-switch';
 import { FirstRun, isFirstRun } from '@/components/first-run';
 import { Billboard } from '@/components/billboard';
@@ -166,7 +167,9 @@ export default function Home() {
           <span>unmatched by TMDB</span>
         </Link>
         <Link href="/search/" className="push">
-          <span>Search for a film →</span>
+          <span>
+            Search for a film <Icon name="arrow-right" size="sm" />
+          </span>
         </Link>
       </div>
 

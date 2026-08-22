@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DiscoverRow, MediaType } from '@/lib/api';
 import { Empty } from '@/components/states';
+import { Icon } from '@/components/icons';
 import { MovieCard } from '@/components/movie-card';
 
 /**
@@ -94,7 +95,7 @@ export function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
           tabIndex={-1}
           onClick={() => page(-1)}
         >
-          ‹
+          <Icon name="chevron-left" size="lg" />
         </button>
 
         <div className="rail" ref={strip} onScroll={measure}>
@@ -112,7 +113,7 @@ export function Rail({ row, media }: { row: DiscoverRow; media: MediaType }) {
           tabIndex={-1}
           onClick={() => page(1)}
         >
-          ›
+          <Icon name="chevron-right" size="lg" />
         </button>
       </div>
     </section>

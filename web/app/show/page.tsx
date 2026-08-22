@@ -13,6 +13,7 @@ import {
 } from '@/lib/api';
 import { Empty, Failure, Working } from '@/components/states';
 import { LibraryBadge } from '@/components/movie-card';
+import { Rating } from '@/components/rating';
 import { Releases } from '@/components/releases';
 
 /**
@@ -187,7 +188,7 @@ function Show() {
               )}
               {runtime && <span>{runtime} an episode</span>}
               {details.genres.length > 0 && <span>{details.genres.join(' · ')}</span>}
-              {details.vote_average > 0 && <span>★ {details.vote_average.toFixed(1)}</span>}
+              <Rating score={details.vote_average} size="md" />
               {details.library && <LibraryBadge library={details.library} />}
             </div>
 
