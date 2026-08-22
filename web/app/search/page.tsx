@@ -8,6 +8,7 @@ import { Loading, SkeletonGrid, SkeletonLines } from '@/components/skeleton';
 import { MovieCard } from '@/components/movie-card';
 import { MediaSwitch, mediaFromParams, useTelevision } from '@/components/media-switch';
 import { Releases } from '@/components/releases';
+import { useDebounced } from '@/lib/debounce';
 
 /**
  * Search finds films, not release names.
@@ -101,54 +102,88 @@ function Search() {
     };
   }, []);
 
-  // A URL carrying ?q= searches on arrival, which is what makes it worth
-  // sharing. Only the film search, though: that is one TMDB call in ~150 ms,
-  // where a release search launches a browser for up to thirteen seconds, and
-  // no URL should do that on sight.
-  //
-  // It waits on `television.known` as well as on the key, because the answer
-  // decides WHICH catalogue is asked — auto-searching films for a link that
-  // said ?media=tv would answer a different question and then look settled.
-  const auto = useRef('');
-  useEffect(() => {
-    if (tmdb === '?' || !television.known || !initial || mode !== 'films') return;
-    if (auto.current === `${media}:${initial}`) return;
-    // The ref, not the dependency list, is what makes this happen once:
-    // findFilms is a new function every render and would loop as a dependency.
-    auto.current = `${media}:${initial}`;
-    void findFilms(initial, media);
-  }, [initial, tmdb, mode, media, television.known]);
+  /**
+   * The film search runs as you type; the release search never does.
+   *
+   * **That asymmetry is the rule this screen is built around and it did not
+   * change.** A TMDB search is one call in ~150 ms. A release search launches a
+   * real browser through minter for up to thirteen seconds and re-hits YTS, TPB
+   * and EZTV live, so it stays behind the button below and no URL and no
+   * keystroke may start one.
+   *
+   * One effect now covers all three ways a film search begins — a shared
+   * `?q=` link, typing, and switching media — because they are the same
+   * question and three code paths asking it is three places for the media type
+   * to be wrong. `searched` is the old `auto` ref widened to mean "this is what
+   * has been asked", which is what stops any of the three repeating another's
+   * work.
+   *
+   * It waits on `television.known` as well, because the answer decides WHICH
+   * catalogue is asked — searching films for a link that said `?media=tv` would
+   * answer a different question and then look settled.
+   */
+  const debounced = useDebounced(query);
+  const searched = useRef('');
 
-  async function findFilms(q: string, kind: MediaType = media) {
+  useEffect(() => {
+    if (tmdb === '?' || !television.known || mode !== 'films') return;
+
+    const q = debounced.trim();
+    if (!q) {
+      // Emptying the box clears the grid rather than leaving the last answer
+      // under a box that no longer says it.
+      setFilms(null);
+      setFound('');
+      setFilmError(null);
+      searched.current = '';
+      return;
+    }
+
+    const key = `${media}:${q}`;
+    if (searched.current === key) return;
+    searched.current = key;
+
+    // Still replaceState and still not router.push: this is a query-only
+    // update, Next keeps useSearchParams in step with it, and the URL is the
+    // shareable half of this screen. A push per keystroke would turn Back into
+    // a stutter through every prefix of what was typed.
+    window.history.replaceState(null, '', searchURL(q, media));
+
+    const abort = new AbortController();
+    void findFilms(q, media, abort.signal);
+    return () => abort.abort();
+  }, [debounced, media, tmdb, mode, television.known]);
+
+  async function findFilms(q: string, kind: MediaType = media, signal?: AbortSignal) {
     setLooking(true);
     setFilmError(null);
     try {
-      const answer = await api.tmdbSearch(q, undefined, kind);
+      const answer = await api.tmdbSearch(q, undefined, kind, signal);
       setFilms(answer.results);
       setFound(answer.query);
     } catch (e) {
+      // A superseded keystroke is not a failure and must not paint one. The
+      // request was cancelled on purpose and another is already in flight, so
+      // this returns without touching state — leaving `looking` true, which is
+      // correct: the newer search is still running.
+      if (signal?.aborted) return;
       setFilmError(e);
       setFilms(null);
     } finally {
-      setLooking(false);
+      if (!signal?.aborted) setLooking(false);
     }
   }
 
   // The switch re-runs the search rather than leaving the previous catalogue's
-  // grid under a heading that now says the other word. An unsearched screen
-  // just changes which catalogue the next press asks.
+  // grid under a heading that now says the other word — but it no longer runs
+  // it ITSELF. `media` is in the effect's key and in its dependency list, so
+  // changing it re-searches on its own; doing it here as well is how the switch
+  // used to be one double-fire away from two requests.
   function chooseMedia(next: MediaType) {
     setChosenMedia(next);
     setFilms(null);
     setFilmError(null);
-
-    const q = query.trim();
-    window.history.replaceState(null, '', searchURL(q, next));
-
-    if (q) {
-      auto.current = `${next}:${q}`;
-      void findFilms(q, next);
-    }
+    window.history.replaceState(null, '', searchURL(query.trim(), next));
   }
 
   async function findReleases(title: string) {
@@ -164,6 +199,15 @@ function Search() {
     }
   }
 
+  /**
+   * Enter, which is now only ever a shortcut past the 300 ms wait.
+   *
+   * For releases it is still the ONLY way in and always was. For films it
+   * fires the same search the effect is about to, and sets `searched` first —
+   * so when the debounce settles a moment later the effect sees the key
+   * already asked and does nothing. Without that, hitting Enter mid-pause
+   * would send two identical requests.
+   */
   function submit(event: React.FormEvent) {
     event.preventDefault();
     const q = query.trim();
@@ -173,10 +217,14 @@ function Search() {
     // useSearchParams in step. The URL is the shareable half of this screen; a
     // reload of /search/?q=avengers has to come back to the same grid.
     window.history.replaceState(null, '', searchURL(q, media));
-    auto.current = `${media}:${q}`;
 
-    if (mode === 'films') void findFilms(q);
-    else void findReleases(q);
+    if (mode === 'films') {
+      if (searched.current === `${media}:${q}`) return;
+      searched.current = `${media}:${q}`;
+      void findFilms(q);
+    } else {
+      void findReleases(q);
+    }
   }
 
   return (
